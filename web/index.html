@@ -1,0 +1,528 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Rejected Draft Simulator</title>
+    <link rel="icon" href="data:,">
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar">
+        <div class="brand">
+          <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true">
+            <path d="M7 24V8l9-4 9 4v16l-9 4-9-4Z" fill="none" stroke="currentColor" stroke-width="1.8"/>
+            <path d="M10 22V10l6-3 6 3v12l-6 3-6-3Z" fill="none" stroke="currentColor" stroke-width="1.2"/>
+            <path d="M5 27c4-2 7-1 10-3 4-3 8-2 12-4M6 5c5 2 7 0 11 2 3 2 6 1 10 3" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round"/>
+          </svg>
+          <div>
+            <h1>Rejected Draft Simulator</h1>
+            <p id="bundleStatus">Bundle: loading</p>
+          </div>
+        </div>
+        <div class="version-ticket">
+          <strong>Version 1.0</strong>
+          <span>Strategy board</span>
+        </div>
+      </header>
+
+      <section id="resourceStrip" class="resource-strip" aria-label="Run resources">
+        <div class="resource-tile accent-violet">
+          <span>Quintessence</span>
+          <strong id="stripQ">--</strong>
+          <small id="stripQDelta">waiting for save</small>
+        </div>
+        <div class="resource-tile accent-red">
+          <span>Target</span>
+          <strong id="stripTarget">--</strong>
+          <small>current sketch</small>
+        </div>
+        <div class="resource-tile accent-green">
+          <span>Win</span>
+          <strong id="stripWin">--</strong>
+          <small id="stripWinDetail">CI --</small>
+        </div>
+        <div class="resource-tile accent-blue">
+          <span>Timeout</span>
+          <strong id="stripTimeout">--</strong>
+          <small id="stripTimeDetail">p90 --</small>
+        </div>
+        <div class="resource-tile accent-orange">
+          <span>Decision</span>
+          <strong id="stripDecision">--</strong>
+          <small>recommended action</small>
+        </div>
+        <div class="resource-tile accent-cyan">
+          <span>Bundle</span>
+          <strong id="stripBundle">local</strong>
+          <small>game data</small>
+        </div>
+      </section>
+
+      <nav id="functionTabBar" class="function-tab-bar" aria-label="Simulator functions" role="tablist">
+        <button type="button" data-function-tab="results" class="selected" role="tab" aria-selected="true">Battle</button>
+        <button type="button" data-function-tab="run" role="tab" aria-selected="false">Run</button>
+        <button type="button" data-function-tab="strategy" role="tab" aria-selected="false">Strategy</button>
+        <button type="button" data-function-tab="diagnostics" role="tab" aria-selected="false">Diagnostics</button>
+        <button type="button" data-function-tab="compare-history" role="tab" aria-selected="false">Compare</button>
+      </nav>
+
+      <nav id="mobileTabBar" class="mobile-tab-bar" aria-label="Views">
+        <button type="button" data-mobile-tab="results" class="selected">Results</button>
+        <button type="button" data-mobile-tab="controls">Run</button>
+        <button type="button" data-mobile-tab="planner">Planner</button>
+      </nav>
+
+      <main class="workspace">
+        <aside id="currentSpecsPanel" class="panel controls-panel sketch-frame" data-function-panel="run" data-mobile-panel="controls">
+          <section class="control-section current-specs">
+            <div class="section-head">
+              <h2>Current specs</h2>
+              <span class="counter">battle stats</span>
+            </div>
+            <div id="currentSpecsGrid" class="stat-matrix">
+              <div data-stat-key="maxHp"><span>HP</span><strong>--</strong></div>
+              <div data-stat-key="attack"><span>ATK</span><strong>--</strong></div>
+              <div data-stat-key="attackSpeed"><span>SPD</span><strong>--</strong></div>
+              <div data-stat-key="accuracy"><span>ACC</span><strong>--</strong></div>
+              <div data-stat-key="armor"><span>ARM</span><strong>--</strong></div>
+              <div data-stat-key="armorPen"><span>APN</span><strong>--</strong></div>
+              <div data-stat-key="regen"><span>RGN</span><strong>--</strong></div>
+              <div data-stat-key="burnDamage"><span>BRN</span><strong>--</strong></div>
+              <div data-stat-key="blockChance"><span>BLK</span><strong>--</strong></div>
+              <div data-stat-key="freezeChance"><span>FRZ</span><strong>--</strong></div>
+              <div data-stat-key="hasteChance"><span>HST</span><strong>--</strong></div>
+              <div data-stat-key="critChance"><span>CRT</span><strong>--</strong></div>
+            </div>
+          </section>
+
+          <section class="control-section">
+            <h2>Save</h2>
+            <textarea id="saveInput" spellcheck="false" aria-label="Save export string"></textarea>
+            <div class="file-row">
+              <label class="file-picker">
+                <input id="saveFile" type="file" accept=".txt,text/plain">
+                <span id="saveFileLabel">Choose save file</span>
+              </label>
+              <button id="clearButton" type="button" class="icon-only" title="Clear save" data-tooltip="Clear save">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+              </button>
+            </div>
+          </section>
+
+          <section class="control-section compact-grid">
+            <label>
+              Target filter
+              <input id="targetFilterInput" type="text" placeholder="name, rarity, reward">
+            </label>
+            <label>
+              Target
+              <select id="targetSelect"></select>
+            </label>
+            <label>
+              Attempts
+              <select id="trialsSelect">
+                <option value="auto" selected>auto</option>
+                <option value="100">100</option>
+                <option value="500">500</option>
+                <option value="2000">2000</option>
+              </select>
+            </label>
+            <label>
+              Fight limit
+              <input id="maxSecondsInput" type="number" min="5" max="600" step="5" value="300">
+            </label>
+            <label>
+              Practice
+              <select id="observedOutcomeSelect">
+                <option value="">none</option>
+                <option value="win">I win</option>
+                <option value="loss">I lose</option>
+                <option value="timeout">timeout/stall</option>
+              </select>
+            </label>
+            <label>
+              Trace (s)
+              <input id="traceSecondsInput" type="number" min="5" max="120" step="5" value="60">
+            </label>
+            <label>
+              Density
+              <select id="densityModeSelect">
+                <option value="comfortable">comfortable</option>
+                <option value="compact">compact</option>
+                <option value="dense">dense</option>
+              </select>
+            </label>
+          </section>
+
+          <section class="control-section strategy-controls">
+            <h2>Strategy planner</h2>
+            <div id="strategyPresetButtons" class="preset-row">
+              <button type="button" class="mini-button" data-strategy-preset="farm-q" data-tooltip="Prioritize Quintessence farming">Q farm</button>
+              <button type="button" class="mini-button" data-strategy-preset="farm-currency" data-tooltip="Prioritize selected currency income">Currency farm</button>
+              <button type="button" class="mini-button" data-strategy-preset="masterpiece" data-tooltip="Prepare for a Masterpiece target">Masterpiece</button>
+              <button type="button" class="mini-button" data-strategy-preset="paragon" data-tooltip="Prepare for Transcendent Paragon">Paragon</button>
+              <button type="button" class="mini-button" data-strategy-preset="finish-run" data-tooltip="Evaluate the current run">Finish run</button>
+            </div>
+            <div class="compact-grid">
+              <label>
+                Profile
+                <select id="strategyProfileSelect">
+                  <option value="">custom</option>
+                  <option value="farm-q">farm Q</option>
+                  <option value="farm-photon">farm Photon</option>
+                  <option value="farm-gold-leaf">farm Gold Leaf</option>
+                  <option value="farm-acrylic">farm Acrylic</option>
+                  <option value="3-masterpiece">3 Masterpiece</option>
+                  <option value="4-masterpiece">4 Masterpiece</option>
+                  <option value="transcendent-paragon">Transcendent Paragon</option>
+                </select>
+              </label>
+              <label>
+                Mode
+                <select id="strategyModeSelect">
+                  <option value="">auto</option>
+                  <option value="safe-farm">safe farm</option>
+                  <option value="greedy-farm">greedy farm</option>
+                  <option value="boss-approach">boss approach</option>
+                  <option value="redraw-fishing">redraw fishing</option>
+                </select>
+              </label>
+              <label>
+                Q goal
+                <input id="strategyGoalQInput" type="text" inputmode="decimal" placeholder="e.g. 1e230">
+              </label>
+              <label>
+                Softcap (s)
+                <input id="strategySoftcapSecondsInput" type="number" min="0" step="60" placeholder="e.g. 600">
+              </label>
+              <label>
+                Currency goal
+                <input id="strategyGoalCurrencyInput" type="text" placeholder="Photon=1e230">
+              </label>
+              <label>
+                Farm window (s)
+                <input id="strategyFarmSecondsInput" type="number" min="60" step="60" value="3600">
+              </label>
+            </div>
+            <label>
+              Booster candidates
+              <input id="strategyBoosterCandidatesInput" type="text" placeholder="old:franklyn,vinchy~new:new_tone,mariline">
+            </label>
+            <label>
+              Compare profiles
+              <input id="strategyCompareProfilesInput" type="text" placeholder="farm-q,3-masterpiece,transcendent-paragon">
+            </label>
+          </section>
+
+          <section class="control-section active-run-section">
+            <div class="section-head">
+              <h2>Active run</h2>
+              <span id="activeCount" class="counter">0</span>
+            </div>
+            <div id="activeSketches" class="sketch-list empty-state">No data</div>
+          </section>
+
+          <section class="control-section">
+            <div class="section-head">
+              <h2>Route planner</h2>
+              <button id="clearRouteButton" type="button" class="mini-button" data-tooltip="Clear planned route">Clear</button>
+            </div>
+            <div id="routePlannerList" class="breakdown-list empty-state">No route</div>
+          </section>
+        </aside>
+
+        <section class="main-stack" data-mobile-panel="results">
+          <div id="messageBar" class="message-bar hidden"></div>
+
+          <section id="nextActionPanel" class="panel next-action-panel" data-function-panel="results">
+            <div class="section-head">
+              <h2>Best next click</h2>
+              <span id="nextActionBadge" class="counter">none</span>
+            </div>
+            <div id="nextActionBody" class="next-action-body empty-state">No data</div>
+          </section>
+
+          <section class="panel result-panel" data-function-panel="results">
+            <div class="section-head">
+              <h2>Result</h2>
+              <span id="targetLabel" class="counter">none</span>
+            </div>
+            <div class="result-grid">
+              <div class="metric primary-metric">
+                <span>Win rate</span>
+                <strong id="winRate">--</strong>
+                <small id="winRateCi">CI --</small>
+              </div>
+              <div class="metric">
+                <span>Timeout</span>
+                <strong id="timeoutRate">--</strong>
+                <small id="fightTime">p90 --</small>
+              </div>
+              <div class="metric">
+                <span>Decision</span>
+                <strong id="decision">--</strong>
+                <small id="decisionReason">--</small>
+              </div>
+            </div>
+            <div class="split">
+              <div>
+                <h3>Failures</h3>
+                <div id="failureBreakdown" class="breakdown-list empty-state">No data</div>
+              </div>
+              <div>
+                <h3>Thresholds</h3>
+                <div id="thresholds" class="threshold-list empty-state">No data</div>
+              </div>
+            </div>
+          </section>
+
+          <section id="diagnosticWhyPanel" class="panel" data-function-panel="diagnostics">
+            <div class="section-head">
+              <h2>Why this result?</h2>
+              <span id="confidenceBadge" class="counter" data-tooltip="Model confidence based on trials, CI and risky mechanics">none</span>
+            </div>
+            <div class="split">
+              <div>
+                <h3>Causes</h3>
+                <div id="whyResultList" class="breakdown-list empty-state">No data</div>
+              </div>
+              <div>
+                <h3>Sanity</h3>
+                <div id="sanityChecksList" class="breakdown-list empty-state">No data</div>
+              </div>
+            </div>
+            <div class="split">
+              <div>
+                <h3>Warnings</h3>
+                <div id="mechanicWarningsList" class="breakdown-list empty-state">No data</div>
+              </div>
+              <div>
+                <h3>Practice vs model</h3>
+                <div id="observationMismatch" class="breakdown-list empty-state">No observation</div>
+              </div>
+            </div>
+            <div>
+              <h3>Extreme stats</h3>
+              <div id="extremeStatsList" class="breakdown-list empty-state">No data</div>
+            </div>
+          </section>
+
+          <section class="panel strategy-panel" data-function-panel="strategy" data-mobile-panel="planner">
+            <div class="section-head">
+              <h2>Strategy planner</h2>
+              <span id="strategySummary" class="counter">none</span>
+            </div>
+            <div class="result-grid strategy-grid">
+              <div class="metric">
+                <span>Approach</span>
+                <strong id="strategyDecision">--</strong>
+                <small id="strategyReadiness">--</small>
+              </div>
+              <div class="metric">
+                <span>Softcap</span>
+                <strong id="strategySoftcap">--</strong>
+                <small id="strategySoftcapReason">--</small>
+              </div>
+              <div class="metric">
+                <span>Farm</span>
+                <strong id="strategyFarmGoal">--</strong>
+                <small id="strategyFarmEta">--</small>
+              </div>
+            </div>
+            <div class="split strategy-split">
+              <div>
+                <h3>Top Opuses</h3>
+                <div id="strategyOpusList" class="breakdown-list empty-state">No data</div>
+              </div>
+              <div>
+                <h3>Decisions</h3>
+                <div id="strategyDecisionsList" class="breakdown-list empty-state">No data</div>
+              </div>
+            </div>
+            <div>
+              <h3>Profile</h3>
+              <div id="strategyProfileList" class="breakdown-list empty-state">No data</div>
+            </div>
+          </section>
+
+          <section class="panel" data-function-panel="strategy" data-mobile-panel="planner">
+            <div class="section-head">
+              <h2>Economy planner</h2>
+              <span class="counter">Priority 17</span>
+            </div>
+            <div class="split strategy-split">
+              <div>
+                <h3>Buy now</h3>
+                <div id="economyBuyList" class="breakdown-list empty-state">No data</div>
+              </div>
+              <div>
+                <h3>Bottlenecks</h3>
+                <div id="economyBottleneckList" class="breakdown-list empty-state">No data</div>
+              </div>
+            </div>
+            <div class="split strategy-split">
+              <div>
+                <h3>Forecasts</h3>
+                <div id="economyForecastList" class="breakdown-list empty-state">No data</div>
+              </div>
+              <div>
+                <h3>Wasted rewards</h3>
+                <div id="economyWasteList" class="breakdown-list empty-state">No data</div>
+              </div>
+            </div>
+          </section>
+
+          <section id="sketchDeltaPanel" class="panel" data-function-panel="strategy" data-mobile-panel="planner">
+            <div class="section-head">
+              <h2>What the selected sketch changes</h2>
+              <span id="sketchDeltaName" class="counter">none</span>
+            </div>
+            <div id="sketchDeltaBody" class="breakdown-list empty-state">Select a sketch from the active run</div>
+          </section>
+
+          <section id="rollWishlistPanel" class="panel" data-function-panel="strategy" data-mobile-panel="planner">
+            <div class="section-head">
+              <h2>Roll wishlist</h2>
+              <span id="rollWishlistSummary" class="counter">none</span>
+            </div>
+            <div id="rollWishlistList" class="breakdown-list empty-state">No data</div>
+          </section>
+
+          <section class="panel" data-function-panel="strategy" data-mobile-panel="planner">
+            <div class="section-head">
+              <h2>Preview route</h2>
+              <span id="routePreviewSummary" class="counter">none</span>
+            </div>
+            <div id="routePreviewList" class="breakdown-list empty-state">No route</div>
+          </section>
+
+          <section class="panel" data-function-panel="diagnostics" data-mobile-panel="planner">
+            <div class="section-head">
+              <h2>Model assumptions</h2>
+              <span class="counter">status / DoT / buff</span>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Variant</th>
+                    <th>Win</th>
+                    <th>Delta</th>
+                    <th>Timeout</th>
+                    <th>p90</th>
+                    <th>Problem</th>
+                  </tr>
+                </thead>
+                <tbody id="assumptionComparisonTable"></tbody>
+              </table>
+            </div>
+          </section>
+
+          <section class="panel" data-function-panel="diagnostics" data-mobile-panel="planner">
+            <div class="section-head">
+              <h2>Fight trace</h2>
+              <span class="counter">one sample</span>
+            </div>
+            <div id="fightTraceList" class="breakdown-list empty-state">No trace</div>
+          </section>
+
+          <section id="uiDiagnosticsPanel" class="panel ui-diagnostics" data-function-panel="diagnostics" data-mobile-panel="planner">
+            <div class="section-head">
+              <h2>UI diagnostics</h2>
+              <span id="uiDiagnosticsBadge" class="counter" data-tooltip="Theme, accessibility and layout audit">pending</span>
+            </div>
+            <div id="uiDiagnosticsList" class="breakdown-list empty-state">No diagnostics yet</div>
+          </section>
+
+          <section class="panel" data-function-panel="compare-history" data-mobile-panel="planner">
+            <div class="section-head">
+              <h2>Build comparison</h2>
+              <span class="counter">Farm / Duct / Rose</span>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Build</th>
+                    <th>Target</th>
+                    <th>Win</th>
+                    <th>CI</th>
+                    <th>p90</th>
+                    <th>Problem</th>
+                  </tr>
+                </thead>
+                <tbody id="buildComparison"></tbody>
+              </table>
+            </div>
+          </section>
+
+          <section id="fullComparePanel" class="panel hidden" data-function-panel="compare-history" data-mobile-panel="planner">
+            <div class="section-head">
+              <h2>All targets</h2>
+              <span class="counter">Key + active Opuses</span>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Source</th>
+                    <th>Target</th>
+                    <th>Rarity</th>
+                    <th>Win</th>
+                    <th>CI</th>
+                    <th>p90</th>
+                    <th>Problem</th>
+                  </tr>
+                </thead>
+                <tbody id="fullCompareTable"></tbody>
+              </table>
+            </div>
+          </section>
+
+          <section class="panel" data-function-panel="compare-history" data-mobile-panel="planner">
+            <div class="section-head">
+              <h2>History</h2>
+              <button id="clearHistoryButton" type="button" class="icon-only" title="Clear history" data-tooltip="Clear history">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M10 11v6m4-6v6M6 7l1 14h10l1-14M9 7V4h6v3" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              </button>
+            </div>
+            <div id="historyList" class="history-list empty-state">No history</div>
+          </section>
+        </section>
+
+        <aside id="protocolRail" class="panel protocol-rail sketch-frame" data-mobile-panel="planner">
+          <div class="section-head">
+            <h2>Protocols</h2>
+            <span class="counter">active modules</span>
+          </div>
+          <div class="top-actions">
+            <button id="importBundleButton" class="icon-button secondary protocol-card accent-blue" type="button" title="Import game bundle" data-tooltip="Refresh local game data from the current bundle">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m0 0 4-4m-4 4-4-4M5 19h14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              <span>Import bundle</span>
+              <small>refresh data</small>
+            </button>
+            <button id="analyzeButton" class="icon-button primary protocol-card accent-green" type="button" title="Run simulation" data-tooltip="Run the selected simulation">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 3 14 9-14 9V3Z" fill="currentColor"/></svg>
+              <span>Simulate</span>
+              <small>run model</small>
+            </button>
+            <button id="compareTargetsButton" class="icon-button secondary protocol-card accent-violet" type="button" title="Show all target comparisons" data-tooltip="Open or hide target comparison table">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 19V9m7 10V5m7 14v-7" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+              <span>Compare</span>
+              <small>all targets</small>
+            </button>
+          </div>
+          <div class="protocol-status">
+            <div class="status-line accent-orange"><strong>Planner</strong><span>ready</span></div>
+            <div class="status-line accent-cyan"><strong>Economy</strong><span>tracked</span></div>
+            <div class="status-line accent-red"><strong>Risk</strong><span>visible</span></div>
+          </div>
+        </aside>
+      </main>
+    </div>
+
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

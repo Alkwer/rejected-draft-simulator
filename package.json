@@ -1,0 +1,21 @@
+{
+  "name": "rejected-draft-simulator",
+  "version": "0.1.0",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test",
+    "lint": "node src/lint.js",
+    "benchmark": "node src/benchmark.js",
+    "simulate": "node src/cli.js",
+    "update-data": "node src/update-data.js",
+    "combat-reference": "node src/extract-combat-reference.js",
+    "combat-parity": "node src/extract-combat-parity-map.js",
+    "dev": "node src/dev-server.js",
+    "dev:open": "node src/dev-server.js --open"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

@@ -1,0 +1,96 @@
+{
+  "gameVersion": "main-Dmswlyp_.js",
+  "saveVersion": 52,
+  "targets": {
+    "duct_taped_banana": {
+      "name": "Duct-Taped Banana",
+      "rarity": "masterpiece",
+      "stats": {
+        "maxHp": 3300000000000,
+        "attack": 100000000000,
+        "attackSpeed": 1900,
+        "bananaPeelChance": 9000,
+        "dodge": 44,
+        "isolation": 99,
+        "absorb": 95
+      },
+      "vulnerability": [
+        "bleedChance",
+        25
+      ],
+      "immunities": [
+        "blackFlameChance",
+        "brittleChance",
+        "hypnotizeChance",
+        "poisonChance"
+      ]
+    },
+    "rose_window": {
+      "name": "Rose Window",
+      "rarity": "masterpiece",
+      "stats": {
+        "maxHp": 60000000000000,
+        "attack": 600000000,
+        "armor": 2000000000000,
+        "attackSpeed": 1200,
+        "hypnotizeChance": 1200,
+        "thornsChance": 6000000000,
+        "opacity": 96,
+        "freezeChance": 60000,
+        "regen": 2000000000000,
+        "remedy": 12
+      },
+      "vulnerability": [
+        "freezeChance",
+        300
+      ],
+      "immunities": [
+        "blackFlameChance",
+        "bleedChance",
+        "brittleChance",
+        "curseChance",
+        "hypnotizeChance",
+        "irradiateChance",
+        "plagueChance",
+        "poisonChance",
+        "slowChance"
+      ]
+    },
+    "mobius_strip": {
+      "name": "Mobius Strip",
+      "rarity": "masterpiece",
+      "stats": {
+        "maxHp": 600000000,
+        "attack": 300000000,
+        "attackSpeed": 300,
+        "absorb": 100,
+        "burnChance": 300,
+        "burnDamage": 30000000,
+        "remedy": 60,
+        "opacity": 30
+      },
+      "vulnerability": [
+        "burnChance",
+        3
+      ],
+      "immunities": [
+        "balloonChance",
+        "bleedChance",
+        "brittleChance",
+        "counter",
+        "curseChance",
+        "electrocuteChance",
+        "energyWaveChance",
+        "frailtyChance",
+        "freezeChance",
+        "hinderChance",
+        "hypnotizeChance",
+        "irradiateChance",
+        "parryDmg",
+        "plagueChance",
+        "poisonChance",
+        "slowChance"
+      ]
+    }
+  }
+}

@@ -1,0 +1,63 @@
+{
+  "current": "main-Dmswlyp_.js",
+  "versions": {
+    "v0.874": {
+      "saveVersion": 52,
+      "capturedAt": "2026-05-20",
+      "asset": "artistLinks-CsK2J3KP-2026-05-20.js",
+      "sanityTargets": [
+        "duct_taped_banana",
+        "rose_window",
+        "mobius_strip"
+      ]
+    },
+    "v0.881": {
+      "saveVersion": 52,
+      "capturedAt": "2026-05-20",
+      "asset": "artistLinks-BztwGhMc.js",
+      "mainAsset": "main-BTMU_QPE.js",
+      "sourceUrl": "https://kuzzigames.com/rejected_draft/",
+      "sanityTargets": [
+        "duct_taped_banana",
+        "rose_window",
+        "mobius_strip"
+      ]
+    },
+    "main-CLD-lYso.js": {
+      "saveVersion": 52,
+      "capturedAt": "2026-05-22",
+      "asset": "data-sketches-DoX1aVCm.js",
+      "mainAsset": "main-CLD-lYso.js",
+      "sourceUrl": "https://kuzzigames.com/rejected_draft/",
+      "sanityTargets": [
+        "duct_taped_banana",
+        "rose_window",
+        "mobius_strip"
+      ]
+    },
+    "main-B8xwsW5G.js": {
+      "saveVersion": 52,
+      "capturedAt": "2026-05-23",
+      "asset": "data-sketches-BTox30FG.js",
+      "mainAsset": "main-B8xwsW5G.js",
+      "sourceUrl": "https://kuzzigames.com/rejected_draft/",
+      "sanityTargets": [
+        "duct_taped_banana",
+        "rose_window",
+        "mobius_strip"
+      ]
+    },
+    "main-Dmswlyp_.js": {
+      "saveVersion": 52,
+      "capturedAt": "2026-05-24",
+      "asset": "data-sketches-DUPma9Vq.js",
+      "mainAsset": "main-Dmswlyp_.js",
+      "sourceUrl": "https://kuzzigames.com/rejected_draft/",
+      "sanityTargets": [
+        "duct_taped_banana",
+        "rose_window",
+        "mobius_strip"
+      ]
+    }
+  }
+}
