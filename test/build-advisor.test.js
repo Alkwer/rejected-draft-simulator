@@ -138,6 +138,23 @@ test("analyzeBuildAdvice recommends tools and active run actions", () => {
   assert.ok(advice.activeRun.bestNextRewards.some((item) => item.id === "bleed_route"));
 });
 
+test("analyzeBuildAdvice filters capped fights by sketch victories", () => {
+  const advice = analyzeBuildAdvice({
+    sketches,
+    targetId: "duct_taped_banana",
+    baseStats: { maxHp: 1000, attack: 200, accuracy: 20, bleedChance: 1 },
+    state: {
+      availableSketches: ["bleed_route", "sustain_route"],
+      sketchVictories: { bleed_route: 2, sustain_route: 1 },
+      sketchRunVictories: { bleed_route: 0, sustain_route: 2 },
+      fundamentals: { maxVictories: 2, beyondMaxVictories: 1 },
+    },
+  });
+
+  assert.deepEqual(advice.activeRun.finish.map(({ id }) => id), ["sustain_route"]);
+  assert.deepEqual(advice.activeRun.bestNextRewards.map(({ id }) => id), ["sustain_route"]);
+});
+
 test("analyzeBuildAdvice marks Masterpiece targets as ineligible for Precise Eraser", () => {
   const advice = analyzeBuildAdvice({
     sketches,

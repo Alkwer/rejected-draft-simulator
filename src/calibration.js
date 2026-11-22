@@ -3,6 +3,7 @@ import { createRng } from "./rng.js";
 import { toNumber } from "./save.js";
 import { readFileSync } from "node:fs";
 import { combatAssumptionsFromSave } from "./combat-assumptions.js";
+import { normalizeFightOutcome } from "./fight-outcome.js";
 
 export const GAME_DATA_VERSIONS = {
   "v0.874": {
@@ -640,12 +641,13 @@ function normalizeLogEntry(raw, sourceKey, index) {
     target.id,
   );
   const targetName = firstString(raw.targetName, raw.sketchName, raw.enemyName, target.name);
+  const outcome = normalizeFightOutcome(raw);
   const seconds = normalizeSeconds(raw);
   const playerStats = numericObject(raw.playerStats ?? raw.player?.stats ?? raw.attackerStats);
   const targetStats = numericObject(raw.targetStats ?? raw.enemyStats ?? raw.defenderStats ?? target.stats);
   const damageBreakdown = normalizeDamageBreakdown(raw.damageBreakdown ?? raw.damage ?? raw.breakdown);
 
-  if (!targetId && !targetName && normalizeOutcome(raw) === "unknown" && !Number.isFinite(seconds)) {
+  if (!targetId && !targetName && outcome === "unknown" && !Number.isFinite(seconds)) {
     return null;
   }
 
@@ -654,7 +656,7 @@ function normalizeLogEntry(raw, sourceKey, index) {
     index,
     targetId,
     targetName,
-    outcome: normalizeOutcome(raw),
+    outcome,
     seconds,
     reason: firstString(raw.reason, raw.cause, raw.deathCause, raw.resultReason, raw.outcomeReason),
     playerStats,
@@ -663,24 +665,6 @@ function normalizeLogEntry(raw, sourceKey, index) {
     patchVersion: firstString(raw.patchVersion, raw.gameVersion, raw.version),
     raw,
   };
-}
-
-function normalizeOutcome(raw) {
-  if (raw.winner != null) {
-    const winner = String(raw.winner).toLowerCase();
-    if (winner === "player" || winner === "attacker") return "win";
-    if (winner === "enemy" || winner === "target" || winner === "defender") return "loss";
-    if (winner === "timeout") return "timeout";
-  }
-
-  if (raw.won === true || raw.playerWon === true || raw.victory === true) return "win";
-  if (raw.won === false || raw.playerWon === false || raw.loss === true || raw.defeat === true) return "loss";
-  const text = String(raw.outcome ?? raw.result ?? raw.status ?? "").toLowerCase();
-  if (!text) return "unknown";
-  if (/timeout|stall/.test(text)) return "timeout";
-  if (/win|victory|success|clear|player/.test(text)) return "win";
-  if (/loss|lose|lost|death|defeat|enemy|player_hp_zero|fail/.test(text)) return "loss";
-  return "unknown";
 }
 
 function normalizeSeconds(raw) {

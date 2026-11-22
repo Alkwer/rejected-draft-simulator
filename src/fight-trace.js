@@ -34,6 +34,7 @@ export function createFightTrace({
       playerHp: result.playerHp,
       enemyHp: result.enemyHp,
       deathCause: result.deathCause ?? null,
+      damageBreakdown: result.damageBreakdown,
     },
     events: result.trace ?? [],
   };

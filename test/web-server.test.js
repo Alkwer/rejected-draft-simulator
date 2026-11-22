@@ -234,7 +234,7 @@ test("web server companion endpoint captures and compares a fight fixture", asyn
         maxSeconds: 5,
         traceSeconds: 3,
         observed: {
-          outcome: "win",
+          result: "enemy_hp_zero",
           seconds: 1.001,
           playerHp: 1000,
           enemyHp: 0,
@@ -252,6 +252,7 @@ test("web server companion endpoint captures and compares a fight fixture", asyn
     assert.equal(payload.ok, true, payload.error);
     assert.equal(payload.fixtureCapture.source, "provided_observation");
     assert.equal(payload.fixtureCapture.fixture.targetId, "duct_taped_banana");
+    assert.equal(payload.fixtureCapture.fixture.observed.outcome, "win");
     assert.equal(payload.fixtureCapture.parity.ok, true);
     assert.equal(payload.fixtureCapture.parity.trace.seed, "companion-fixture-test");
     assert.match(payload.fixtureCapture.filename, /duct_taped_banana.*\.json/);

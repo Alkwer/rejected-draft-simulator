@@ -1,4 +1,5 @@
 import { createFightTrace } from "./fight-trace.js";
+import { normalizeFightOutcome } from "./fight-outcome.js";
 import { toNumber } from "./save.js";
 
 const DEFAULT_TOLERANCES = {
@@ -205,13 +206,14 @@ export function renderFightParityMarkdown(parity) {
 }
 
 function normalizeObserved(fixture) {
-  const raw = parseJsonLike(fixture.observed ?? fixture.actual ?? fixture.log ?? fixture.combatLog ?? fixture.result ?? fixture) ?? {};
+  const observation = fixture.observed ?? fixture.actual ?? fixture.log ?? fixture.combatLog;
+  const nested = parseJsonLike(observation ?? fixture.result);
+  const raw = nested && typeof nested === "object" ? nested : observation == null ? fixture : {};
   const target = raw.target ?? raw.sketch ?? raw.enemy ?? {};
-  const outcome = normalizeOutcome(raw);
   return {
     targetId: firstString(raw.targetId, raw.sketchId, raw.enemyId, target.id),
     targetName: firstString(raw.targetName, raw.sketchName, raw.enemyName, target.name),
-    outcome,
+    outcome: normalizeFightOutcome(raw),
     seconds: normalizeSeconds(raw),
     reason: firstString(raw.reason, raw.cause, raw.deathCause, raw.resultReason, raw.outcomeReason),
     playerHp: firstFiniteOrNull(
@@ -254,27 +256,16 @@ function normalizeCombatant(raw, fallbackId = null) {
 
 function summarizeTrace(trace) {
   return {
-    outcome: winnerToOutcome(trace.result.winner),
+    outcome: normalizeFightOutcome(trace.result),
     winner: trace.result.winner,
     reason: trace.result.reason,
     seconds: trace.result.seconds,
     playerHp: trace.result.playerHp,
     enemyHp: trace.result.enemyHp,
     deathCause: trace.result.deathCause ?? null,
-    damageBreakdown: finalDamageBreakdown(trace.events),
+    damageBreakdown: trace.result.damageBreakdown,
     eventSummary: summarizeEvents(trace.events),
   };
-}
-
-function finalDamageBreakdown(events) {
-  const result = { player: {}, enemy: {} };
-  for (const event of events) {
-    mergeBreakdown(result.player, event.damage?.player);
-    mergeBreakdown(result.enemy, event.damage?.enemy);
-  }
-  if (result.player.total == null) result.player.total = 0;
-  if (result.enemy.total == null) result.enemy.total = 0;
-  return result;
 }
 
 function summarizeEvents(events = []) {
@@ -442,26 +433,6 @@ function normalizeExpectedEvents(rawEvents) {
   }));
 }
 
-function normalizeOutcome(raw) {
-  if (raw.winner != null) return winnerToOutcome(raw.winner);
-  if (raw.won === true || raw.playerWon === true || raw.victory === true) return "win";
-  if (raw.won === false || raw.playerWon === false || raw.loss === true || raw.defeat === true) return "loss";
-  const text = String(raw.outcome ?? raw.result ?? raw.status ?? "").toLowerCase();
-  if (!text) return "unknown";
-  if (/timeout|stall/.test(text)) return "timeout";
-  if (/win|victory|success|clear|player/.test(text)) return "win";
-  if (/loss|lose|lost|death|defeat|enemy|player_hp_zero|fail/.test(text)) return "loss";
-  return "unknown";
-}
-
-function winnerToOutcome(winner) {
-  const text = String(winner ?? "").toLowerCase();
-  if (text === "player" || text === "attacker" || text === "win") return "win";
-  if (text === "enemy" || text === "target" || text === "defender" || text === "loss") return "loss";
-  if (text === "timeout") return "timeout";
-  return "unknown";
-}
-
 function normalizeSeconds(raw) {
   const direct = firstFiniteOrNull(raw.seconds, raw.durationSeconds, raw.fightSeconds, raw.elapsedSeconds, raw.timeSeconds);
   if (direct != null) return direct;
@@ -486,14 +457,6 @@ function numericObject(raw = {}) {
     if (Number.isFinite(number)) result[key] = number;
   }
   return result;
-}
-
-function mergeBreakdown(target, source = {}) {
-  if (!source || typeof source !== "object") return;
-  for (const [key, value] of Object.entries(source)) {
-    const number = toNumber(value, NaN);
-    if (Number.isFinite(number)) target[key] = (target[key] ?? 0) + number;
-  }
 }
 
 function hasStats(stats) {

@@ -22,7 +22,7 @@ This file collects development directions for the Rejected Draft simulator. The 
 ## Priority 3: Reward and Run Progress Simulation
 
 - DONE: `--route` mode simulates defeating a list of sketches in the provided order.
-- DONE: reward decay uses the game formula `1 / (1 + victories * rewardDecay)` and respects Beyond Max Victories.
+- DONE: reward decay uses the game formula `1 / (1 + victories * rewardDecay)`. Battles stop awarding rewards at the victory cap. Eternal Practice allows meditation on maxed sketches.
 - DONE: Reward Booster supports positive and negative rewards, retroactive booster and use limits.
 - DONE: Precise Eraser lowers target HP without removing rewards from the route.
 - DONE: Sketch Swapper/Pivot can replace a sketch in a route and reports uses/limits.

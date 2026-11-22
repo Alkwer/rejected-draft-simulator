@@ -1,6 +1,7 @@
 import { steamUniverse } from "./combat/steam-encounter.js";
 import { STEAM_DECAY_IMMUNE_STATS } from "./combat/steam-universes.js";
 import { isFullSteamSave, toNumber } from "./save.js";
+import { remainingSketchVictories } from "./victory-limit.js";
 
 export function applySketchRewards({
   baseStats,
@@ -9,8 +10,8 @@ export function applySketchRewards({
   boostedIds = new Set(),
   rewardDecay = 1,
   rewardBoosterEffect = 50,
-  existingVictories = {},
   state = {},
+  existingVictories = state.sketchVictories ?? {},
 }) {
   const stats = { ...baseStats };
   const localVictories = { ...existingVictories };
@@ -21,6 +22,7 @@ export function applySketchRewards({
     if (!sketch) continue;
 
     const victoriesBefore = toNumber(localVictories[id]);
+    if (remainingSketchVictories(state, id, victoriesBefore) <= 0) continue;
     const steam = steamSketchRewards({ state, id, sketch, victoriesBefore, rewardDecay, rewardBoosterEffect, boosted: activeBoosters.has(id) });
     const decayMultiplier = 1 / (1 + victoriesBefore * rewardDecay);
     const boosterMultiplier = boostedIds.has(id) ? 1 + rewardBoosterEffect / 100 : 1;

@@ -103,6 +103,32 @@ test("createStrategyPlan estimates resource gaps, softcap choice, farm plan and 
   assert.ok(plan.runEV.currencies.Graphite.expected > 0);
 });
 
+test("strategy currency forecasts divide battle rewards by time spent on all eligible fights", () => {
+  const farming = {
+    opus_currency: { ...sketches.opus_currency, currencyRewards: [{ name: "Graphite", amount: 100 }] },
+    opus_attack: { ...sketches.opus_attack, currencyRewards: [{ name: "Photon", amount: 100 }] },
+    target: { ...sketches.target, currencyRewards: [{ name: "Graphite", amount: 900 }] },
+  };
+  const plan = createStrategyPlan({
+    sketches: farming,
+    state: state({
+      currencies: {},
+      currencyGeneratorRates: {},
+      sketchVictories: { target: 2 },
+    }),
+    targetId: "target",
+    currentRun: { targets: currentRun.targets.map((row) => ({ ...row, winRate: 1, p90Seconds: 10 })) },
+    goalCurrencies: { Graphite: 100, Photon: 100 },
+    farmSeconds: 20,
+  });
+
+  assert.deepEqual(plan.runEV.sketches.map(({ id }) => id), ["opus_attack", "opus_currency"]);
+  assert.equal(plan.runEV.currencies.Graphite.battlePerSecond, 5);
+  assert.equal(plan.runEV.currencies.Photon.battlePerSecond, 5);
+  assert.equal(plan.economy.currencyForecasts.find(({ currency }) => currency === "Graphite").secondsToGoal, 20);
+  assert.equal(plan.economy.specialCurrencies.Photon.secondsToGoal, 20);
+});
+
 test("rankOpusStrategicValue prioritizes currency Opus when a currency goal is missing", () => {
   const values = rankOpusStrategicValue({
     sketches,
@@ -381,9 +407,9 @@ test("strategy planner exposes Priority 17 economy planning", () => {
   assert.equal(plan.economy.specialCurrencies.Photon.runPerSecond, 0);
   assert.equal(plan.economy.specialCurrencies.Photon.secondsToGoal, 243.75);
   const mixedForecast = plan.economy.currencyForecasts.find(({ currency }) => currency === "Graphite");
-  assert.equal(plan.runEV.currencies.Graphite.perSecond, 72);
-  assert.equal(mixedForecast.perSecond, 72);
-  assert.equal(mixedForecast.secondsToGoal, 5.555555556);
+  assert.ok(Math.abs(plan.runEV.currencies.Graphite.perSecond - (12 + 1200 / 110)) < 1e-6);
+  assert.equal(mixedForecast.perSecond, plan.runEV.currencies.Graphite.perSecond);
+  assert.ok(Math.abs(mixedForecast.secondsToGoal - 400 / mixedForecast.perSecond) < 1e-8);
   assert.equal(plan.economy.softcapEV.waitCurrencies.Graphite.expected, 1440);
   assert.equal(plan.economy.secretStash.canUnlock, true);
   assert.ok(plan.economy.secretStash.hiddenUpgrades.some((item) => item.hidden && item.id === "upgrade_secret_burn_damage_graphite"));

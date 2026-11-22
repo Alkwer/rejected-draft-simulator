@@ -5,6 +5,7 @@ import { applyStatReward, steamSketchRewards } from "./rewards.js";
 import { createRng } from "./rng.js";
 import { isFullSteamSave, normalizeStats, toNumber } from "./save.js";
 import { getPreciseEraserEligibility } from "./tool-rules.js";
+import { remainingSketchVictories } from "./victory-limit.js";
 
 const SECRET_STASH_ID = "stats-hidden-upgrades";
 export const SECRET_STASH_COST = 1e222;
@@ -196,16 +197,7 @@ export function simulateRoute({
     sketch: meditation?.sketchId ? sketches[meditation.sketchId] : null,
     meditation,
     fundamentals,
-  });
-
-  buyAffordableUpgrades({
-    enabled: buyUpgrades,
-    upgradeIds: normalizeList(buyUpgradeIds),
-    stats,
-    currencies,
-    shop,
-    fundamentals,
-    secretStash,
+    state,
   });
 
   if (toNumber(routeSeconds) > 0) {
@@ -220,6 +212,16 @@ export function simulateRoute({
     });
   }
 
+  buyAffordableUpgrades({
+    enabled: buyUpgrades,
+    upgradeIds: normalizeList(buyUpgradeIds),
+    stats,
+    currencies,
+    shop,
+    fundamentals,
+    secretStash,
+  });
+
   const swapState = createSwapState({ existingIds: normalizeList(state.swappedSketchIds), swapMap, fundamentals });
 
   for (const originalId of normalizeList(routeIds)) {
@@ -232,10 +234,7 @@ export function simulateRoute({
 
     const totalVictoriesBefore = toNumber(victories[id]);
     const runVictoriesBefore = toNumber(runVictories[id]);
-    const capVictoriesBefore = Math.max(totalVictoriesBefore, runVictoriesBefore);
-    const maxVictories = toNumber(fundamentals.maxVictories, 250);
-    const beyondMaxVictories = toNumber(fundamentals.beyondMaxVictories, 0);
-    if (capVictoriesBefore >= maxVictories + beyondMaxVictories) {
+    if (remainingSketchVictories(state, id, totalVictoriesBefore) <= 0) {
       steps.push({
         originalId,
         id,
@@ -525,8 +524,10 @@ function resolveSwap({ originalId, sketches, swapState, tools }) {
   return { id: replacementId, swapped };
 }
 
-function applyMeditation({ stats, sketch, meditation, fundamentals }) {
-  if (!meditation?.sketchId || !sketch) {
+function applyMeditation({ stats, sketch, meditation, fundamentals, state }) {
+  if (!meditation?.sketchId || !sketch || (
+    remainingSketchVictories(state, meditation.sketchId) <= 0 && toNumber(fundamentals.beyondMaxVictories) <= 0
+  )) {
     return {
       applied: false,
       sketchId: meditation?.sketchId ?? null,

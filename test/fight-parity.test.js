@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 
 import {
   compareFightParityFixture,
+  normalizeFightFixture,
   renderFightParityMarkdown,
 } from "../src/fight-parity.js";
 
@@ -55,6 +56,28 @@ test("compareFightParityFixture matches a deterministic observed fight", () => {
   assert.equal(parity.simulated.reason, "enemy_hp_zero");
   assert.ok(parity.trace.events.some((event) => event.event === "attack"));
   assert.ok(parity.trace.events.some((event) => event.event === "finish"));
+});
+
+test("fight parity recognizes terminal HP codes in both nested and flat observations", () => {
+  assert.equal(normalizeFightFixture({ observed: { outcome: "player_hp_zero" } }).observed.outcome, "loss");
+  assert.equal(normalizeFightFixture({ result: "enemy_hp_zero" }).observed.outcome, "win");
+  assert.equal(normalizeFightFixture({ observed: { reason: "player_hp_zero" } }).observed.outcome, "loss");
+  assert.equal(normalizeFightFixture({ result: { status: "timeout_stall" } }).observed.outcome, "timeout");
+});
+
+test("fight parity compares full fight damage when the event trace ends before combat", () => {
+  const parity = compareFightParityFixture({
+    fixture: deterministicWinFixture,
+    maxSeconds: 5,
+    traceSeconds: 0.5,
+  });
+
+  assert.equal(parity.ok, true);
+  assert.equal(parity.comparedFields, 7);
+  assert.ok(parity.trace.events.every(({ time }) => time <= 0.5));
+  assert.ok(!parity.trace.events.some(({ event }) => event === "attack" || event === "finish"));
+  assert.equal(parity.simulated.damageBreakdown.enemy.direct, 10);
+  assert.equal(parity.simulated.damageBreakdown.enemy.total, 10);
 });
 
 test("compareFightParityFixture reports outcome and numeric mismatches", () => {

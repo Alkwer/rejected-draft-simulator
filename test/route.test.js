@@ -100,11 +100,59 @@ test("simulateRoute applies route rewards with decay and respects max victories"
     baseStats: { maxHp: 1000, attack: 100, attackSpeed: 1000 },
     routeIds: ["warmup"],
   });
+  const remaining = simulateRoute({
+    sketches,
+    state: state({
+      sketchRunVictories: { warmup: 2 },
+      sketchVictories: { warmup: 1 },
+      fundamentals: { ...state().fundamentals, maxVictories: 2 },
+    }),
+    baseStats: { maxHp: 1000, attack: 100, attackSpeed: 1000 },
+    routeIds: ["warmup", "warmup"],
+  });
 
   assert.equal(capped.finalStats.attack, 100);
   assert.equal(capped.steps[0].status, "skipped_max_victories");
-  assert.equal(beyond.finalStats.attack, 150);
-  assert.equal(beyond.steps[0].rewardMultiplier.decay, 0.5);
+  assert.equal(beyond.finalStats.attack, 100);
+  assert.equal(beyond.steps[0].status, "skipped_max_victories");
+  assert.equal(remaining.finalStats.attack, 150);
+  assert.equal(remaining.steps[0].rewardMultiplier.decay, 0.5);
+  assert.equal(remaining.steps[1].status, "skipped_max_victories");
+});
+
+test("simulateRoute buys upgrades with passive income on a route without fights", () => {
+  const result = simulateRoute({
+    sketches,
+    state: state({ currencies: { Graphite: 0 }, currencyGeneratorRates: { Graphite: 5 } }),
+    baseStats: { maxHp: 1000, attack: 100, attackSpeed: 1000 },
+    buyUpgrades: true,
+    buyUpgradeIds: ["upgrade_atk_graphite"],
+    routeSeconds: 1,
+  });
+
+  assert.deepEqual(result.shop.purchased, [{ id: "upgrade_atk_graphite", level: 1, currency: "Graphite", cost: 5 }]);
+  assert.equal(result.currencies.Graphite, 0);
+  assert.equal(result.finalStats.attack, 105);
+});
+
+test("Eternal Practice permits meditation on a capped sketch without granting additional victories", () => {
+  const options = {
+    sketches,
+    baseStats: { maxHp: 1000, armor: 100 },
+    meditation: { sketchId: "replacement", stats: ["armor"] },
+    routeIds: ["replacement"],
+  };
+  const cappedState = state({ sketchVictories: { replacement: 1 } });
+  const regular = simulateRoute({ ...options, state: cappedState });
+  const eternalPractice = simulateRoute({
+    ...options,
+    state: { ...cappedState, fundamentals: { ...cappedState.fundamentals, beyondMaxVictories: 1 } },
+  });
+
+  assert.equal(regular.meditation.applied, false);
+  assert.equal(eternalPractice.meditation.applied, true);
+  assert.equal(eternalPractice.finalStats.armor, 110);
+  assert.equal(eternalPractice.steps[0].status, "skipped_max_victories");
 });
 
 test("simulateRoute handles booster limits, negative rewards and retroactive booster gains", () => {

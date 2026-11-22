@@ -5,6 +5,7 @@ import path from "node:path";
 import { runMonteCarlo } from "./combat.js";
 import { findActiveSteamSave, toNumber } from "./save.js";
 import { enemyFromSketch } from "./combat/steam-encounter.js";
+import { maxSketchVictories, remainingSketchVictories } from "./victory-limit.js";
 
 export const TARGET_ALIASES = {
   duct: "duct_taped_banana",
@@ -156,7 +157,7 @@ export function createCurrentRunReport({
   const available = normalizeArray(state.availableSketches);
   const hidden = new Set(normalizeArray(state.hiddenSketches));
   const runVictories = state.sketchRunVictories ?? {};
-  const maxVictories = Math.max(1, toNumber(state.fundamentals?.maxVictories, 250));
+  const maxVictories = maxSketchVictories(state);
   const skipped = {
     missing: [],
     hidden: [],
@@ -171,7 +172,7 @@ export function createCurrentRunReport({
       continue;
     }
     const runVictoryCount = toNumber(runVictories[id]);
-    const remainingToMax = Math.max(0, maxVictories - runVictoryCount);
+    const remainingToMax = remainingSketchVictories(state, id);
     const isHidden = hidden.has(id);
     if (remainingToMax <= 0) {
       skipped.completed.push(id);
@@ -227,9 +228,10 @@ export function createCurrentRunReport({
 }
 
 export function createRunRecommendation({ currentRun, targetId = null } = {}) {
-  const targets = [...currentRun?.targets ?? []].sort((a, b) => b.winRate - a.winRate || a.id.localeCompare(b.id));
+  const targets = (currentRun?.targets ?? []).filter((item) => !item.hidden)
+    .sort((a, b) => b.winRate - a.winRate || a.id.localeCompare(b.id));
   const target = targetId ? targets.find((item) => item.id === targetId) : null;
-  const best = target ?? targets[0] ?? null;
+  const best = targets[0];
   const hideCandidates = targets
     .filter((item) => !item.hidden && item.winRate <= 0.05)
     .slice(0, 5)

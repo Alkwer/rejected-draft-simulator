@@ -1,18 +1,18 @@
 import { extractStats, isSteamSave, toNumber } from "./save.js";
 import { STEAM_UNIVERSES, VERIFIED_STEAM_BUILD } from "./combat/steam-universes.js";
+import { maxSketchVictories, remainingSketchVictories } from "./victory-limit.js";
 
 export function analyzeSave({ save, sketches = {}, targetId = null, dataMetadata = null }) {
   const state = save?.state ?? {};
-  const maxVictories = toNumber(state.fundamentals?.maxVictories, 250);
   const steamSave = isSteamSave(save);
   const stats = analyzeStats(state, { steamSave });
-  const active = analyzeActiveSketches({ state, sketches, targetId, maxVictories });
+  const active = analyzeActiveSketches({ state, sketches, targetId });
 
   return {
     saveVersion: save?.version ?? null,
     stats,
     run: {
-      phase: detectRunPhase(state, active.items, maxVictories),
+      phase: detectRunPhase(state, active.items),
       countsByRarity: state.availableSketchCountsByRarity ?? state.runTotalSketchCountsByRarity ?? {},
       active,
       rewardProgress: Object.fromEntries(active.items.map((item) => [item.id, item.rewardProgress])),
@@ -93,11 +93,12 @@ function compareStats(base, current) {
   return comparison;
 }
 
-function analyzeActiveSketches({ state, sketches, targetId, maxVictories }) {
+function analyzeActiveSketches({ state, sketches, targetId }) {
   const hidden = new Set(normalizeArray(state.hiddenSketches));
   const available = normalizeArray(state.availableSketches);
   const runVictories = state.sketchRunVictories ?? {};
   const totalVictories = state.sketchVictories ?? {};
+  const maxVictories = maxSketchVictories(state);
   const groups = {
     defeated: [],
     hidden: [],
@@ -109,14 +110,14 @@ function analyzeActiveSketches({ state, sketches, targetId, maxVictories }) {
     const sketch = sketches[id] ?? { id, name: id, rarity: "unknown" };
     const runVictoryCount = toNumber(runVictories[id]);
     const totalVictoryCount = toNumber(totalVictories[id]);
-    const remainingToMax = Math.max(0, maxVictories - runVictoryCount);
+    const remainingToMax = remainingSketchVictories(state, id, totalVictoryCount);
     const item = {
       id,
       name: sketch.name ?? id,
       rarity: sketch.rarity ?? "unknown",
       hidden: hidden.has(id),
       isTarget: id === targetId,
-      defeatedThisRun: runVictoryCount >= maxVictories,
+      defeatedThisRun: remainingToMax <= 0,
       rewardProgress: {
         totalVictories: totalVictoryCount,
         runVictories: runVictoryCount,
@@ -161,10 +162,10 @@ function analyzeMeditation(state) {
   };
 }
 
-function detectRunPhase(state, activeItems, maxVictories) {
+function detectRunPhase(state, activeItems) {
   if (state.targetedRedrawActive || toNumber(state.targetedRedrawCountdown) > 0) return "before_redraw";
   if (activeItems.length === 0) return "before_redraw";
-  if (activeItems.every((item) => item.rewardProgress.runVictories >= maxVictories)) return "cleared_run";
+  if (activeItems.every((item) => item.defeatedThisRun)) return "cleared_run";
   if (activeItems.some((item) => item.rewardProgress.runVictories > 0)) return "in_run";
   return "after_redraw";
 }

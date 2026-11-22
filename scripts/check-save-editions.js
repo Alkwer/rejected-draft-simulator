@@ -42,8 +42,34 @@ try {
   assert.equal(steam.ok, true, steam.error);
   assert.equal(steam.analysis.bundle.platform, "steam");
   assert.equal(await target.locator('option[value="little_stapler"]').count(), 1);
+  await page.waitForFunction(() => !document.querySelector("#analyzeButton").disabled);
+
+  const attempts = page.locator("#trialsSelect");
+  const requests = [];
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  await page.route("**/api/analyze", async (route) => {
+    requests.push(route.request().postDataJSON().trials);
+    if (requests.length === 1) await gate;
+    await route.continue();
+  });
+  const firstRequest = page.waitForRequest((r) => r.url().endsWith("/api/analyze"));
+  await page.locator("#analyzeButton").press("Enter");
+  await firstRequest;
+  await attempts.selectOption("2000");
+  await attempts.selectOption("500");
+  release();
+  await page.waitForFunction(() => document.querySelector("#winRateCi").textContent.includes("500 attempts"));
+  assert.deepEqual(requests, ["100", "500"]);
+  await page.locator("#clearButton").press("Enter");
+  assert.equal(await page.locator("#saveInput").inputValue(), "");
+  assert.equal(await page.locator("#targetLabel").textContent(), "none");
+  assert.equal(await page.locator("#winRateCi").textContent(), "CI --");
+  assert.equal(await page.locator("#stripDecision").textContent(), "--");
+  assert.equal(await page.locator("#fightTraceList").textContent(), "No trace");
+  assert.equal(await page.locator("#fullCompareTable tr").count(), 0);
   assert.deepEqual(errors, []);
-  console.log("Passed Steam → web → Steam import and displayed confidence interval.");
+  console.log("Passed save imports, confidence interval, queued analysis changes and clearing results.");
 } finally {
   await browser.close();
   if (server.listening) await new Promise((resolve) => server.close(resolve));

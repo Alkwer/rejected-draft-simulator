@@ -1095,7 +1095,7 @@ function printSaveInspection(analysis) {
   console.log(`  Remaining visible: ${analysis.run.active.remaining.length}`);
   for (const item of analysis.run.active.remaining.slice(0, 12)) {
     const progress = item.rewardProgress;
-    console.log(`    ${item.id.padEnd(28)} ${item.rarity.padEnd(12)} ${progress.runVictories}/${progress.maxVictories}`);
+    console.log(`    ${item.id.padEnd(28)} ${item.rarity.padEnd(12)} ${progress.totalVictories}/${progress.maxVictories}`);
   }
   if (analysis.run.active.remaining.length > 12) {
     console.log(`    ... ${analysis.run.active.remaining.length - 12} more`);
@@ -1223,7 +1223,7 @@ function printWarnings(warnings = []) {
 
 function formatSketch(item) {
   if (!item) return "none";
-  return `${item.id} [${item.rarity}] ${item.rewardProgress.runVictories}/${item.rewardProgress.maxVictories}`;
+  return `${item.id} [${item.rarity}] ${item.rewardProgress.totalVictories}/${item.rewardProgress.maxVictories}`;
 }
 
 function formatList(items) {

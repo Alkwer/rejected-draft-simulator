@@ -51,6 +51,32 @@ test("extractCombatLogs normalizes save combat logs and external JSON logs", () 
   assert.equal(external[0].sourceKey, "external");
 });
 
+test("parseCombatLogText classifies terminal HP codes and preserves legacy outcome aliases", () => {
+  const entries = [
+    { outcome: "player_hp_zero" },
+    { result: "ENEMY_HP_ZERO" },
+    { status: "player HP zero" },
+    { reason: "enemy_hp_zero" },
+    { outcome: "timeout_regen_wall" },
+    { status: "stalled" },
+    { winner: "attacker", result: "player_hp_zero" },
+    { winner: "target" },
+    { playerWon: false },
+    { result: "Victory" },
+    { status: "player_pending" },
+    { status: "window_open" },
+  ];
+  const logs = parseCombatLogText(JSON.stringify(entries.map((entry) => ({
+    targetId: "training_target",
+    ...entry,
+  }))));
+
+  assert.deepEqual(logs.map(({ outcome }) => outcome), [
+    "loss", "win", "loss", "win", "timeout", "timeout",
+    "win", "loss", "loss", "win", "unknown", "unknown",
+  ]);
+});
+
 test("createCalibrationReport compares observed fights with simulation and flags deviations", () => {
   const sketches = {
     training_target: {

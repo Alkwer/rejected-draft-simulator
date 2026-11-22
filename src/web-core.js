@@ -10,6 +10,7 @@ import { analyzeSave } from "./save-analysis.js";
 import { decodeSaveText, toNumber } from "./save.js";
 import { enemyFromSketch, sketchForEncounter } from "./combat/steam-encounter.js";
 import { createStrategyPlan, parseStrategyCurrencyGoals } from "./strategy-planner.js";
+import { remainingSketchVictories } from "./victory-limit.js";
 
 const IMPORTANT_TARGET_IDS = [
   "duct_taped_banana",
@@ -40,6 +41,7 @@ export function createWebAnalysis({
   seed = "web-ui",
   strategyOptions = {},
   routeIds = [],
+  hiddenSketchIds = [],
   observedOutcome = null,
   traceSeconds = 60,
 } = {}) {
@@ -114,7 +116,7 @@ export function createWebAnalysis({
   const activeSketches = createActiveSketchRows({ analysis, sketches, baseStats, trialsSetting: auxiliaryTrialsSetting, maxSeconds, seed, assumptions: combatAssumptions });
   const recommendation = createRunRecommendation({
     targetId: resolvedTargetId,
-    currentRun: { targets: activeSketches },
+    currentRun: { targets: activeSketches.filter((row) => !hiddenSketchIds.includes(row.id)) },
   });
   const targetComparisons = createTargetComparisons({
     sketches,
@@ -125,19 +127,19 @@ export function createWebAnalysis({
     seed,
     assumptions: combatAssumptions,
   });
-  const activeDeltas = createActiveDeltas({
-    sketches,
-    state: save.state,
-    target,
-    currentResult: result,
-    currentRouteIds: routeIds,
-    activeSketches,
-    baseStats,
-    trialsSetting: auxiliaryTrialsSetting,
-    maxSeconds: targetMaxSeconds,
-    seed,
-    assumptions: combatAssumptions,
-  });
+  const rewardState = stateAfterVictories(save.state, assumedRouteIds, sketches);
+  const pairedOptions = {
+    target, trialsSetting: auxiliaryTrialsSetting, maxSeconds: targetMaxSeconds,
+    seed: `${seed}:reward-impact`, assumptions: combatAssumptions,
+  };
+  const rewardComparison = compareSketchRewards({ state: rewardState, stats: finalStats, sketches, pairedOptions });
+  const route = normalizeIds(routeIds);
+  const routeState = route.length ? stateAfterVictories(rewardState, route, sketches) : rewardState;
+  const routeComparison = route.length ? compareSketchRewards({
+    state: routeState, sketches, pairedOptions,
+    stats: applyAssumedVictories({ baseStats: finalStats, sketches, state: rewardState, assumedVictoryIds: route }),
+  }) : rewardComparison;
+  const activeDeltas = createActiveDeltas({ sketches, activeSketches, state: routeState, ...routeComparison });
   const routePreview = createRoutePreview({
     sketches,
     state: save.state,
@@ -151,9 +153,10 @@ export function createWebAnalysis({
   });
   const rollWishlist = createRollWishlist({
     sketches,
-    state: save.state,
+    state: rewardState,
     target,
-    currentResult: result,
+    currentResult: rewardComparison.rewardBaseline,
+    simulateAfterReward: rewardComparison.simulateAfterReward,
     finalStats,
     trialsSetting: auxiliaryTrialsSetting,
     maxSeconds: targetMaxSeconds,
@@ -189,6 +192,7 @@ export function createWebAnalysis({
     fightTrace,
     activeSketches,
     recommendation,
+    nextAction: describeNextAction(recommendation, activeSketches, strategicPlan.softcap),
     strategicPlan,
     targetComparisons,
     activeDeltas,
@@ -237,7 +241,6 @@ export function createCompanionAnalysis({
       strategyMode: "safe-farm",
     },
   });
-  const nextAction = companionNextAction(analysis);
 
   return {
     saveVersion: analysis.saveVersion,
@@ -250,7 +253,7 @@ export function createCompanionAnalysis({
       p90Seconds: analysis.result.p90Seconds ?? 0,
       trials: analysis.result.trials,
       decision: analysis.recommendation?.action ?? "unknown",
-      nextAction,
+      nextAction: analysis.nextAction,
       statSource: analysis.statSource,
     },
     activeSketches: (analysis.activeSketches ?? []).slice(0, 5).map((item) => ({
@@ -335,6 +338,8 @@ function createActiveSketchRows({ analysis, sketches, baseStats, trialsSetting, 
       hidden: item.hidden,
       remainingToMax: item.rewardProgress?.remainingToMax ?? 0,
       runVictories: item.rewardProgress?.runVictories ?? 0,
+      totalVictories: item.rewardProgress?.totalVictories ?? 0,
+      maxVictories: item.rewardProgress?.maxVictories ?? 0,
       winRate: round(result.winRate),
       winRateCi95: result.winRateCi95,
       ci95HalfWidth: round(result.winRateCi95?.halfWidth ?? 0),
@@ -453,46 +458,43 @@ function sourceRank(source) {
   return source === "key_target" ? 0 : 1;
 }
 
-function createActiveDeltas({
-  sketches,
-  state,
-  target,
-  currentResult,
-  currentRouteIds,
-  activeSketches,
-  baseStats,
-  trialsSetting,
-  maxSeconds,
-  seed,
-  assumptions = {},
-}) {
+function stateAfterVictories(state, ids, sketches) {
+  if (!ids.length) return state;
+  const sketchVictories = { ...state.sketchVictories };
+  for (const id of ids) {
+    const previous = toNumber(sketchVictories[id]);
+    if (sketches[id] && remainingSketchVictories(state, id, previous) > 0) sketchVictories[id] = previous + 1;
+  }
+  return { ...state, sketchVictories };
+}
+
+function compareSketchRewards({ state, stats, sketches, pairedOptions }) {
+  const rewardBaseline = simulateTarget({ ...pairedOptions, player: stats });
+  const results = new Map();
+  function simulateAfterReward(id) {
+    if (!results.has(id)) {
+      const next = applyAssumedVictories({ baseStats: stats, sketches, state, assumedVictoryIds: [id] });
+      const changed = sketches[id].rewards?.some(({ statName }) => next[statName] !== stats[statName]);
+      results.set(id, changed ? simulateTarget({ ...pairedOptions, player: next }) : rewardBaseline);
+    }
+    return results.get(id);
+  }
+  return { rewardBaseline, simulateAfterReward };
+}
+
+function createActiveDeltas({ sketches, activeSketches, state, rewardBaseline, simulateAfterReward }) {
   const result = {};
-  const existingRoute = normalizeIds(currentRouteIds);
   for (const item of activeSketches) {
-    if (item.remainingToMax <= 0 || !sketches[item.id]) continue;
-    const nextRoute = [...existingRoute, item.id];
-    const nextStats = applyAssumedVictories({
-      baseStats,
-      sketches,
-      state,
-      assumedVictoryIds: nextRoute,
-    });
-    const nextResult = simulateTarget({
-      target,
-      player: nextStats,
-      trialsSetting,
-      maxSeconds,
-      seed: `${seed}:delta:${item.id}`,
-      assumptions,
-    });
+    if (remainingSketchVictories(state, item.id) <= 0) continue;
+    const nextResult = simulateAfterReward(item.id);
     result[item.id] = {
       id: item.id,
       name: item.name,
       winRate: round(nextResult.winRate),
-      winRateDelta: round(nextResult.winRate - currentResult.winRate),
+      winRateDelta: round(nextResult.winRate - rewardBaseline.winRate),
       trials: nextResult.trials,
       p90Seconds: round(nextResult.p90Seconds ?? 0),
-      p90Delta: round((nextResult.p90Seconds ?? 0) - (currentResult.p90Seconds ?? 0)),
+      p90Delta: round(nextResult.p90Seconds - rewardBaseline.p90Seconds),
       statRewards: sketches[item.id].rewards ?? [],
       currencyRewards: sketches[item.id].currencyRewards ?? [],
     };
@@ -505,6 +507,7 @@ function createRollWishlist({
   state,
   target,
   currentResult,
+  simulateAfterReward,
   finalStats,
   trialsSetting,
   maxSeconds,
@@ -514,10 +517,6 @@ function createRollWishlist({
   const guaranteed = new Set(guaranteedIdsFromState(state));
   const hidden = new Set(normalizeIds(state.hiddenSketches));
   const available = new Set(normalizeIds(state.availableSketches));
-  const maxVictories = Math.max(1, toNumber(state.fundamentals?.maxVictories, 250));
-  const beyondMaxVictories = Math.max(0, toNumber(state.fundamentals?.beyondMaxVictories, 0));
-  const victoryCap = maxVictories + beyondMaxVictories;
-  const existingVictories = state.sketchVictories ?? {};
   const excluded = {
     guaranteed: [],
     hidden: [],
@@ -545,7 +544,7 @@ function createRollWishlist({
       excluded.hidden.push(id);
       continue;
     }
-    if (toNumber(existingVictories[id]) >= victoryCap) {
+    if (remainingSketchVictories(state, id) <= 0) {
       excluded.maxed.push(id);
       continue;
     }
@@ -567,24 +566,7 @@ function createRollWishlist({
 
   for (const candidate of preselected) {
     const sketch = candidate.sketch;
-    const nextStats = applySketchRewards({
-      state,
-      baseStats: finalStats,
-      sketches,
-      defeatedIds: [sketch.id],
-      boostedIds: new Set(),
-      rewardDecay: toNumber(state.fundamentals?.rewardDecay, 1),
-      rewardBoosterEffect: toNumber(state.fundamentals?.rewardBoosterEffect, 50),
-      existingVictories,
-    });
-    const targetResult = simulateTarget({
-      target,
-      player: nextStats,
-      trialsSetting,
-      maxSeconds,
-      seed: `${seed}:wishlist:target:${sketch.id}`,
-      assumptions,
-    });
+    const targetResult = simulateAfterReward(sketch.id);
     const targetDelta = round((targetResult.winRate ?? 0) - (currentResult.winRate ?? 0));
     if (targetDelta <= 0 && candidate.source !== "active_run") continue;
 
@@ -714,36 +696,23 @@ function inferCompanionTargetId({ save, sketches, targetId }) {
   throw new Error("No available sketch target found in save or bundle.");
 }
 
-function companionNextAction(analysis) {
-  const targetWin = Number(analysis.result?.winRate ?? 0);
-  const bestActive = [...analysis.activeSketches ?? []]
-    .sort((a, b) => b.winRate - a.winRate || a.p90Seconds - b.p90Seconds)[0];
-  if (targetWin >= 0.5) {
+function describeNextAction(recommendation, activeSketches, softcap) {
+  const row = activeSketches.find((item) => item.id === recommendation.targetId);
+  if (row) {
+    const target = recommendation.action === "fight_target";
     return {
-      type: "target",
-      title: `Fight ${analysis.target.name}`,
-      detail: `Target win ${percentLabel(targetWin)}; p90 ${secondsLabel(analysis.result?.p90Seconds)}.`,
+      type: target ? "target" : "farm",
+      title: `${target ? "Fight" : "Farm"} ${row.name}`,
+      detail: `Win chance ${percentLabel(row.winRate)} · p90 ${secondsLabel(row.p90Seconds)}.`,
     };
   }
-  if (bestActive && Number(bestActive.winRate) >= 0.75) {
+  if (softcap?.decision === "wait_softcap") {
     return {
-      type: "farm",
-      title: `Fight ${bestActive.name}`,
-      detail: `Best active sketch win ${percentLabel(bestActive.winRate)}; p90 ${secondsLabel(bestActive.p90Seconds)}.`,
+      type: "softcap", title: "Wait for softcap",
+      detail: softcap.secondsToSoftcap == null ? softcap.reason : `${secondsLabel(softcap.secondsToSoftcap)} · ${softcap.reason}`,
     };
   }
-  if (String(analysis.recommendation?.action ?? "").includes("redraw")) {
-    return {
-      type: "redraw",
-      title: "Consider redraw",
-      detail: analysis.recommendation?.reason ?? "Current visible fights have low expected value.",
-    };
-  }
-  return {
-    type: "approach",
-    title: "Farm before target",
-    detail: `Target win ${percentLabel(targetWin)}. Prefer the safest visible reward first.`,
-  };
+  return { type: "redraw", title: "Consider redraw", detail: recommendation.reason };
 }
 
 function percentLabel(value) {
@@ -792,12 +761,10 @@ function normalizeAssumedVictories({ assumedVictories, assumedVictoryIds, sketch
     for (const id of normalizeIds(assumedVictoryIds)) add(id, 1);
   }
 
-  const maxVictories = Math.max(1, toNumber(state?.fundamentals?.maxVictories, 250));
-  const runVictories = state?.sketchRunVictories ?? {};
   const plan = {};
   for (const [id, requestedCount] of requested) {
     if (!sketches[id]) continue;
-    const remaining = Math.max(0, maxVictories - toNumber(runVictories[id]));
+    const remaining = remainingSketchVictories(state, id);
     const count = Math.min(requestedCount, remaining);
     if (count > 0) plan[id] = count;
   }
@@ -822,66 +789,29 @@ function simulateTargetWithAdaptiveLimit({ target, player, trialsSetting, maxSec
     seed,
     assumptions,
   });
-  let best = baseline;
-  let effectiveMaxSeconds = configuredMaxSeconds;
-  let lastCheckedSeconds = configuredMaxSeconds;
-
-  while (shouldProbeLongFight(best, effectiveMaxSeconds, configuredMaxSeconds)) {
-    const nextMaxSeconds = nextLongFightWindow(effectiveMaxSeconds);
-    if (nextMaxSeconds <= effectiveMaxSeconds || nextMaxSeconds > WEB_LONG_FIGHT_MAX_SECONDS) break;
-
-    const probe = simulateTarget({
-      target,
-      player,
-      trialsSetting,
-      maxSeconds: nextMaxSeconds,
-      seed: `${seed}:long-fight:${nextMaxSeconds}`,
-      assumptions,
+  let probe = baseline;
+  let checkedMaxSeconds = configuredMaxSeconds;
+  while (shouldProbeLongFight(probe, checkedMaxSeconds, configuredMaxSeconds)) {
+    checkedMaxSeconds = nextLongFightWindow(checkedMaxSeconds);
+    probe = simulateTarget({
+      target, player, trialsSetting, maxSeconds: checkedMaxSeconds, seed, assumptions,
     });
-    lastCheckedSeconds = nextMaxSeconds;
-
     if (isBetterLongFightResult({ baseline, probe })) {
-      best = {
-        ...probe,
-        timeLimit: {
-          extended: true,
-          configuredMaxSeconds,
-          effectiveMaxSeconds: nextMaxSeconds,
+      return {
+        effectiveMaxSeconds: checkedMaxSeconds,
+        result: { ...probe, timeLimit: {
+          extended: true, configuredMaxSeconds, effectiveMaxSeconds: checkedMaxSeconds,
           baseline: summarizeTimeLimitResult(baseline),
-        },
+        } },
       };
-      effectiveMaxSeconds = nextMaxSeconds;
-      break;
     }
-
-    best = {
-      ...probe,
-      timeLimit: {
-        extended: false,
-        configuredMaxSeconds,
-        effectiveMaxSeconds: configuredMaxSeconds,
-        checkedMaxSeconds: nextMaxSeconds,
-        baseline: summarizeTimeLimitResult(baseline),
-      },
-    };
-    effectiveMaxSeconds = nextMaxSeconds;
   }
-
-  if (!best.timeLimit) {
-    best = {
-      ...best,
-      timeLimit: {
-        extended: false,
-        configuredMaxSeconds,
-        effectiveMaxSeconds,
-        checkedMaxSeconds: lastCheckedSeconds,
-      },
-    };
-  }
-
   return {
-    result: best,
-    effectiveMaxSeconds: best.timeLimit?.extended ? best.timeLimit.effectiveMaxSeconds : configuredMaxSeconds,
+    effectiveMaxSeconds: configuredMaxSeconds,
+    result: { ...baseline, timeLimit: {
+      extended: false, configuredMaxSeconds, effectiveMaxSeconds: configuredMaxSeconds, checkedMaxSeconds,
+      ...(checkedMaxSeconds > configuredMaxSeconds && { probe: summarizeTimeLimitResult(probe) }),
+    } },
   };
 }
 
