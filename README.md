@@ -37,6 +37,8 @@ npm.cmd run simulate -- --save latest --inspect-save
 npm.cmd run simulate -- --save latest --target mega_pan --trials 500
 ```
 
+Under **Compare**, **Repeat analysis** restores a history entry's target, seed, trial count, time limit and planner settings. It checks the save and catalog against the original run. For an export, load the original file first. For a changed Steam slot, you can also use an exported copy of the original save. History stores the settings and fingerprints locally for the last 12 analyses. Older entries remain viewable.
+
 After a Steam patch, use **Refresh Steam data** or run `npm.cmd run update-data`. The import reads the installed game's renderer manifest, verifies the sketch and store assets, and refreshes the local catalog. It works offline. To select a custom installation:
 
 ```powershell
@@ -154,6 +156,8 @@ Estimate Find New Sketches mode:
 ```powershell
 npm.cmd run simulate -- --save "C:\path\to\save.txt" --target duct_taped_banana --plan-redraw --find-new-sketches --trials 5000
 ```
+
+When a save supplies rarity chances, the planner rolls each eligible sketch using the chance for its rarity and its distance from the last glossary unlock. The Steam edition uses effective rarity chances when present. Guaranteed sketches, requested minimums, slot caps and special-sketch weights remain planner approximations.
 
 Useful redraw planner options:
 

@@ -28,6 +28,8 @@ export function createWebServer({
 } = {}) {
   const monitor = createSteamFightMonitor({ root: fightLogDir, steamSaveDir });
   const analysisRunner = createAnalysisRunner();
+  const forecastRunner = createAnalysisRunner();
+  const pendingCaptures = new Map();
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url ?? "/", "http://127.0.0.1");
     try {
@@ -44,8 +46,9 @@ export function createWebServer({
         if (!isLocalRequest(req)) return sendJson(res, { ok: false, error: "Open the Steam fight log on localhost." }, 403);
         monitor.start();
         const body = ["POST", "PUT"].includes(req.method) ? await readJsonBody(req) : {};
-        const result = handleSteamFightRequest({
+        const result = await handleSteamFightRequest({
           root: fightLogDir, dataPath, steamSaveDir, pathname: url.pathname, method: req.method, body,
+          calculateForecast: forecastRunner.runSteamForecast, pendingCaptures, onCapture: monitor.captured,
         });
         if (result.download) {
           res.writeHead(200, { "content-type": "application/octet-stream", "content-disposition": `attachment; filename="${result.filename}"` });
@@ -90,6 +93,9 @@ export function createWebServer({
         }
         save ??= decodeSaveText(body.saveText);
         const analysis = await analysisRunner.run(isSteamSave(save) ? dataPath : legacyDataPath, {
+          identifyInputs: true,
+          expectedSaveHash: body.expectedSaveHash,
+          expectedCatalogHash: body.expectedCatalogHash,
           save,
           targetId: body.targetId,
           assumedVictoryIds: body.assumedVictoryIds,
@@ -150,6 +156,7 @@ export function createWebServer({
   if (watchSteamFightsOnStart) server.once("listening", () => monitor.start());
   server.once("close", () => monitor.stop());
   server.once("close", () => analysisRunner.close());
+  server.once("close", () => forecastRunner.close());
   return server;
 }
 

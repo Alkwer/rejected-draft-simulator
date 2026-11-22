@@ -1020,7 +1020,7 @@ function compareBoosterChoices({
       boostedIds: candidate.ids,
       trials,
       maxSeconds,
-      seed: `${seed}:booster:${candidate.name}`,
+      seed: `${seed}:booster`,
     });
     const simulation = route.target?.simulation ?? {};
     const statValue = estimateStatsObjectValue({ stats: route.finalStats, baseStats, targetStatWeights });

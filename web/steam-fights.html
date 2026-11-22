@@ -45,6 +45,7 @@
           <div id="fightDetail" hidden>
             <div class="log-fight-title"><h3 id="fightTitle"></h3><span id="resultState"></span></div>
             <p id="captureInfo"></p>
+            <ul id="forecastWarnings" aria-label="Compatibility warnings" hidden></ul>
             <div class="log-table-wrap">
               <table class="log-table">
                 <thead><tr><th scope="col">Measure</th><th scope="col">Forecast</th><th scope="col">Steam result</th></tr></thead>
@@ -82,6 +83,7 @@
             </details>
           </div>
           <p id="resultStatus" role="status" class="log-status"></p>
+          <button id="retryForecast" class="icon-button" type="button" hidden>Retry forecast</button>
         </section>
       </div>
     </main>

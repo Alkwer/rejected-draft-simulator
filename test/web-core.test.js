@@ -203,6 +203,22 @@ test("createWebAnalysis extends target-only timeout windows before reporting a f
   assert.equal(analysis.activeSketches[0].p90Seconds, analysis.result.p90Seconds);
 });
 
+test("Duct comparison, active run and DPS threshold share the primary fight window", () => {
+  const boss = { ...sketches.duct_taped_banana, stats: { maxHp: 3000, attack: 0, attackSpeed: 10000 } };
+  const analysis = createWebAnalysis({
+    save: { state: { playerStats: { maxHp: 100, attack: 10, attackSpeed: 1000, minDamage: 100, maxDamage: 100 },
+      availableSketches: [boss.id] } },
+    sketches: { [boss.id]: boss }, targetId: boss.id, trials: 3, maxSeconds: 100, seed: "long-duct",
+  });
+  assert.equal(analysis.result.timeLimit.effectiveMaxSeconds, 600);
+  assert.equal(analysis.result.winRate, 1);
+  for (const row of [...analysis.targetComparisons, ...analysis.buildComparison]) {
+    assert.deepEqual(row.winRateCi95, analysis.result.winRateCi95);
+    assert.equal(row.p90Seconds, analysis.result.p90Seconds);
+  }
+  assert.equal(analysis.report.thresholds.find((item) => item.stat === "damagePerSecond").target, 5);
+});
+
 test("rejected long-fight probes preserve the configured timeout and quantiles", () => {
   const wall = { ...sketches.rose_window, stats: { maxHp: 1e12, attack: 0, attackSpeed: 10000 } };
   const analysis = createWebAnalysis({
@@ -461,8 +477,10 @@ test("createWebAnalysis caps auxiliary dashboard simulations for UI performance"
   assert.ok(analysis.result.trials >= 200);
   assert.equal(analysis.activeSketches.find((item) => item.id === analysis.target.id).trials, analysis.result.trials);
   assert.ok(analysis.activeSketches.filter((item) => item.id !== analysis.target.id).every((item) => item.trials <= 100));
-  assert.ok(analysis.targetComparisons.every((item) => item.trials <= 100));
-  assert.ok(analysis.buildComparison.every((item) => item.trials == null || item.trials <= 100));
+  for (const row of [...analysis.targetComparisons, ...analysis.buildComparison]) {
+    if ((row.targetId ?? row.id) === analysis.target.id) assert.equal(row.trials, analysis.result.trials);
+    else assert.ok(row.trials == null || row.trials <= 100);
+  }
   assert.ok(Object.values(analysis.activeDeltas).every((item) => item.trials <= 100));
   assert.equal(analysis.performance.auxiliaryTrials, 100);
 });

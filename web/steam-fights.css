@@ -23,6 +23,8 @@
 .log-panel .log-status:empty { display: none; }
 .log-panel .log-status[data-error="true"] { color: #ffad9e; }
 #fightDetail { display: grid; gap: 10px; }
+#forecastWarnings { color: #ffad9e; margin: 0; padding-inline-start: 1.25em; overflow-wrap: anywhere; }
+#forecastWarnings li + li { margin-top: 4px; }
 .log-fight-title { display: flex; gap: 8px 16px; align-items: baseline; flex-wrap: wrap; }
 .log-fight-title span { color: var(--mint); font-size: 13px; }
 .log-table { width: 100%; min-width: 0; table-layout: fixed; border-collapse: collapse; font-variant-numeric: tabular-nums; }

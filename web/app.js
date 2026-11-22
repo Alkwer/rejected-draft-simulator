@@ -328,7 +328,7 @@ async function importBundle() {
   if (reanalyze && !state.isBusy) analyzeIfReady();
 }
 
-async function analyze({ loadSlot = false } = {}) {
+async function analyze({ loadSlot = false, replay = null } = {}) {
   if (state.isBusy) return;
   window.clearTimeout(state.autoAnalyzeTimer);
   const generation = state.analysisGeneration;
@@ -336,17 +336,16 @@ async function analyze({ loadSlot = false } = {}) {
   hideMessage();
   try {
     const exportText = els.saveInput.value;
-    const fromSlot = Boolean(loadSlot || state.slotName);
+    const fromSlot = Boolean(loadSlot || state.slotName || (replay?.saveSource === "steam" && !exportText.trim()));
+    if (replay && !fromSlot && !exportText.trim()) throw new Error("Load the original save to repeat this analysis.");
     const edition = fromSlot || isSteamSave(parseSaveEnvelope(exportText)) ? "steam" : "web";
     await loadTargets(edition);
     if (generation !== state.analysisGeneration || els.saveInput.value !== exportText) return;
-    if (!hasSelectedTarget()) throw new Error("Choose a target before running the simulation.");
-    const payload = {
-      saveSource: loadSlot || state.slotName ? "steam" : "export",
-      saveText: loadSlot || state.slotName ? undefined : els.saveInput.value,
+    if (!replay && !hasSelectedTarget()) throw new Error("Choose a target before running the simulation.");
+    const settings = replay?.settings ?? {
       targetId: els.targetSelect.value,
       assumedVictories: loadSlot ? [] : assumedVictoriesPayload(),
-      routeIds: loadSlot ? [] : state.routeIds,
+      routeIds: loadSlot ? [] : [...state.routeIds],
       hiddenSketchIds: loadSlot ? [] : [...state.hiddenSketchIds],
       trials: els.trialsSelect.value,
       maxSeconds: Number(els.maxSecondsInput.value || 300),
@@ -354,6 +353,11 @@ async function analyze({ loadSlot = false } = {}) {
       traceSeconds: Number(els.traceSecondsInput.value || 60),
       strategyOptions: strategyOptionsPayload(),
       seed: `web-${Date.now()}`,
+    };
+    const saveSource = fromSlot ? "steam" : "export";
+    const payload = {
+      ...settings, saveSource, saveText: fromSlot ? undefined : exportText,
+      expectedSaveHash: replay?.saveHash, expectedCatalogHash: replay?.catalogHash,
     };
     const data = await api("/api/analyze", {
       method: "POST",
@@ -377,10 +381,12 @@ async function analyze({ loadSlot = false } = {}) {
       await loadTargets(data.analysis.bundle.platform);
     }
     if (generation !== state.analysisGeneration || state.pendingAnalysis) return;
+    if (replay) restoreAnalysisSettings(settings);
     state.lastAnalysis = data.analysis;
     renderAnalysis(data.analysis);
     if (data.analysis.warnings.length) showMessage(data.analysis.warnings.map((item) => item.message).join(" "));
-    pushHistory(data.analysis);
+    if (!replay) pushHistory(data.analysis, { ...data.analysis.replayIdentity, settings, saveSource });
+    else if (!data.analysis.warnings.length) showMessage("Repeated the saved analysis with its original settings.", "ok");
     renderHistory();
   } catch (error) {
     if (generation === state.analysisGeneration && !state.pendingAnalysis) showMessage(error.message);
@@ -966,7 +972,7 @@ function renderSimpleList(container, items) {
   }
 }
 
-function pushHistory(analysis) {
+function pushHistory(analysis, replay) {
   const history = readHistory();
   history.unshift({
     at: new Date().toLocaleString("en-US"),
@@ -975,6 +981,7 @@ function pushHistory(analysis) {
     winRate: analysis.result.winRate,
     decision: analysis.recommendation.action,
     assumedCount: analysis.assumedVictoryIds.length,
+    replay,
   });
   localStorage.setItem("rd-sim-history", JSON.stringify(history.slice(0, 12)));
 }
@@ -994,17 +1001,31 @@ function renderHistory() {
     row.innerHTML = `
       <div>
         <strong>${escapeHtml(item.target)}</strong>
-        <span>${escapeHtml(item.edition ?? "Legacy web")} | ${escapeHtml(item.at)} | ${escapeHtml(item.decision)} | kills ${item.assumedCount}</span>
+        <span>${escapeHtml(item.edition ?? "Legacy web")} | ${escapeHtml(item.at)} | ${escapeHtml(item.decision)} | kills ${escapeHtml(item.assumedCount)}</span>
       </div>
       <strong>${percent(item.winRate)}</strong>
     `;
+    if (item.replay?.settings && item.replay.saveHash && item.replay.catalogHash) {
+      const { settings } = item.replay;
+      const details = document.createElement("span");
+      details.textContent = `Seed ${settings.seed} · trials ${settings.trials} · limit ${settings.maxSeconds} s`;
+      row.firstElementChild.append(details);
+      const repeat = document.createElement("button");
+      repeat.type = "button";
+      repeat.className = "mini-button";
+      repeat.textContent = "Repeat analysis";
+      repeat.disabled = state.isBusy;
+      repeat.addEventListener("click", () => analyze({ replay: item.replay }));
+      row.append(repeat);
+    }
     els.historyList.append(row);
   }
 }
 
 function readHistory() {
   try {
-    return JSON.parse(localStorage.getItem("rd-sim-history") ?? "[]");
+    const stored = JSON.parse(localStorage.getItem("rd-sim-history") ?? "[]");
+    return Array.isArray(stored) ? stored.filter((item) => item && typeof item === "object") : [];
   } catch {
     return [];
   }
@@ -1233,6 +1254,7 @@ async function api(url, options = {}) {
 
 function setBusy(isBusy) {
   state.isBusy = isBusy;
+  for (const button of els.historyList.querySelectorAll("button")) button.disabled = isBusy;
   els.analyzeButton.disabled = isBusy;
   els.steamSlotButton.disabled = isBusy;
   els.importBundleButton.disabled = isBusy;
@@ -1336,17 +1358,32 @@ function assumedVictoriesPayload() {
   return Object.fromEntries([...state.assumed].filter(([, count]) => count > 0));
 }
 
-function strategyOptionsPayload() {
+function strategyFields() {
   return {
-    strategyProfile: els.strategyProfileSelect.value,
-    strategyMode: els.strategyModeSelect.value,
-    compareProfiles: els.strategyCompareProfilesInput.value.trim(),
-    goalQuintessence: els.strategyGoalQInput.value.trim(),
-    goalCurrency: els.strategyGoalCurrencyInput.value.trim(),
-    softcapSeconds: els.strategySoftcapSecondsInput.value.trim(),
-    farmSeconds: els.strategyFarmSecondsInput.value.trim(),
-    boosterCandidates: els.strategyBoosterCandidatesInput.value.trim(),
+    strategyProfile: els.strategyProfileSelect, strategyMode: els.strategyModeSelect,
+    compareProfiles: els.strategyCompareProfilesInput, goalQuintessence: els.strategyGoalQInput,
+    goalCurrency: els.strategyGoalCurrencyInput, softcapSeconds: els.strategySoftcapSecondsInput,
+    farmSeconds: els.strategyFarmSecondsInput, boosterCandidates: els.strategyBoosterCandidatesInput,
   };
+}
+
+function strategyOptionsPayload() {
+  return Object.fromEntries(Object.entries(strategyFields()).map(([key, input]) => [key, input.value.trim()]));
+}
+
+function restoreAnalysisSettings(settings) {
+  els.targetFilterInput.value = "";
+  renderTargetOptions();
+  els.targetSelect.value = settings.targetId;
+  els.trialsSelect.value = settings.trials;
+  els.maxSecondsInput.value = settings.maxSeconds;
+  els.traceSecondsInput.value = settings.traceSeconds;
+  els.observedOutcomeSelect.value = settings.observedOutcome;
+  for (const [key, input] of Object.entries(strategyFields())) input.value = settings.strategyOptions[key] ?? "";
+  state.routeIds = [...settings.routeIds];
+  state.assumed = new Map(Object.entries(settings.assumedVictories));
+  state.hiddenSketchIds = new Set(settings.hiddenSketchIds);
+  state.selectedSketchId = null;
 }
 
 function compactDecision(value) {

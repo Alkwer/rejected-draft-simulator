@@ -116,8 +116,8 @@ test("web UI exposes strategy planner controls and output panel", () => {
   assert.match(app, /function renderStrategyPlan/);
   assert.match(app, /function renderEconomyPlan/);
   assert.match(app, /renderEconomyPlan\(plan\.economy\)/);
-  assert.match(app, /strategyProfile:\s*els\.strategyProfileSelect\.value/);
-  assert.match(app, /strategyMode:\s*els\.strategyModeSelect\.value/);
+  assert.match(app, /strategyProfile:\s*els\.strategyProfileSelect/);
+  assert.match(app, /strategyMode:\s*els\.strategyModeSelect/);
 });
 
 test("web UI auto-runs analysis after target selection changes when a save is loaded", () => {

@@ -1,10 +1,13 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { chromium } from "playwright-core";
 import { createWebServer } from "../src/web-server.js";
 
 const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL || "chrome", headless: true });
-const server = createWebServer({ updateDataOnImport: false });
+const testDir = await mkdtemp(path.join(os.tmpdir(), "rd-browser-"));
+const server = createWebServer({ updateDataOnImport: false, fightLogDir: path.join(testDir, "fights"), steamSaveDir: testDir });
 try {
   await new Promise((resolve, reject) => server.once("error", reject).listen(0, "127.0.0.1", resolve));
   const page = await browser.newPage();
@@ -69,6 +72,25 @@ try {
   release();
   await page.waitForFunction(() => document.querySelector("#winRateCi").textContent.includes("500 attempts"));
   assert.deepEqual(requests, ["100", "500"]);
+  await page.getByRole("tab", { name: "Compare", exact: true }).click();
+  const historyRow = page.locator(".history-item").filter({ hasText: "Steam" }).filter({ hasText: "trials 100 ·" }).last();
+  const repeatResponse = page.waitForResponse((r) => r.url().endsWith("/api/analyze"));
+  await historyRow.getByRole("button", { name: "Repeat analysis" }).click();
+  const repeated = await (await repeatResponse).json();
+  assert.deepEqual(repeated.analysis, steam.analysis);
+  await page.waitForFunction(() => document.querySelector("#trialsSelect").value === "100");
+  const history = await page.evaluate(() => JSON.parse(localStorage.getItem("rd-sim-history")));
+  assert.ok(history.every((row) => row.replay.saveHash && row.replay.catalogHash && !("saveText" in row.replay.settings)));
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.getByRole("button", { name: "Planner", exact: true }).click();
+  assert.ok(await historyRow.getByRole("button", { name: "Repeat analysis" }).isVisible());
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth), 390);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  const changedResponse = page.waitForResponse((r) => r.url().endsWith("/api/analyze"));
+  await page.locator(".history-item").filter({ hasText: "Legacy web" }).getByRole("button", { name: "Repeat analysis" }).click();
+  assert.equal((await changedResponse).status(), 409);
+  await page.getByText("The save has changed.", { exact: false }).waitFor();
+  await page.getByRole("tab", { name: "Run", exact: true }).click();
   await page.locator("#clearButton").press("Enter");
   assert.equal(await page.locator("#saveInput").inputValue(), "");
   assert.equal(await page.locator("#targetLabel").textContent(), "none");
@@ -76,9 +98,18 @@ try {
   assert.equal(await page.locator("#stripDecision").textContent(), "--");
   assert.equal(await page.locator("#fightTraceList").textContent(), "No trace");
   assert.equal(await page.locator("#fullCompareTable tr").count(), 0);
+  await page.goto(`http://127.0.0.1:${server.address().port}/steam-fights.html`);
+  await page.locator("#logSource").selectOption("export");
+  await page.locator("#logFile").setInputFiles({ name: "test-slot.json", mimeType: "application/json",
+    buffer: Buffer.from(JSON.stringify({ meta: { profile: "steam" }, version: 999, state })) });
+  await page.getByText("Forecast settings", { exact: true }).click();
+  await page.locator("#logTrials").fill("1");
+  await page.locator("#captureForm button[type=submit]").click();
+  await page.getByText(/but save is version 999/).waitFor();
   assert.deepEqual(errors, []);
-  console.log("Passed save imports, Battle panel widths, confidence interval, queued analysis changes and clearing results.");
+  console.log("Passed save imports, Battle layout, queued changes, history replay, save mismatch, clearing results and Steam forecast warnings.");
 } finally {
   await browser.close();
   if (server.listening) await new Promise((resolve) => server.close(resolve));
+  await rm(testDir, { recursive: true, force: true });
 }

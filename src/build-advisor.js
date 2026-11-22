@@ -301,14 +301,16 @@ function createGuaranteeAdvice({ ranked, state, limit }) {
 function createBoosterAdvice({ activeItems, state, limit }) {
   const boosted = new Set(normalizeList(state.boostedSketchIds));
   const maxUses = 1 + toNumber(state.fundamentals?.rewardBoosterUses);
-  const remainingUses = Math.max(0, maxUses - boosted.size);
+  let remainingUses = Math.max(0, maxUses - boosted.size);
   return activeItems
     .filter((item) => item.score > 0)
     .slice(0, limit)
-    .map((item, index) => ({
-      ...item,
-      action: boosted.has(item.id) ? "already_boosted" : index < remainingUses ? "boost" : "save_for_later",
-    }));
+    .map((item) => {
+      if (boosted.has(item.id)) return { ...item, action: "already_boosted" };
+      if (remainingUses <= 0) return { ...item, action: "save_for_later" };
+      remainingUses -= 1;
+      return { ...item, action: "boost" };
+    });
 }
 
 function createEraserAdvice({ target, state }) {

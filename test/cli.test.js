@@ -33,6 +33,17 @@ test("CLI runs a JSON simulation against a fixture save", () => {
   assert.equal(parsed.appliedIds.length, 0);
 });
 
+test("CLI rejects invalid stat sources, time limits, and trial counts", () => {
+  for (const args of [["--stats", "typo"], ["--max-seconds", "typo"], ["--max-seconds", "0"],
+    ["--max-seconds"], ["--trials", "1.5"], ["--trials", "Infinity"]]) {
+    const result = spawnSync(process.execPath, ["src/cli.js", "--save", fixtureSave, "--target", "duct", ...args],
+      { cwd: projectRoot, encoding: "utf8" });
+    assert.equal(result.status, 1);
+    assert.ok(result.stderr.includes(args[0]));
+    assert.equal(result.stdout.trim(), "");
+  }
+});
+
 test("CLI defaults omitted trials to auto", () => {
   const result = spawnSync(process.execPath, [
     "src/cli.js",

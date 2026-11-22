@@ -132,6 +132,19 @@ test("createCalibrationReport compares observed fights with simulation and flags
   assert.equal(report.patchSanity.version, "v0.874");
 });
 
+test("calibration excludes censored simulated medians and observed timeouts from duration tuning", () => {
+  const log = { targetId: "wall", outcome: "win", seconds: 300, reason: "burn" };
+  const report = createCalibrationReport({ save: { state: { combatLog: [log] } },
+    sketches: { wall: { stats: { maxHp: 1000, attack: 0, attackSpeed: 1000 } } },
+    player: { maxHp: 100, attack: 1, attackSpeed: 1000 }, trials: 5, maxSeconds: 5 });
+  assert.equal(report.comparisons[0].predicted.medianCensored, true);
+  assert.equal(report.comparisons[0].predicted.medianSeconds, 5);
+  assert.equal(report.tuning.durationMultiplier.sampleCount, 0);
+  assert.equal(report.deviations.some((item) => ["duration_mismatch", "outcome_mismatch", "cause_mismatch"].includes(item.code)), false);
+  assert.equal(suggestCalibrationTuning([{ actual: { outcome: "timeout", seconds: 12 },
+    simulated: { summary: { medianSeconds: 2 } } }]).durationMultiplier.value, null);
+});
+
 test("suggestCalibrationTuning derives status, reflect and duration multipliers", () => {
   const tuning = suggestCalibrationTuning([
     {

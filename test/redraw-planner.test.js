@@ -124,6 +124,47 @@ test("Find New Sketches uses the Steam glossary even for a sketch with no victor
   assert.equal(unseen.probabilities.singleRedrawNewSketch, 1);
 });
 
+test("Targeted Redraw rolls each sketch using the web save's rarity chance and glossary order", () => {
+  const estimate = estimateRedrawOdds({
+    sketches: { rough_a: sketches.rough_a, rough_b: sketches.rough_b, duct: sketches.duct },
+    state: {
+      fundamentals: { roughRarity: 50, masterpieceRarity: 0 },
+      rarityChances: { rough: 100, masterpiece: 100 },
+      glossaryUnlocks: [],
+    },
+    targetIds: ["rough_a", "rough_b", "duct"],
+    trials: 4000,
+    seed: "web-rarity-per-sketch",
+  });
+
+  assert.ok(Math.abs(estimate.targetRates.rough_a - 0.5) < 0.03);
+  assert.ok(Math.abs(estimate.targetRates.rough_b - 0.5 / 1.1) < 0.03);
+  assert.equal(estimate.targetRates.duct, 0);
+  assert.ok(Math.abs(estimate.probabilities.anyTarget - (1 - 0.5 * (1 - 0.5 / 1.1))) < 0.03);
+});
+
+test("Find New Sketches respects effective Steam rarity chances and a caller's weight override", () => {
+  const options = {
+    sketches: { rough_a: sketches.rough_a, duct: sketches.duct },
+    state: {
+      saveProfile: "steam",
+      fundamentals: { roughRarity: 0, masterpieceRarity: 100 },
+      rarityChances: { rough: 100, masterpiece: 0 },
+      glossaryUnlocks: ["rough_a"],
+    },
+    totalSlots: 1,
+    maxRedraws: 2,
+    trials: 20,
+  };
+  const estimated = estimateFindNewSketchOdds(options);
+  const overridden = estimateFindNewSketchOdds({ ...options, rarityWeights: { masterpiece: 1 } });
+  const targeted = estimateRedrawOdds({ ...options, targetIds: ["duct"], rarityWeights: { masterpiece: 1 } });
+
+  assert.equal(estimated.probabilities.withinMaxRedraws, 0);
+  assert.equal(overridden.probabilities.singleRedrawNewSketch, 1);
+  assert.equal(targeted.targetRates.duct, 1);
+});
+
 test("Targeted Redraw respects the slot limit when guarantees or minimums overfill a draw", () => {
   const guaranteeOverflow = estimateRedrawOdds({
     sketches,
@@ -309,6 +350,14 @@ test("recommendTargetedRedrawSettings ranks target and farm tradeoffs", () => {
   assert.ok(result.recommendations[0].targetProbability > 0);
   assert.equal(result.recommendations[1].targetProbability, 0);
   assert.ok(result.recommendations[1].farmScore > result.recommendations[0].farmScore);
+});
+
+test("generated redraw candidates can roll beyond saved minima when the save has no previous slot count", () => {
+  const state = { targetedRedrawMins: { rough: 1 }, rarityChances: { rough: 100, masterpiece: 100 } };
+  const result = recommendTargetedRedrawSettings({ state, sketches, targetIds: ["duct"], trials: 5 });
+  const current = result.recommendations.find(({ name }) => name === "save_current");
+  assert.ok(current.estimate.totalSlots > 1);
+  assert.equal(current.targetProbability, 1);
 });
 
 test("Targeted Redraw excludes infeasible candidates from the ranking", () => {

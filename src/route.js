@@ -3,7 +3,7 @@ import { combatAssumptionsFromSave } from "./combat-assumptions.js";
 import { buildSteamEnemy } from "./combat/steam-encounter.js";
 import { applyStatReward, steamSketchRewards } from "./rewards.js";
 import { createRng } from "./rng.js";
-import { isFullSteamSave, normalizeStats, toNumber } from "./save.js";
+import { normalizeStats, toNumber } from "./save.js";
 import { getPreciseEraserEligibility } from "./tool-rules.js";
 import { remainingSketchVictories } from "./victory-limit.js";
 
@@ -129,6 +129,7 @@ const MEDITATION_EXCLUDED_STATS = new Set([
 export function simulateRoute({
   sketches = {},
   state = {},
+  assumptions = combatAssumptionsFromSave(state),
   baseStats = null,
   routeIds = [],
   targetId = null,
@@ -145,7 +146,6 @@ export function simulateRoute({
   maxSeconds = 300,
 } = {}) {
   const fundamentals = numericObject(state.fundamentals ?? {});
-  const assumptions = isFullSteamSave(state) ? combatAssumptionsFromSave(state) : {};
   const savedStats = assumptions.steam ? state.playerStats : state.runStats ?? state.battleStats ?? state.playerStats;
   const stats = normalizeStats(baseStats ?? savedStats);
   const currencies = numericObject(state.currencies ?? {});
@@ -351,7 +351,7 @@ export function compareRoutes({
       routeIds: route.ids ?? route.routeIds ?? [],
       trials,
       maxSeconds,
-      seed: `${seed}:${name}`,
+      seed,
       ...routeOptions,
       boostedIds: route.boostedIds ?? routeOptions.boostedIds,
       erasedIds: route.erasedIds ?? routeOptions.erasedIds,

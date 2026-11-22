@@ -170,19 +170,19 @@ function detectRunPhase(state, activeItems) {
   return "after_redraw";
 }
 
-function validateDataCompatibility({ save, steamSave, dataMetadata }) {
+export function validateDataCompatibility({ save, steamSave = isSteamSave(save), dataMetadata }) {
   const warnings = [];
   const saveVersion = save?.version;
   const profile = save?.meta?.profile ?? save?.state?.saveProfile;
   if (profile === "steam") {
-    const universe = save.state.multiverse?.currentUniverseId;
+    const universe = save.state?.multiverse?.currentUniverseId;
     if (universe && !Object.hasOwn(STEAM_UNIVERSES, universe)) {
       warnings.push({ code: "unknown_universe", message: `Unknown Steam universe ${universe}. Estimates use original-universe modifiers.` });
     }
     if (dataMetadata?.buildId && dataMetadata.buildId !== VERIFIED_STEAM_BUILD) {
       warnings.push({ code: "unverified_build", message: `Catalog build ${dataMetadata.buildId} differs from the combat model's verified Steam build ${VERIFIED_STEAM_BUILD}.` });
     }
-    const amounts = [save.state.quintessence, ...Object.values(save.state.currencies ?? {})];
+    const amounts = [save.state?.quintessence, ...Object.values(save.state?.currencies ?? {})];
     if (amounts.some((value) => value != null && !Number.isFinite(toNumber(value, NaN)))) {
       warnings.push({ code: "economy_numeric_range", message: "A saved currency exceeds the simulator's numeric range. Economy projections for this run are unreliable." });
     }

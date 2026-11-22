@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 
 import { decodeSaveText, defaultSteamSaveDir, findActiveSteamSave, isFullSteamSave, readSaveFile } from "./save.js";
 import { readGameBundle } from "./sketch-data.js";
-import { createSteamFightForecast, compareSteamFightObservation } from "./steam-fight-forecast.js";
+import { createSteamFightForecast, compareSteamFightObservation, validateSteamFightForecastInput } from "./steam-fight-forecast.js";
 import { inspectHyenaHistory } from "./steam-fight-notifications.js";
 
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i;
@@ -16,6 +16,15 @@ function problem(status, message) {
 
 function readJson(file) {
   return JSON.parse(fs.readFileSync(file, "utf8"));
+}
+
+function readOptionalJson(file) {
+  try {
+    return readJson(file);
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+    return null;
+  }
 }
 
 // Publishing a completed, nonempty directory keeps partial writes invisible.
@@ -70,17 +79,28 @@ function writeWatchCheckpoint(root, id, checkpoint) {
   }
 }
 
-function getFight(root, id) {
+function getFight(root, id, includePending = false) {
   const dir = fightDir(root, id);
-  if (!fs.existsSync(dir)) throw problem(404, "Saved fight not found.");
-  const record = readJson(path.join(dir, "forecast.json"));
+  const record = readOptionalJson(path.join(dir, "forecast", "forecast.json"))
+    ?? readOptionalJson(path.join(dir, "forecast.json"));
+  const capture = record ? null : readOptionalJson(path.join(dir, "capture.json"));
+  if (!record && !capture) throw problem(404, "Saved fight not found.");
+  if (!record && !includePending) throw problem(409, "The forecast is pending. Open this saved fight to resume it.");
   let revision = 0;
   for (const item of fs.readdirSync(dir, { withFileTypes: true })) {
     const match = item.isDirectory() && /^result-(\d+)$/.exec(item.name);
     if (match) revision = Math.max(revision, Number(match[1]));
   }
-  const observation = revision ? readJson(path.join(dir, `result-${revision}`, "observation.json")) : null;
-  return { ...record, revision, observation };
+  let observation = null;
+  if (revision) {
+    const resultDir = path.join(dir, `result-${revision}`);
+    observation = readOptionalJson(path.join(resultDir, "observation.json"));
+    if (!observation) {
+      const result = readJson(path.join(resultDir, "steam-observation.json"));
+      observation = record ? { ...compareSteamFightObservation(record.forecast, result), ...result } : result;
+    }
+  }
+  return { ...(record ?? { ...capture.record, target: capture.target }), revision, observation };
 }
 
 function savedInput(body, steamSaveDir) {
@@ -94,45 +114,62 @@ function savedInput(body, steamSaveDir) {
   return { raw: fs.readFileSync(slot), source: path.basename(slot) };
 }
 
-function capture({ root, dataPath, steamSaveDir }, body) {
+async function capture({ root, dataPath, steamSaveDir, calculateForecast, pendingCaptures, onCapture }, body) {
   const id = body.id ?? randomUUID();
   const dir = fightDir(root, id);
   const targetId = body.targetId ?? "hyena_hulk";
-  // Retrying a capture must never read a newer slot under the same ID.
-  function existingCapture() {
-    const fight = getFight(root, id);
-    const sameSource = (body.source ?? "steam") === (fight.source === "export" ? "export" : "steam");
-    const sameExport = fight.source !== "export" || body.saveText === fs.readFileSync(path.join(dir, "save.json"), "utf8");
-    if (!sameSource || !sameExport || targetId !== fight.forecast.target.id ||
-        (body.trials ?? 1000) !== fight.forecast.trials || (body.maxSeconds ?? 300) !== fight.forecast.maxSeconds) {
-      throw problem(409, "A different pre-fight state already uses this ID.");
+  const { trials = 1000, maxSeconds = 300 } = body;
+  if (!fs.existsSync(dir)) {
+    const { raw, source } = savedInput(body, steamSaveDir);
+    const capturedAt = new Date().toISOString();
+    let save;
+    try {
+      save = decodeSaveText(raw.toString("utf8"));
+      if (!isFullSteamSave(save)) throw new Error("Choose a save from the full Steam edition.");
+    } catch (error) {
+      throw problem(400, error.message);
     }
-    return fight;
+    const { sketches, dataMetadata } = readGameBundle(dataPath);
+    try {
+      validateSteamFightForecastInput({ save, sketches, dataMetadata, targetId, trials, maxSeconds, seed: id });
+    } catch (error) {
+      throw problem(400, error.message);
+    }
+    const sketch = sketches[targetId];
+    const snapshot = {
+      record: { id, capturedAt, source, gameSavedAt: save.meta?.savedAt ?? null, gameVersion: save.meta?.gameVersion ?? null },
+      target: { id: targetId, name: sketch.name ?? targetId }, trials, maxSeconds, sketch, dataMetadata,
+    };
+    if (publish(root, id, { "save.json": raw, "capture.json": JSON.stringify(snapshot) })) onCapture();
   }
-  if (fs.existsSync(dir)) return existingCapture();
-  const { raw, source } = savedInput(body, steamSaveDir);
-  const capturedAt = new Date().toISOString();
-  let save;
-  try {
-    save = decodeSaveText(raw.toString("utf8"));
-  } catch (error) {
-    throw problem(400, error.message);
+
+  // A retry always uses the published save and catalog entry for this ID.
+  const fight = getFight(root, id, true);
+  const snapshot = fight.forecast ?? readJson(path.join(dir, "capture.json"));
+  const sameSource = (body.source ?? "steam") === (fight.source === "export" ? "export" : "steam");
+  const sameExport = fight.source !== "export" || body.saveText === fs.readFileSync(path.join(dir, "save.json"), "utf8");
+  if (!sameSource || !sameExport || targetId !== snapshot.target.id || trials !== snapshot.trials || maxSeconds !== snapshot.maxSeconds) {
+    throw problem(409, "A different pre-fight state already uses this ID.");
   }
-  if (!isFullSteamSave(save)) throw problem(400, "Choose a save from the full Steam edition.");
-  const { sketches, dataMetadata } = readGameBundle(dataPath);
-  let forecast;
-  try {
-    forecast = createSteamFightForecast({ save, sketches, dataMetadata, targetId, trials: body.trials,
-      maxSeconds: body.maxSeconds, seed: id });
-  } catch (error) {
-    throw problem(400, error.message);
+  if (fight.forecast) return fight;
+  return finishCapture({ root, calculateForecast, pendingCaptures }, fight, snapshot);
+}
+
+async function finishCapture({ root, calculateForecast, pendingCaptures }, { id }, snapshot) {
+  let pending = pendingCaptures.get(id);
+  if (!pending) {
+    pending = Promise.resolve().then(async () => {
+      const dir = fightDir(root, id);
+      const { target, sketch, dataMetadata, trials, maxSeconds, record } = snapshot;
+      const save = readSaveFile(path.join(dir, "save.json"));
+      const forecast = await calculateForecast({ save, sketches: { [target.id]: sketch },
+        dataMetadata, targetId: target.id, trials, maxSeconds, seed: id });
+      publish(dir, "forecast", { "forecast.json": JSON.stringify({ ...record, forecast }) });
+    }).finally(() => pendingCaptures.delete(id));
+    pendingCaptures.set(id, pending);
   }
-  const record = {
-    id, capturedAt, source, gameSavedAt: save.meta?.savedAt ?? null,
-    gameVersion: save.meta?.gameVersion ?? null, forecast,
-  };
-  const added = publish(root, id, { "save.json": raw, "forecast.json": JSON.stringify(record) });
-  return added ? { ...record, revision: 0, observation: null } : existingCapture();
+  await pending;
+  return getFight(root, id);
 }
 
 function recordObservation(root, id, body, evidence = {}) {
@@ -157,10 +194,11 @@ export function listSteamFights(root) {
   if (!fs.existsSync(root)) return [];
   return fs.readdirSync(root, { withFileTypes: true })
     .filter((item) => item.isDirectory() && UUID.test(item.name))
-    .map(({ name }) => {
-      const { id, capturedAt, source, forecast, observation } = getFight(root, name);
-      return { id, capturedAt, source, target: forecast.target, outcome: observation?.outcome ?? null };
-    })
+    .map(({ name }) => getFight(root, name, true))
+    .map(({ id, capturedAt, source, forecast, target, observation }) => ({
+      id, capturedAt, source, target: forecast?.target ?? target, outcome: observation?.outcome ?? null,
+      ...(!forecast && { pending: true }),
+    }))
     .sort((a, b) => b.capturedAt.localeCompare(a.capturedAt) || b.id.localeCompare(a.id));
 }
 
@@ -233,10 +271,17 @@ export function createSteamFightMonitor({ root, steamSaveDir = defaultSteamSaveD
         watch.status = match.status;
         continue;
       }
-      try {
-        recordObservation(root, id, { revision: 0, outcome: match.outcome, elapsedSeconds: match.elapsedSeconds }, match.evidence);
-      } catch (error) {
-        if (error.status !== 409) throw error;
+      const result = { outcome: match.outcome, elapsedSeconds: match.elapsedSeconds };
+      if (getFight(root, id, true).forecast) {
+        try {
+          recordObservation(root, id, { revision: 0, ...result }, match.evidence);
+        } catch (error) {
+          if (error.status !== 409) throw error;
+        }
+      } else {
+        // The forecast can still be running when Steam saves the result.
+        const observation = { ...result, ...match.evidence, recordedAt: new Date().toISOString() };
+        publish(fightDir(root, id), "result-1", { "steam-observation.json": JSON.stringify(observation) });
       }
       watches.delete(id);
     }
@@ -266,13 +311,23 @@ export function createSteamFightMonitor({ root, steamSaveDir = defaultSteamSaveD
   };
 }
 
-export function handleSteamFightRequest({ root, dataPath, steamSaveDir, pathname, method, body = {} }) {
+export function handleSteamFightRequest({ root, dataPath, steamSaveDir, pathname, method, body = {},
+  calculateForecast = createSteamFightForecast, pendingCaptures = new Map(), onCapture = () => {},
+}) {
   const [, , , id, action, ...extra] = pathname.split("/");
   if (!id && action === undefined) {
     if (method === "GET") return { fights: listSteamFights(root) };
-    if (method === "POST") return { fight: capture({ root, dataPath, steamSaveDir }, body) };
+    if (method === "POST") {
+      return capture({ root, dataPath, steamSaveDir, calculateForecast, pendingCaptures, onCapture }, body)
+        .then((fight) => ({ fight }));
+    }
   } else if (id && !extra.length) {
-    if (!action && method === "GET") return { fight: getFight(root, id) };
+    if (!action && method === "GET") {
+      const fight = getFight(root, id, true);
+      if (fight.forecast) return { fight };
+      const snapshot = readJson(path.join(fightDir(root, id), "capture.json"));
+      return finishCapture({ root, calculateForecast, pendingCaptures }, fight, snapshot).then((resolved) => ({ fight: resolved }));
+    }
     if (action === "observation" && method === "PUT") return { fight: recordObservation(root, id, body) };
     if (action === "save" && method === "GET") {
       const file = path.join(fightDir(root, id), "save.json");

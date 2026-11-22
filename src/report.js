@@ -26,6 +26,7 @@ export function createCombatReport({
   target,
   player = {},
   simulation,
+  maxSeconds = simulation?.timeLimit?.effectiveMaxSeconds ?? 300,
   label = null,
 } = {}) {
   const trials = toNumber(simulation?.trials);
@@ -33,7 +34,7 @@ export function createCombatReport({
   const provided = simulation?.winRateCi95;
   const ci = Number.isFinite(provided?.lower) && Number.isFinite(provided?.upper)
     ? provided : confidenceInterval95(winRate, trials);
-  const explanation = explainTarget({ target, player });
+  const explanation = explainTarget({ target, player, maxSeconds });
 
   return {
     label,
@@ -71,7 +72,7 @@ export function createCombatReport({
   };
 }
 
-export function explainTarget({ target = {}, player = {} } = {}) {
+export function explainTarget({ target = {}, player = {}, maxSeconds = 300 } = {}) {
   const targetStats = numericObject(target.stats ?? target);
   const playerStats = numericObject(player);
   const id = target.id ?? "";
@@ -131,7 +132,7 @@ export function explainTarget({ target = {}, player = {} } = {}) {
 
   return {
     target: { id, name },
-    thresholds: createThresholds({ key, targetStats, playerStats }),
+    thresholds: createThresholds({ key, targetStats, playerStats, maxSeconds }),
     interactions,
   };
 }
@@ -165,7 +166,7 @@ export function exportMarkdownReport(report) {
   return `${lines.join("\n")}\n`;
 }
 
-function createThresholds({ key, targetStats, playerStats }) {
+function createThresholds({ key, targetStats, playerStats, maxSeconds }) {
   const thresholds = [];
   const targetAttack = toNumber(targetStats.attack);
   const burnPressure = toNumber(targetStats.burnDamage);
@@ -185,7 +186,7 @@ function createThresholds({ key, targetStats, playerStats }) {
   if (targetHp > 0 || targetRegen > 0) {
     thresholds.push({
       stat: "damagePerSecond",
-      target: round(Math.max(targetRegen * 1.5, targetHp / 300)),
+      target: round(Math.max(targetRegen * 1.5, targetHp / maxSeconds)),
       current: round(toNumber(playerStats.attack) / Math.max(0.05, toNumber(playerStats.attackSpeed, 1000) / 1000)),
       reason: "Beat HP and regen before the timeout window.",
     });
