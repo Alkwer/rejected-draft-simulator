@@ -1,5 +1,6 @@
 import { analyzeBuildAdvice } from "./build-advisor.js";
 import { createEconomyPlan } from "./economy.js";
+import { steamCurrencyPerkWinsRemaining, steamSketchRewards } from "./rewards.js";
 import { currencyRewardAmount, simulateRoute } from "./route.js";
 import { toNumber } from "./save.js";
 
@@ -328,8 +329,11 @@ export function rankOpusStrategicValue({
   return Object.values(sketches)
     .filter((sketch) => sketch?.rarity === "opus")
     .map((sketch) => {
-      const statScore = estimateStatRewardValue({ rewards: sketch.rewards, targetStatWeights });
-      const currencyScore = estimateCurrencyRewardValue({ rewards: sketch.currencyRewards, state, goalCurrencies });
+      const steamRewards = estimateSteamPayout({ sketch, state });
+      const statRewards = steamRewards?.statRewards ?? sketch.rewards;
+      const currencyRewards = steamRewards?.currencyRewards ?? sketch.currencyRewards;
+      const statScore = estimateStatRewardValue({ rewards: statRewards, targetStatWeights, steam: Boolean(steamRewards) });
+      const currencyScore = estimateCurrencyRewardValue({ rewards: currencyRewards, state, goalCurrencies });
       const row = rowsById.get(sketch.id);
       const safetyScore = row
         ? estimateSafetyScore(row, rewardWeights)
@@ -346,8 +350,8 @@ export function rankOpusStrategicValue({
         currencyScore: roundNumber(currencyScore),
         safetyScore: roundNumber(safetyScore),
         score: roundNumber(score),
-        bestCurrency: bestCurrencyReward(sketch.currencyRewards),
-        bestStats: bestStatRewards(sketch.rewards, targetStatWeights),
+        bestCurrency: bestCurrencyReward(currencyRewards),
+        bestStats: bestStatRewards(statRewards, targetStatWeights),
       };
     })
     .sort((a, b) => b.score - a.score || b.currencyScore - a.currencyScore || a.id.localeCompare(b.id));
@@ -835,6 +839,10 @@ function estimateRunEV({ sketches, state, currentRows, targetStatWeights, farmSe
   const currencies = {};
   const sketchesEV = [];
   const windowSeconds = Math.max(1, toNumber(farmSeconds, DEFAULT_FARM_SECONDS));
+  const perkWinsRemaining = steamCurrencyPerkWinsRemaining(state);
+  // Track the probability of each prior win count while the perk is still active.
+  const priorWinProbabilities = new Float64Array(perkWinsRemaining);
+  if (perkWinsRemaining > 0) priorWinProbabilities[0] = 1;
   let statValue = 0;
 
   for (const row of currentRows) {
@@ -842,19 +850,35 @@ function estimateRunEV({ sketches, state, currentRows, targetStatWeights, farmSe
     if (!sketch || row.hidden) continue;
     const winRate = clamp01(toNumber(row.winRate));
     const seconds = Math.max(1, toNumber(row.p90Seconds, row.medianSeconds ?? 60));
-    const multiplier = rewardMultiplier({ state, id: row.id });
+    const steamRewards = estimateSteamPayout({
+      sketch,
+      state,
+      perkWinsRemaining,
+      perkProbability: priorWinProbabilities.reduce((sum, chance) => sum + chance, 0),
+    });
+    if (steamRewards?.canWin && perkWinsRemaining > 0) {
+      for (let wins = priorWinProbabilities.length - 1; wins > 0; wins -= 1) {
+        priorWinProbabilities[wins] = priorWinProbabilities[wins] * (1 - winRate) + priorWinProbabilities[wins - 1] * winRate;
+      }
+      priorWinProbabilities[0] *= 1 - winRate;
+    }
+    const multiplier = steamRewards ? 1 : rewardMultiplier({ state, id: row.id });
     const expectedCurrencies = {};
-    for (const reward of sketch.currencyRewards ?? []) {
-      const rewardAmount = currencyRewardAmount({
+    for (const reward of steamRewards?.currencyRewards ?? sketch.currencyRewards ?? []) {
+      const rewardAmount = steamRewards ? reward.amount : currencyRewardAmount({
         name: reward.name,
         amount: toNumber(reward.amount) * multiplier,
         fundamentals: state.fundamentals ?? {},
       });
       const expected = rewardAmount * winRate;
-      expectedCurrencies[reward.name] = roundNumber(expected);
+      expectedCurrencies[reward.name] = toNumber(expectedCurrencies[reward.name]) + expected;
       addCurrencyEV(currencies, reward.name, expected, seconds);
     }
-    const expectedStatScore = estimateStatRewardValue({ rewards: sketch.rewards, targetStatWeights }) * winRate;
+    const expectedStatScore = estimateStatRewardValue({
+      rewards: steamRewards?.statRewards ?? sketch.rewards,
+      targetStatWeights,
+      steam: Boolean(steamRewards),
+    }) * winRate;
     statValue += expectedStatScore;
     sketchesEV.push({
       id: row.id,
@@ -862,7 +886,7 @@ function estimateRunEV({ sketches, state, currentRows, targetStatWeights, farmSe
       rarity: row.rarity ?? sketch.rarity ?? "unknown",
       winRate: roundNumber(winRate),
       seconds,
-      expectedCurrencies,
+      expectedCurrencies: Object.fromEntries(Object.entries(expectedCurrencies).map(([name, amount]) => [name, roundNumber(amount)])),
       expectedStatScore: roundNumber(expectedStatScore),
     });
   }
@@ -1196,12 +1220,12 @@ function toCamelModeId(id) {
   return String(id).replace(/-([a-z])/g, (_, char) => char.toUpperCase());
 }
 
-function estimateStatRewardValue({ rewards = [], targetStatWeights = {} }) {
+function estimateStatRewardValue({ rewards = [], targetStatWeights = {}, steam = false }) {
   let score = 0;
   for (const reward of rewards ?? []) {
     const weight = toNumber(targetStatWeights[reward.statName], 1);
     const amount = toNumber(reward.amount);
-    score += signedLogAmount(amount) * weight;
+    score += signedLogAmount(steam && reward.statName === "attackSpeed" ? -amount : amount) * weight;
   }
   return score;
 }
@@ -1222,6 +1246,7 @@ function estimateCurrencyRewardValue({ rewards = [], state = {}, goalCurrencies 
 
 function bestCurrencyReward(rewards = []) {
   return [...rewards ?? []]
+    .filter((reward) => toNumber(reward.amount) > 0)
     .map((reward) => ({ name: reward.name, amount: roundNumber(toNumber(reward.amount)) }))
     .sort((a, b) => b.amount - a.amount)[0] ?? null;
 }
@@ -1277,15 +1302,49 @@ function rewardMultiplier({ state, id }) {
   return 1 / (1 + totalVictories * decay) * booster;
 }
 
+function estimateSteamPayout({ sketch, state, perkWinsRemaining = 0, perkProbability = 1 }) {
+  const id = sketch.id;
+  const victoriesBefore = toNumber(state.sketchVictories?.[id]);
+  const rewardContext = {
+    state,
+    id,
+    sketch,
+    victoriesBefore,
+    boosted: normalizeList(state.boostedSketchIds).includes(id),
+  };
+  const rewards = steamSketchRewards(rewardContext);
+  if (!rewards) return null;
+  const cap = toNumber(state.fundamentals?.maxVictories, 250) + toNumber(state.fundamentals?.beyondMaxVictories);
+  if (Math.max(victoriesBefore, toNumber(state.sketchRunVictories?.[id])) >= cap) {
+    return { canWin: false, statRewards: [], currencyRewards: [] };
+  }
+  const afterPerk = perkWinsRemaining > 0 && perkProbability < 1
+    ? steamSketchRewards({ ...rewardContext, newWins: perkWinsRemaining })
+    : null;
+  return {
+    canWin: true,
+    statRewards: (sketch.rewards ?? []).map((reward) => ({ ...reward, amount: rewards.statGain(reward) })),
+    currencyRewards: (sketch.currencyRewards ?? []).map((reward) => ({
+      ...reward,
+      amount: afterPerk
+        ? rewards.currencyGain(reward) * perkProbability + afterPerk.currencyGain(reward) * (1 - perkProbability)
+        : rewards.currencyGain(reward),
+    })),
+  };
+}
+
 function addCurrencyEV(currencies, name, expected, seconds, passive = false) {
   const item = currencies[name] ?? {
     expected: 0,
     perSecond: 0,
+    battlePerSecond: 0,
     passiveExpected: 0,
   };
+  const perSecond = expected / Math.max(1, seconds);
   item.expected += expected;
-  item.perSecond += expected / Math.max(1, seconds);
+  item.perSecond += perSecond;
   if (passive) item.passiveExpected += expected;
+  else item.battlePerSecond += perSecond;
   currencies[name] = item;
 }
 
@@ -1293,6 +1352,7 @@ function roundCurrencyEV(currencies) {
   return Object.fromEntries(Object.entries(currencies).map(([name, item]) => [name, {
     expected: roundNumber(item.expected),
     perSecond: roundNumber(item.perSecond),
+    battlePerSecond: roundNumber(item.battlePerSecond),
     passiveExpected: roundNumber(item.passiveExpected),
   }]));
 }

@@ -4,7 +4,7 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
-const DEFAULT_DIRS = ["src", "test", "web"];
+const DEFAULT_DIRS = ["src", "test", "web", "companion", "scripts"];
 
 export function collectJsFiles(root = process.cwd(), dirs = DEFAULT_DIRS) {
   const files = [];

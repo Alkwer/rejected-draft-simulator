@@ -7,6 +7,13 @@ import {
   exportMarkdownReport,
 } from "../src/report.js";
 
+test("reports show both Wilson bounds at the extremes", () => {
+  for (const [wins, interval] of [[0, "0.00%–27.75%"], [10, "72.25%–100.00%"]]) {
+    const report = createCombatReport({ simulation: { trials: 10, wins } });
+    assert.ok(exportMarkdownReport(report).includes(`95% CI ${interval}`));
+  }
+});
+
 test("createCombatReport adds confidence interval, percentiles and breakdown tables", () => {
   const report = createCombatReport({
     target: {

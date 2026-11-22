@@ -6,6 +6,30 @@ import assert from "node:assert/strict";
 
 import { createWebServer } from "../src/web-server.js";
 
+test("active Steam slot and uploaded web save select their own catalogs", async (t) => {
+  const steamSaveDir = fs.mkdtempSync(path.join(os.tmpdir(), "rd-slot-http-"));
+  t.after(() => fs.rmSync(steamSaveDir, { recursive: true, force: true }));
+  const server = createWebServer({ steamSaveDir });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+  const url = `http://127.0.0.1:${server.address().port}/api/analyze`;
+  const request = (source, headers = {}) => fetch(url, { method: "POST", headers: { "content-type": "application/json", ...headers },
+    body: JSON.stringify({ targetId: "stick man", trials: 1, maxSeconds: 2, ...source }) });
+  assert.equal((await request({ saveSource: "steam" })).status, 404);
+  const state = { playerStats: { maxHp: 100, attack: 100, attackSpeed: 1000 }, availableSketches: ["stick man"] };
+  const save = { version: 86, meta: { profile: "steam" }, state: { ...state, saveProfile: "steam" } };
+  fs.writeFileSync(path.join(steamSaveDir, "slot-4.json"), Buffer.from(JSON.stringify(save)).toString("base64"));
+  assert.equal((await request({ saveSource: "steam" }, { origin: "https://kuzzigames.com" })).status, 403);
+  const native = await (await request({ saveSource: "steam" })).json();
+  assert.equal(native.ok, true, native.error);
+  assert.equal(native.slotName, "slot-4.json");
+  assert.equal(native.analysis.bundle.platform, "steam");
+  assert.equal(native.analysis.statSource, "playerStats");
+  const old = await (await request({ saveText: JSON.stringify({ version: 52, state }) })).json();
+  assert.equal(old.ok, true, old.error);
+  assert.equal(old.analysis.bundle.platform, "web");
+});
+
 test("web server exposes health and bundle import endpoints", async () => {
   const server = createWebServer({ updateDataOnImport: false });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));

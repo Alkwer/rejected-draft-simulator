@@ -35,8 +35,36 @@ test("resolveSavePath latest uses the newest Rejected Draft save export", () => 
   fs.utimesSync(newer, new Date("2026-05-20T10:00:00Z"), new Date("2026-05-20T10:00:00Z"));
 
   assert.equal(findLatestSaveExport(dir), newer);
-  assert.equal(resolveSavePath("latest", { downloadsDir: dir }), newer);
+  assert.equal(resolveSavePath("latest", { downloadsDir: dir, steamSaveDir: path.join(dir, "absent") }), newer);
   assert.equal(resolveSavePath(older, { downloadsDir: dir }), older);
+});
+
+test("resolveSavePath latest follows the active Steam slot before newer slots and exports", (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rd-steam-saves-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const steamSaveDir = path.join(dir, "steam");
+  const downloadsDir = path.join(dir, "downloads");
+  fs.mkdirSync(steamSaveDir);
+  fs.mkdirSync(downloadsDir);
+  const active = path.join(steamSaveDir, "slot-1.json");
+  const newer = path.join(steamSaveDir, "slot-6.json");
+  const marker = path.join(steamSaveDir, "last-slot.txt");
+  const exportPath = path.join(downloadsDir, "rejected-draft-save-latest.txt");
+  fs.writeFileSync(active, "active");
+  fs.writeFileSync(newer, "newer");
+  fs.writeFileSync(marker, "1\r\n");
+  fs.writeFileSync(path.join(steamSaveDir, "slot-2.name.json"), "slot name");
+  fs.writeFileSync(exportPath, "export");
+  fs.utimesSync(active, new Date("2026-05-19T10:00:00Z"), new Date("2026-05-19T10:00:00Z"));
+  fs.utimesSync(newer, new Date("2026-05-20T10:00:00Z"), new Date("2026-05-20T10:00:00Z"));
+
+  const options = { downloadsDir, steamSaveDir };
+  assert.equal(resolveSavePath("latest", options), active);
+  assert.equal(resolveSavePath(exportPath, options), exportPath);
+  fs.unlinkSync(marker);
+  assert.equal(resolveSavePath("latest", options), newer);
+  fs.writeFileSync(marker, "../../downloads/rejected-draft-save-latest.txt");
+  assert.equal(resolveSavePath("latest", options), newer);
 });
 
 test("runCombatSimulation supports trials auto and records stability metadata", () => {
@@ -119,6 +147,24 @@ test("createCurrentRunReport simulates unbeaten visible active sketches", () => 
   assert.equal(report.targets[0].remainingToMax, 2);
   assert.equal(report.skipped.hidden.length, 1);
   assert.equal(report.skipped.completed.length, 1);
+});
+
+test("createCurrentRunReport applies Steam universe scaling to catalog sketches by rarity", () => {
+  const stats = { maxHp: 100, attack: 0, attackSpeed: 10000 };
+  const report = createCurrentRunReport({
+    sketches: {
+      exhibition: { id: "exhibition", rarity: "artist", stats },
+      study: { id: "study", rarity: "rough", stats },
+    },
+    state: { availableSketches: ["exhibition", "study"] },
+    baseStats: { maxHp: 1000, attack: 110, attackSpeed: 1000, accuracy: 100, minDamage: 100, maxDamage: 100 },
+    trialsSetting: parseTrialsSetting(2),
+    maxSeconds: 1.1,
+    assumptions: { steam: { universeId: "mv-medium-2" } },
+  });
+
+  assert.equal(report.targets.find(({ id }) => id === "exhibition").winRate, 1);
+  assert.equal(report.targets.find(({ id }) => id === "study").timeoutRate, 1);
 });
 
 test("createRunRecommendation returns a concrete finish or redraw decision", () => {

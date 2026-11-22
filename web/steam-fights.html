@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Steam fight log · Rejected Draft Simulator</title>
+    <link rel="icon" href="data:,">
+    <link rel="stylesheet" href="/styles.css">
+    <link rel="stylesheet" href="/steam-fights.css">
+  </head>
+  <body>
+    <main class="fight-log">
+      <header class="log-heading">
+        <a href="/">← Rejected Draft Simulator</a>
+        <h1>Steam fight log</h1>
+      </header>
+      <div class="log-columns">
+        <section class="panel log-panel">
+          <h2>Before the fight</h2>
+          <p>Save your Steam slot just before combat. For Hyena Hulk, unlock the Combat Log and enable in-game victory and defeat notifications so the simulator can read the result.</p>
+          <form id="captureForm">
+            <fieldset class="log-fields" id="captureFields" disabled>
+              <label>Target sketch<select id="logTarget" required></select></label>
+              <label>Save source<select id="logSource">
+                <option value="steam">Active Steam slot</option>
+                <option value="export">Steam save file</option>
+              </select></label>
+              <label id="fileLabel" hidden>Steam save file<input id="logFile" type="file" accept=".txt,.json,text/plain,application/json"></label>
+              <details>
+                <summary>Forecast settings</summary>
+                <div class="log-pair">
+                  <label>Trials<input id="logTrials" type="number" min="1" max="5000" step="1" value="1000" required></label>
+                  <label>Fight limit (s)<input id="logLimit" type="number" min="1" max="1800" step="1" value="300" required></label>
+                </div>
+              </details>
+              <button class="icon-button primary" type="submit">Save pre-fight state</button>
+            </fieldset>
+          </form>
+          <p id="captureStatus" role="status" class="log-status"></p>
+        </section>
+        <section class="panel log-panel" aria-labelledby="savedHeading">
+          <h2 id="savedHeading">Saved fights</h2>
+          <p id="emptyFights">Loading saved fights…</p>
+          <label id="fightPickerLabel" hidden>Choose a saved fight<select id="fightPicker"></select></label>
+          <div id="fightDetail" hidden>
+            <div class="log-fight-title"><h3 id="fightTitle"></h3><span id="resultState"></span></div>
+            <p id="captureInfo"></p>
+            <div class="log-table-wrap">
+              <table class="log-table">
+                <thead><tr><th scope="col">Measure</th><th scope="col">Forecast</th><th scope="col">Steam result</th></tr></thead>
+                <tbody>
+                  <tr><th scope="row">Outcome</th><td id="forecastOdds"></td><td id="actualOutcome"></td></tr>
+                  <tr><th scope="row">Duration</th><td id="forecastMedian"></td><td id="actualTime"></td></tr>
+                  <tr><th scope="row">Middle 80% of times</th><td id="forecastRange"></td><td id="actualRange"></td></tr>
+                </tbody>
+              </table>
+            </div>
+            <p id="forecastInfo"></p>
+            <details id="snapshotDetails">
+              <summary>Pre-fight state</summary>
+              <dl class="log-stats" id="snapshotStats"></dl>
+              <a id="downloadSave" download>Download saved slot</a>
+            </details>
+            <h3>After the fight</h3>
+            <p id="watchStatus" role="status"></p>
+            <details id="manualResult"><summary>Enter or correct a result manually</summary>
+              <form id="resultForm">
+              <p id="timingHelp">Enter the elapsed seconds shown in Steam’s Combat Log. Use “Still fighting” if you stopped timing before the fight ended.</p>
+              <fieldset class="log-fields" id="resultFields">
+                <div class="log-pair">
+                  <label>Observed outcome<select id="resultOutcome" required>
+                    <option value="">Choose outcome</option>
+                    <option value="win">Victory</option>
+                    <option value="loss">Defeat</option>
+                    <option value="timeout">Still fighting at cutoff</option>
+                  </select></label>
+                  <label>Elapsed seconds<input id="resultElapsed" type="number" inputmode="decimal" min="0" step="any" aria-describedby="timingHelp" required></label>
+                </div>
+                <button id="recordResult" class="icon-button primary" type="submit">Save result</button>
+              </fieldset>
+              </form>
+            </details>
+          </div>
+          <p id="resultStatus" role="status" class="log-status"></p>
+        </section>
+      </div>
+    </main>
+    <script type="module" src="/steam-fights.js"></script>
+  </body>
+</html>

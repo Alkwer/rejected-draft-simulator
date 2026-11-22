@@ -1,18 +1,18 @@
 {
-  "gameVersion": "main-Dmswlyp_.js",
-  "saveVersion": 52,
+  "gameVersion": "v0.9771",
+  "saveVersion": 86,
   "targets": {
     "duct_taped_banana": {
       "name": "Duct-Taped Banana",
       "rarity": "masterpiece",
       "stats": {
-        "maxHp": 3300000000000,
-        "attack": 100000000000,
-        "attackSpeed": 1900,
-        "bananaPeelChance": 9000,
-        "dodge": 44,
+        "maxHp": 5000000000000,
+        "attack": 120000000000,
+        "attackSpeed": 1800,
+        "bananaPeelChance": 9600,
+        "dodge": 48,
         "isolation": 99,
-        "absorb": 95
+        "absorb": 96
       },
       "vulnerability": [
         "bleedChance",
@@ -29,12 +29,12 @@
       "name": "Rose Window",
       "rarity": "masterpiece",
       "stats": {
-        "maxHp": 60000000000000,
+        "maxHp": 80000000000000,
         "attack": 600000000,
-        "armor": 2000000000000,
+        "armor": 3600000000000,
         "attackSpeed": 1200,
-        "hypnotizeChance": 1200,
-        "thornsChance": 6000000000,
+        "hypnotizeChance": 3600,
+        "thornsChance": 6400000000,
         "opacity": 96,
         "freezeChance": 60000,
         "regen": 2000000000000,
@@ -60,14 +60,14 @@
       "name": "Mobius Strip",
       "rarity": "masterpiece",
       "stats": {
-        "maxHp": 600000000,
+        "maxHp": 1100000000,
         "attack": 300000000,
         "attackSpeed": 300,
         "absorb": 100,
         "burnChance": 300,
-        "burnDamage": 30000000,
+        "burnDamage": 100000000,
         "remedy": 60,
-        "opacity": 30
+        "opacity": 60
       },
       "vulnerability": [
         "burnChance",

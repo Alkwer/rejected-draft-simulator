@@ -1,0 +1,284 @@
+import fs from "node:fs";
+import path from "node:path";
+import { randomUUID } from "node:crypto";
+
+import { decodeSaveText, defaultSteamSaveDir, findActiveSteamSave, isFullSteamSave, readSaveFile } from "./save.js";
+import { readGameBundle } from "./sketch-data.js";
+import { createSteamFightForecast, compareSteamFightObservation } from "./steam-fight-forecast.js";
+import { inspectHyenaHistory } from "./steam-fight-notifications.js";
+
+const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i;
+const TERMINAL_WATCH_STATUSES = new Set(["history-gap", "missing-timing", "superseded"]);
+
+function problem(status, message) {
+  return Object.assign(new Error(message), { status });
+}
+
+function readJson(file) {
+  return JSON.parse(fs.readFileSync(file, "utf8"));
+}
+
+// Publishing a completed, nonempty directory keeps partial writes invisible.
+// A second writer racing for the same capture or revision cannot replace it.
+function publish(parent, name, files) {
+  fs.mkdirSync(parent, { recursive: true });
+  const pending = fs.mkdtempSync(path.join(parent, ".pending-"));
+  try {
+    for (const [file, contents] of Object.entries(files)) fs.writeFileSync(path.join(pending, file), contents);
+    const dest = path.join(parent, name);
+    try {
+      fs.renameSync(pending, dest);
+    } catch (error) {
+      if (fs.existsSync(dest)) return false;
+      throw error;
+    }
+    return true;
+  } finally {
+    fs.rmSync(pending, { recursive: true, force: true });
+  }
+}
+
+function fightDir(root, id) {
+  if (typeof id !== "string" || !UUID.test(id)) throw problem(400, "Invalid fight ID.");
+  return path.join(root, id);
+}
+
+function readWatchCheckpoint(root, id, since) {
+  const file = path.join(fightDir(root, id), "monitor-checkpoint.json");
+  let checkpoint;
+  try {
+    checkpoint = readJson(file);
+  } catch (error) {
+    if (error.code === "ENOENT") return { checkedThrough: since, status: "waiting" };
+    throw error;
+  }
+  if (!Number.isSafeInteger(checkpoint?.checkedThrough) || checkpoint.checkedThrough < since ||
+      (checkpoint.status !== "waiting" && !TERMINAL_WATCH_STATUSES.has(checkpoint.status))) {
+    throw new Error(`Invalid Steam fight monitor checkpoint for ${id}.`);
+  }
+  return { checkedThrough: checkpoint.checkedThrough, status: checkpoint.status };
+}
+
+function writeWatchCheckpoint(root, id, checkpoint) {
+  const file = path.join(fightDir(root, id), "monitor-checkpoint.json");
+  const pending = `${file}.${randomUUID()}.tmp`;
+  try {
+    fs.writeFileSync(pending, JSON.stringify(checkpoint), { flag: "wx" });
+    fs.renameSync(pending, file);
+  } finally {
+    fs.rmSync(pending, { force: true });
+  }
+}
+
+function getFight(root, id) {
+  const dir = fightDir(root, id);
+  if (!fs.existsSync(dir)) throw problem(404, "Saved fight not found.");
+  const record = readJson(path.join(dir, "forecast.json"));
+  let revision = 0;
+  for (const item of fs.readdirSync(dir, { withFileTypes: true })) {
+    const match = item.isDirectory() && /^result-(\d+)$/.exec(item.name);
+    if (match) revision = Math.max(revision, Number(match[1]));
+  }
+  const observation = revision ? readJson(path.join(dir, `result-${revision}`, "observation.json")) : null;
+  return { ...record, revision, observation };
+}
+
+function savedInput(body, steamSaveDir) {
+  if (body.source === "export") {
+    if (typeof body.saveText !== "string" || !body.saveText.trim()) throw problem(400, "Choose a Steam save file.");
+    return { raw: Buffer.from(body.saveText, "utf8"), source: "export" };
+  }
+  if (body.source !== undefined && body.source !== "steam") throw problem(400, "Unknown save source.");
+  const slot = findActiveSteamSave(steamSaveDir);
+  if (!slot) throw problem(404, "No active Steam slot found. Choose a Steam save file instead.");
+  return { raw: fs.readFileSync(slot), source: path.basename(slot) };
+}
+
+function capture({ root, dataPath, steamSaveDir }, body) {
+  const id = body.id ?? randomUUID();
+  const dir = fightDir(root, id);
+  const targetId = body.targetId ?? "hyena_hulk";
+  // Retrying a capture must never read a newer slot under the same ID.
+  function existingCapture() {
+    const fight = getFight(root, id);
+    const sameSource = (body.source ?? "steam") === (fight.source === "export" ? "export" : "steam");
+    const sameExport = fight.source !== "export" || body.saveText === fs.readFileSync(path.join(dir, "save.json"), "utf8");
+    if (!sameSource || !sameExport || targetId !== fight.forecast.target.id ||
+        (body.trials ?? 1000) !== fight.forecast.trials || (body.maxSeconds ?? 300) !== fight.forecast.maxSeconds) {
+      throw problem(409, "A different pre-fight state already uses this ID.");
+    }
+    return fight;
+  }
+  if (fs.existsSync(dir)) return existingCapture();
+  const { raw, source } = savedInput(body, steamSaveDir);
+  const capturedAt = new Date().toISOString();
+  let save;
+  try {
+    save = decodeSaveText(raw.toString("utf8"));
+  } catch (error) {
+    throw problem(400, error.message);
+  }
+  if (!isFullSteamSave(save)) throw problem(400, "Choose a save from the full Steam edition.");
+  const { sketches, dataMetadata } = readGameBundle(dataPath);
+  let forecast;
+  try {
+    forecast = createSteamFightForecast({ save, sketches, dataMetadata, targetId, trials: body.trials,
+      maxSeconds: body.maxSeconds, seed: id });
+  } catch (error) {
+    throw problem(400, error.message);
+  }
+  const record = {
+    id, capturedAt, source, gameSavedAt: save.meta?.savedAt ?? null,
+    gameVersion: save.meta?.gameVersion ?? null, forecast,
+  };
+  const added = publish(root, id, { "save.json": raw, "forecast.json": JSON.stringify(record) });
+  return added ? { ...record, revision: 0, observation: null } : existingCapture();
+}
+
+function recordObservation(root, id, body, evidence = {}) {
+  const fight = getFight(root, id);
+  let comparison;
+  try {
+    comparison = compareSteamFightObservation(fight.forecast, body);
+  } catch (error) {
+    throw problem(400, error.message);
+  }
+  if (fight.observation?.outcome === comparison.outcome &&
+      fight.observation.elapsedSeconds === comparison.elapsedSeconds) return fight;
+  const conflict = "This result changed in another window. Reload the saved fight before editing it.";
+  if (body.revision !== fight.revision) throw problem(409, conflict);
+  const observation = { ...comparison, ...evidence, recordedAt: new Date().toISOString() };
+  const won = publish(fightDir(root, id), `result-${fight.revision + 1}`, { "observation.json": JSON.stringify(observation) });
+  if (!won) throw problem(409, conflict);
+  return { ...fight, revision: fight.revision + 1, observation };
+}
+
+export function listSteamFights(root) {
+  if (!fs.existsSync(root)) return [];
+  return fs.readdirSync(root, { withFileTypes: true })
+    .filter((item) => item.isDirectory() && UUID.test(item.name))
+    .map(({ name }) => {
+      const { id, capturedAt, source, forecast, observation } = getFight(root, name);
+      return { id, capturedAt, source, target: forecast.target, outcome: observation?.outcome ?? null };
+    })
+    .sort((a, b) => b.capturedAt.localeCompare(a.capturedAt) || b.id.localeCompare(a.id));
+}
+
+export function createSteamFightMonitor({ root, steamSaveDir = defaultSteamSaveDir() }) {
+  const watches = new Map();
+  let directoryStamp;
+  let timer;
+
+  function refresh() {
+    const stamp = fs.statSync(root, { throwIfNoEntry: false })?.mtimeMs;
+    if (stamp === directoryStamp) return;
+    const nextCapture = new Map();
+    const pending = new Set();
+    for (const fight of listSteamFights(root)) {
+      if (fight.target.id !== "hyena_hulk" || !/^slot-[1-6]\.json$/.test(fight.source)) continue;
+      const since = Date.parse(fight.capturedAt);
+      const until = nextCapture.get(fight.source) ?? Infinity;
+      nextCapture.set(fight.source, since);
+      if (fight.outcome) continue;
+      const watch = watches.get(fight.id) ?? { source: fight.source, since };
+      watch.until = until;
+      watches.set(fight.id, watch);
+      pending.add(fight.id);
+    }
+    for (const id of watches.keys()) if (!pending.has(id)) watches.delete(id);
+    directoryStamp = stamp;
+  }
+
+  function tick() {
+    refresh();
+    const slots = new Map();
+    for (const [id, watch] of watches) {
+      if (watch.checkedThrough === undefined) {
+        try {
+          Object.assign(watch, readWatchCheckpoint(root, id, watch.since));
+        } catch {
+          watch.status = "unavailable";
+          continue;
+        }
+      }
+      if (TERMINAL_WATCH_STATUSES.has(watch.status)) continue;
+      if (!slots.has(watch.source)) {
+        try {
+          const file = steamSaveDir && path.join(steamSaveDir, watch.source);
+          const slot = file && fs.lstatSync(file, { throwIfNoEntry: false })?.isFile() && readSaveFile(file);
+          slots.set(watch.source, isFullSteamSave(slot) ? slot : null);
+        } catch (error) {
+          // Steam may be replacing the slot. Leave it pending for the next poll.
+          if (error.code && !["ENOENT", "EBUSY", "EPERM", "EACCES"].includes(error.code)) throw error;
+          slots.set(watch.source, null);
+        }
+      }
+      const slot = slots.get(watch.source);
+      if (!slot || (slot.meta?.slot != null && `slot-${slot.meta.slot}.json` !== watch.source)) {
+        watch.status = "unavailable";
+        continue;
+      }
+      const match = inspectHyenaHistory(slot, watch);
+      if (match.status !== "imported") {
+        const checkedThrough = match.checkedThrough ?? watch.checkedThrough;
+        if (checkedThrough > watch.checkedThrough || TERMINAL_WATCH_STATUSES.has(match.status)) {
+          try {
+            writeWatchCheckpoint(root, id, { checkedThrough, status: match.status });
+          } catch {
+            watch.status = "unavailable";
+            continue;
+          }
+          watch.checkedThrough = checkedThrough;
+        }
+        watch.status = match.status;
+        continue;
+      }
+      try {
+        recordObservation(root, id, { revision: 0, outcome: match.outcome, elapsedSeconds: match.elapsedSeconds }, match.evidence);
+      } catch (error) {
+        if (error.status !== 409) throw error;
+      }
+      watches.delete(id);
+    }
+  }
+
+  function poll() {
+    try {
+      tick();
+    } catch (error) {
+      for (const watch of watches.values()) {
+        if (!TERMINAL_WATCH_STATUSES.has(watch.status)) watch.status = "unavailable";
+      }
+      console.warn("Steam fight monitor:", error.message);
+    }
+  }
+  return {
+    start() {
+      if (timer) return;
+      poll();
+      timer = setInterval(poll, 2000);
+      timer.unref();
+    },
+    stop() { clearInterval(timer); timer = undefined; },
+    captured() { directoryStamp = null; poll(); },
+    recorded(id) { watches.delete(id); },
+    status(id) { return watches.get(id)?.status ?? null; },
+  };
+}
+
+export function handleSteamFightRequest({ root, dataPath, steamSaveDir, pathname, method, body = {} }) {
+  const [, , , id, action, ...extra] = pathname.split("/");
+  if (!id && action === undefined) {
+    if (method === "GET") return { fights: listSteamFights(root) };
+    if (method === "POST") return { fight: capture({ root, dataPath, steamSaveDir }, body) };
+  } else if (id && !extra.length) {
+    if (!action && method === "GET") return { fight: getFight(root, id) };
+    if (action === "observation" && method === "PUT") return { fight: recordObservation(root, id, body) };
+    if (action === "save" && method === "GET") {
+      const file = path.join(fightDir(root, id), "save.json");
+      if (!fs.existsSync(file)) throw problem(404, "Saved fight not found.");
+      return { download: fs.readFileSync(file), filename: `steam-before-fight-${id}.json` };
+    }
+  }
+  throw problem(404, "Unknown fight log operation.");
+}

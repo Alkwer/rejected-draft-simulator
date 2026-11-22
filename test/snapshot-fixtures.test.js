@@ -3,15 +3,16 @@ import path from "node:path";
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { GAME_DATA_VERSIONS } from "../src/calibration.js";
+import { readGameBundle } from "../src/sketch-data.js";
 
 const projectRoot = path.resolve(import.meta.dirname, "..");
 
-test("Duct/Rose/Mobius fixture snapshot matches the patch sanity table", () => {
+test("the shipped Steam catalog contains the verified Duct/Rose/Mobius records", () => {
   const snapshot = JSON.parse(fs.readFileSync(path.join(projectRoot, "fixtures", "sketch-snapshots.json"), "utf8"));
-  const expected = GAME_DATA_VERSIONS[snapshot.gameVersion];
-
-  assert.ok(expected);
-  assert.equal(snapshot.saveVersion, expected.saveVersion);
-  assert.deepEqual(snapshot.targets, expected.targets);
+  const { sketches, dataMetadata } = readGameBundle(path.join(projectRoot, "data", "steam-catalog.json"));
+  assert.equal(dataMetadata.gameVersion, snapshot.gameVersion);
+  assert.equal(dataMetadata.saveVersion, snapshot.saveVersion);
+  for (const [id, record] of Object.entries(snapshot.targets)) {
+    for (const [field, expected] of Object.entries(record)) assert.deepEqual(sketches[id][field], expected);
+  }
 });

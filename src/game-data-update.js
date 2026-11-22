@@ -1,20 +1,28 @@
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { syncSteamCatalog } from "./steam-catalog.js";
+import { parseSketches, readDataMetadata } from "./sketch-data.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = path.resolve(__dirname, "..");
 
 export const DEFAULT_GAME_URL = "https://kuzzigames.com/rejected_draft/";
-export const DEFAULT_DATA_PATH = path.join(PROJECT_ROOT, "data", "artistLinks.js");
+export const LEGACY_DATA_PATH = path.join(PROJECT_ROOT, "data", "artistLinks.js");
+export const DEFAULT_DATA_PATH = path.join(PROJECT_ROOT, "data", "steam-catalog.json");
+const WEB_SANITY_TARGETS = ["duct_taped_banana", "rose_window", "mobius_strip"];
 
 export async function updateGameData({
-  gameUrl = DEFAULT_GAME_URL,
-  dataPath = DEFAULT_DATA_PATH,
+  gameUrl,
+  steamDir,
+  dataPath = gameUrl ? LEGACY_DATA_PATH : DEFAULT_DATA_PATH,
   fetchImpl = globalThis.fetch,
   offlineFallback = true,
   now = () => new Date(),
 } = {}) {
+  if (!gameUrl) return syncSteamCatalog({ dataPath, steamDir, offlineFallback, now });
+  if (path.extname(dataPath) === ".json") throw new Error("Legacy web data needs a separate .js file.");
   try {
     const html = await fetchText(fetchImpl, gameUrl);
     let { artistAsset, sketchAsset, mainAsset, storeAsset } = parseGamePageAssets(html);
@@ -32,6 +40,7 @@ export async function updateGameData({
     const dataAssetUrl = resolveAssetUrl(dataAsset, gameUrl);
     const sketchSource = await fetchText(fetchImpl, dataAssetUrl);
     const metadata = {
+      platform: "web",
       gameVersion: extractGameVersion(mainSource) ?? extractGameVersion(storeSource) ?? path.basename(mainAsset),
       saveVersion: extractSaveVersion(mainSource) ?? extractSaveVersion(storeSource),
       asset: path.basename(dataAsset),
@@ -48,8 +57,7 @@ export async function updateGameData({
       capturedAt: formatDate(now()),
     };
 
-    writeGameDataFiles({ dataPath, sketchSource, metadata });
-    updateVersionHistory({ dataPath, metadata });
+    publishWebCatalog({ dataPath, sketchSource, metadata });
 
     return {
       updated: true,
@@ -58,7 +66,7 @@ export async function updateGameData({
       metadata,
     };
   } catch (error) {
-    if (offlineFallback && fs.existsSync(dataPath)) {
+    if (!error.webCatalogRecoveryRequired && offlineFallback && fs.existsSync(dataPath)) {
       return {
         updated: false,
         offline: true,
@@ -72,10 +80,13 @@ export async function updateGameData({
 }
 
 export async function checkGameDataFreshness({
-  gameUrl = DEFAULT_GAME_URL,
-  localMetadata = readMetadataForDataPath(DEFAULT_DATA_PATH),
+  gameUrl, steamDir,
+  dataPath = gameUrl ? LEGACY_DATA_PATH : DEFAULT_DATA_PATH,
+  localMetadata,
   fetchImpl = globalThis.fetch,
 } = {}) {
+  if (!gameUrl) return syncSteamCatalog({ dataPath, steamDir, check: true });
+  localMetadata ??= readDataMetadata(dataPath);
   const html = await fetchText(fetchImpl, gameUrl);
   const assets = parseGamePageAssets(html);
   const remote = {
@@ -175,32 +186,100 @@ async function fetchText(fetchImpl, url) {
   return response.text();
 }
 
-function writeGameDataFiles({ dataPath, sketchSource, metadata }) {
-  const dir = path.dirname(dataPath);
-  fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(dataPath, sketchSource);
-  fs.writeFileSync(metadataPathForDataPath(dataPath), `${JSON.stringify(metadata, null, 2)}\n`);
-}
+function publishWebCatalog({ dataPath, sketchSource, metadata }) {
+  if (!Number.isSafeInteger(metadata.saveVersion) || metadata.saveVersion < 1) {
+    throw new Error("Could not identify the web save schema version.");
+  }
+  let sketches;
+  try {
+    sketches = parseSketches(sketchSource, { strict: true });
+  } catch (error) {
+    throw new Error("Could not parse the web sketch catalog.", { cause: error });
+  }
+  const ids = [...sketchSource.matchAll(/\{id:"([^"]+)",name:"/g)].map((match) => match[1]);
+  const declaredRecords = [...sketchSource.matchAll(/\brewards\s*:\s*\[/g)].length;
+  const customChallenge = /\{id:[\w$]+,name:"Custom Challenge",/.test(sketchSource) ? 1 : 0;
+  if (declaredRecords !== ids.length + customChallenge || ids.length !== Object.keys(sketches).length ||
+      ids.some((id) => !Object.hasOwn(sketches, id) || !(sketches[id].stats.maxHp > 0 &&
+        sketches[id].stats.attackSpeed > 0 && sketches[id].stats.attack >= 0))) {
+    throw new Error("Incomplete web sketch catalog.");
+  }
 
-function updateVersionHistory({ dataPath, metadata }) {
-  const filePath = path.join(path.dirname(dataPath), "game-versions.json");
-  const history = readJson(filePath) ?? { current: null, versions: {} };
-  const key = metadata.gameVersion ?? metadata.mainAsset ?? metadata.asset;
-  history.current = key;
+  const dir = path.dirname(dataPath);
+  const historyPath = path.join(dir, "game-versions.json");
+  const history = readJson(historyPath) ?? { current: null, versions: {} };
   history.versions ??= {};
+  const key = metadata.gameVersion;
+  const sanityTargets = history.versions[key]?.sanityTargets ?? WEB_SANITY_TARGETS;
+  const missing = [...new Set([...WEB_SANITY_TARGETS, ...sanityTargets])]
+    .filter((id) => !Object.hasOwn(sketches, id));
+  if (missing.length) throw new Error(`Incomplete web sketch catalog. Missing: ${missing.join(", ")}.`);
+
+  // A truncated bundle can contain intact records. Check that the whole module parses without executing it.
+  const syntax = spawnSync(process.execPath, ["--check", "--input-type=module"], {
+    input: sketchSource, stdio: ["pipe", "ignore", "ignore"], windowsHide: true,
+  });
+  if (syntax.error) throw syntax.error;
+  if (syntax.status !== 0) throw new Error("Invalid web sketch bundle syntax.");
+
+  history.current = key;
   history.versions[key] = {
     saveVersion: metadata.saveVersion,
     capturedAt: metadata.capturedAt,
     asset: metadata.asset,
     mainAsset: metadata.mainAsset,
     sourceUrl: metadata.sourceUrl,
-    sanityTargets: history.versions[key]?.sanityTargets ?? [
-      "duct_taped_banana",
-      "rose_window",
-      "mobius_strip",
-    ],
+    sanityTargets,
   };
-  fs.writeFileSync(filePath, `${JSON.stringify(history, null, 2)}\n`);
+  fs.mkdirSync(dir, { recursive: true });
+  const staging = fs.mkdtempSync(path.join(dir, ".web-catalog-update-"));
+  let recoveryRequired = false;
+  try {
+    replaceWebCatalogFiles(staging, [
+      [dataPath, sketchSource],
+      [metadataPathForDataPath(dataPath), `${JSON.stringify(metadata, null, 2)}\n`],
+      [historyPath, `${JSON.stringify(history, null, 2)}\n`],
+    ]);
+  } catch (error) {
+    recoveryRequired = error.webCatalogRecoveryRequired;
+    throw error;
+  } finally {
+    if (!recoveryRequired) fs.rmSync(staging, { recursive: true, force: true });
+  }
+}
+
+function replaceWebCatalogFiles(staging, files) {
+  const prepared = files.map(([file, contents], index) => {
+    const current = fs.lstatSync(file, { throwIfNoEntry: false });
+    if (current && !current.isFile()) throw new Error(`Expected a regular catalog file at ${file}.`);
+    const next = path.join(staging, `next-${index}`);
+    const backup = current ? path.join(staging, `backup-${index}`) : null;
+    if (backup) fs.copyFileSync(file, backup);
+    fs.writeFileSync(next, contents);
+    return { file, next, backup };
+  });
+  const published = [];
+  try {
+    for (const entry of prepared) {
+      fs.renameSync(entry.next, entry.file);
+      published.push(entry);
+    }
+  } catch (error) {
+    const failures = [];
+    for (const { file, backup } of published.reverse()) {
+      try {
+        if (backup) fs.renameSync(backup, file);
+        else fs.unlinkSync(file);
+      } catch (failure) {
+        failures.push(failure);
+      }
+    }
+    if (failures.length) {
+      throw Object.assign(new AggregateError([error, ...failures], `Web catalog rollback failed. Backups remain at ${staging}.`),
+        { webCatalogRecoveryRequired: true });
+    }
+    throw error;
+  }
 }
 
 function readMetadataForDataPath(dataPath) {

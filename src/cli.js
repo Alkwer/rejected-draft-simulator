@@ -23,6 +23,7 @@ import { createDiagnosticReport, createModelAssumptionComparisons } from "./diag
 import {
   compareFightParityFixture,
   renderFightParityMarkdown,
+  parityStatusLabel,
 } from "./fight-parity.js";
 import { createFightTrace, exportTraceMarkdown } from "./fight-trace.js";
 import {
@@ -38,13 +39,16 @@ import { applySketchRewards, parseIdList } from "./rewards.js";
 import { parseRouteSpecs, parseSwapMap } from "./route-options.js";
 import { compareRoutes, simulateRoute } from "./route.js";
 import { analyzeSave, getStatsBySource } from "./save-analysis.js";
-import { readSaveFile } from "./save.js";
+import { isSteamSave, readSaveFile } from "./save.js";
+import { DEFAULT_DATA_PATH, LEGACY_DATA_PATH } from "./game-data-update.js";
 import {
   createCombatReport,
+  formatConfidenceInterval,
   explainTarget,
   exportMarkdownReport,
 } from "./report.js";
-import { readDataMetadata, readSketchData } from "./sketch-data.js";
+import { readGameBundle } from "./sketch-data.js";
+import { enemyFromSketch, sketchForEncounter } from "./combat/steam-encounter.js";
 import { createStrategyPlan, parseStrategyCurrencyGoals } from "./strategy-planner.js";
 
 const args = parseArgs(process.argv.slice(2));
@@ -54,9 +58,10 @@ if (args.help || !args.save && !args["list-targets"] && !args["patch-sanity"]) {
   process.exit(args.help ? 0 : 1);
 }
 
-const dataPath = args.data ?? findDefaultDataPath();
-const sketches = readSketchData(dataPath);
-const dataMetadata = readDataMetadata(dataPath);
+const needsSave = !args["list-targets"] && !args["patch-sanity"];
+const save = needsSave ? readSaveFile(resolveSavePath(args.save, { downloadsDir: args["downloads-dir"] })) : null;
+const dataPath = args.data ?? (save && !isSteamSave(save) ? LEGACY_DATA_PATH : DEFAULT_DATA_PATH);
+const { sketches, dataMetadata } = readGameBundle(dataPath);
 
 if (args["list-targets"]) {
   const rarity = args.rarity;
@@ -78,9 +83,7 @@ if (args["patch-sanity"]) {
   process.exit(patchSanity.ok ? 0 : 2);
 }
 
-args.save = resolveSavePath(args.save, { downloadsDir: args["downloads-dir"] });
 const targetId = resolveTargetId(args.target);
-const save = readSaveFile(args.save);
 const analysis = analyzeSave({ save, sketches, targetId, dataMetadata });
 
 if (args["inspect-save"]) {
@@ -156,7 +159,7 @@ if (args["current-run"] || args.remaining || args.recommend && !args["build-advi
   process.exit(0);
 }
 
-const target = sketches[targetId];
+const target = sketchForEncounter(sketches[targetId], combatAssumptions);
 if (!target) {
   console.error(`Unknown target sketch: ${targetId}`);
   console.error("Use --list-targets --rarity masterpiece to see ids.");
@@ -198,13 +201,7 @@ if (args["strategy-plan"] || args.strategy) {
   });
   const strategyTargetSimulation = runCombatSimulation({
     player,
-    enemy: {
-      id: target.id,
-      name: target.name,
-      ...target.stats,
-      immunities: target.immunities,
-      vulnerability: target.vulnerability,
-    },
+    enemy: enemyFromSketch(target),
     trialsSetting: strategyTrialsSetting,
     maxSeconds,
     seed: `${seed}:strategy-target`,
@@ -328,6 +325,7 @@ if (args.route) {
 const appliedIds = parseIdList(args.apply);
 if (appliedIds.length > 0) {
   player = applySketchRewards({
+    state: save.state,
     baseStats: player,
     sketches,
     defeatedIds: appliedIds,
@@ -337,13 +335,7 @@ if (appliedIds.length > 0) {
     existingVictories: save.state?.sketchVictories ?? {},
   });
 }
-const enemy = {
-  id: target.id,
-  name: target.name,
-  ...target.stats,
-  immunities: target.immunities,
-  vulnerability: target.vulnerability,
-};
+const enemy = enemyFromSketch(target);
 
 if (args["fight-fixture"]) {
   const fixture = readJsonFile(args["fight-fixture"]);
@@ -418,6 +410,7 @@ const assumptionComparisons = createModelAssumptionComparisons({
   assumptions: combatAssumptions,
 });
 const diagnostics = createDiagnosticReport({
+  assumptions: combatAssumptions,
   target,
   player,
   simulation: result,
@@ -468,9 +461,9 @@ Usage:
   node src/cli.js --save <save.txt> --inspect-save [--target <sketch_id>]
 
 Options:
-  --data <file>          Path to artistLinks JS data file.
-  --save latest          Use the newest rejected-draft-save-*.txt from Downloads.
-  --downloads-dir <dir>  Folder used by --save latest. Default: %USERPROFILE%\\Downloads.
+  --data <file>          Override the Steam JSON catalog or the legacy web JS data.
+  --save latest          Read the active Steam slot, with a Downloads export as fallback.
+  --downloads-dir <dir>  Search this folder for exports if no Steam slot exists.
   --trials <n|auto>      Monte Carlo trials. Default: auto. Auto runs until CI is stable.
   --seed <text>          Deterministic seed.
   --max-seconds <n>      Fight timeout in seconds. Default: 300.
@@ -560,8 +553,7 @@ function printResult({
   console.log(`Seed: ${seed}`);
   console.log(`Max fight time: ${maxSeconds}s`);
   console.log("");
-  const ciHalfWidth = report?.winRate?.ci95HalfWidth ?? result.winRateCi95?.halfWidth ?? 0;
-  console.log(`Win rate: ${(result.winRate * 100).toFixed(2)}% +/- ${(ciHalfWidth * 100).toFixed(2)}% (95% CI)`);
+  console.log(`Win rate: ${(result.winRate * 100).toFixed(2)}% (95% CI ${formatConfidenceInterval(result.winRateCi95)})`);
   if (diagnostics?.confidence) {
     console.log(`Confidence: ${diagnostics.confidence.label} (${diagnostics.confidence.reasons.join(", ") || "stable"})`);
   }
@@ -628,7 +620,7 @@ function printFightTrace(trace) {
 function printFightParity(parity) {
   console.log(`Fight parity fixture: ${parity.fixtureId}`);
   console.log(`Target: ${parity.targetName ?? parity.targetId ?? "unknown"} [${parity.targetId ?? "unknown"}]`);
-  console.log(`Status: ${parity.ok ? "PASS" : "FAIL"}`);
+  console.log(`Status: ${parityStatusLabel(parity)} (${parity.comparedFields} fields compared)`);
   console.log(`Seed: ${parity.seed}`);
   console.log("");
   console.log(`Observed:  ${parity.observed?.outcome ?? "unknown"} at ${formatNumber(parity.observed?.seconds)}s, P ${formatNumber(parity.observed?.playerHp)}, E ${formatNumber(parity.observed?.enemyHp)}`);
@@ -901,7 +893,7 @@ function printRouteResult({
 
   const simulation = routeResult.target?.simulation;
   if (simulation) {
-    console.log(`Win rate: ${(simulation.winRate * 100).toFixed(2)}% +/- ${((simulation.winRateCi95?.halfWidth ?? 0) * 100).toFixed(2)}% (95% CI)`);
+    console.log(`Win rate: ${(simulation.winRate * 100).toFixed(2)}% (95% CI ${formatConfidenceInterval(simulation.winRateCi95)})`);
     console.log(`Wins / losses / timeouts: ${simulation.wins} / ${simulation.losses} / ${simulation.timeouts}`);
     console.log(`Average fight: ${simulation.avgSeconds.toFixed(2)}s`);
     console.log(`Median fight: ${simulation.medianSeconds.toFixed(2)}s`);
@@ -919,12 +911,11 @@ function printRouteComparison({ target, statSource, comparison }) {
   console.log(`Stats source: ${statSource}`);
   console.log(`Trials per route: ${comparison.trials}`);
   console.log("");
-  console.log("Route".padEnd(22) + "Win rate".padEnd(18) + "Timeout".padEnd(10) + "p90".padEnd(10) + "Attack".padEnd(14) + "Max HP");
+  console.log("Route".padEnd(22) + "Win rate (95% CI)".padEnd(32) + "Timeout".padEnd(10) + "p90".padEnd(10) + "Attack".padEnd(14) + "Max HP");
   for (const route of comparison.routes) {
-    const halfWidth = route.winRateCi95?.halfWidth ?? 0;
     console.log(
       route.name.padEnd(22)
-      + `${(route.winRate * 100).toFixed(2)}%+/-${(halfWidth * 100).toFixed(1)}`.padEnd(18)
+      + `${(route.winRate * 100).toFixed(2)}% (${formatConfidenceInterval(route.winRateCi95)})`.padEnd(32)
       + `${(route.timeoutRate * 100).toFixed(1)}%`.padEnd(10)
       + `${route.p90Seconds.toFixed(2)}s`.padEnd(10)
       + formatNumber(route.finalStats.attack).padEnd(14)
@@ -1010,6 +1001,10 @@ function printRedrawPlan({ target, redrawPlan }) {
   console.log("");
 
   console.log("Recommendations:");
+  if (!redrawPlan.recommendations.recommendations.length) console.log("  No eligible settings.");
+  for (const item of redrawPlan.recommendations.blockedCandidates) {
+    console.log(`  Blocked: ${item.name} (${item.tradeoff})`);
+  }
   for (const item of redrawPlan.recommendations.recommendations.slice(0, 5)) {
     const minimumChance = item.minimumChance == null ? "n/a" : `${(item.minimumChance * 100).toFixed(4)}%`;
     const validity = item.validMinimumChance == null ? "unknown" : item.validMinimumChance ? "valid" : "blocked";
@@ -1068,7 +1063,7 @@ function printRunRecommendationBody(recommendation) {
 }
 
 function printRemainingTargetsTable(targets) {
-  console.log("Sketch".padEnd(30) + "Rarity".padEnd(13) + "Win".padEnd(11) + "CI".padEnd(10) + "p90".padEnd(10) + "Left".padEnd(8) + "Problem");
+  console.log("Sketch".padEnd(30) + "Rarity".padEnd(13) + "Win".padEnd(11) + "95% CI".padEnd(18) + "p90".padEnd(10) + "Left".padEnd(8) + "Problem");
   if (targets.length === 0) {
     console.log("  none");
     return;
@@ -1078,7 +1073,7 @@ function printRemainingTargetsTable(targets) {
       item.id.padEnd(30)
       + item.rarity.padEnd(13)
       + `${(item.winRate * 100).toFixed(1)}%`.padEnd(11)
-      + `+/-${(item.ci95HalfWidth * 100).toFixed(1)}`.padEnd(10)
+      + formatConfidenceInterval(item.winRateCi95).padEnd(18)
       + `${item.p90Seconds.toFixed(1)}s`.padEnd(10)
       + String(item.remainingToMax).padEnd(8)
       + (item.topFailure ?? item.topVictory ?? "none"),
@@ -1382,17 +1377,4 @@ function wantsMarkdownOutput(parsedArgs) {
 
 function readJsonFile(filePath) {
   return JSON.parse(fs.readFileSync(path.resolve(filePath), "utf8"));
-}
-
-function findDefaultDataPath() {
-  const candidates = [
-    path.resolve(process.cwd(), "data", "artistLinks.js"),
-    path.resolve(process.cwd(), "..", "artistLinks-CsK2J3KP-2026-05-20.js"),
-    path.resolve(process.cwd(), "artistLinks-CsK2J3KP-2026-05-20.js"),
-  ];
-  const found = candidates.find((candidate) => fs.existsSync(candidate));
-  if (!found) {
-    throw new Error("Could not find sketch data. Pass --data <artistLinks JS file>.");
-  }
-  return found;
 }

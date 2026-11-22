@@ -8,6 +8,7 @@ import { simulateRoute } from "./route.js";
 import { parseRouteSpecs } from "./route-options.js";
 import { analyzeSave } from "./save-analysis.js";
 import { decodeSaveText, toNumber } from "./save.js";
+import { enemyFromSketch, sketchForEncounter } from "./combat/steam-encounter.js";
 import { createStrategyPlan, parseStrategyCurrencyGoals } from "./strategy-planner.js";
 
 const IMPORTANT_TARGET_IDS = [
@@ -28,6 +29,7 @@ const ROLL_WISHLIST_RARITIES = new Set(["rough", "framed", "opus", "masterpiece"
 
 export function createWebAnalysis({
   saveText,
+  save = decodeSaveText(saveText),
   sketches = {},
   dataMetadata = null,
   targetId = "duct_taped_banana",
@@ -41,13 +43,12 @@ export function createWebAnalysis({
   observedOutcome = null,
   traceSeconds = 60,
 } = {}) {
-  const save = decodeSaveForWeb(saveText);
   const resolvedTargetId = resolveTargetId(targetId) ?? "duct_taped_banana";
-  const target = sketches[resolvedTargetId];
+  const combatAssumptions = combatAssumptionsFromSave(save);
+  const target = sketchForEncounter(sketches[resolvedTargetId], combatAssumptions);
   if (!target) throw new Error(`Unknown target sketch: ${resolvedTargetId}`);
 
   const analysis = analyzeSave({ save, sketches, targetId: resolvedTargetId, dataMetadata });
-  const combatAssumptions = combatAssumptionsFromSave(save);
   const statSource = analysis.stats.recommendedSource;
   const baseStats = analysis.stats.sources[statSource] ?? {};
   const assumedVictoryPlan = normalizeAssumedVictories({
@@ -92,6 +93,7 @@ export function createWebAnalysis({
     assumptions: combatAssumptions,
   });
   const diagnostics = createDiagnosticReport({
+    assumptions: combatAssumptions,
     target,
     player: finalStats,
     simulation: result,
@@ -103,7 +105,7 @@ export function createWebAnalysis({
   appendTimeLimitDiagnostics(diagnostics, result);
   const fightTrace = createFightTrace({
     player: finalStats,
-    enemy: enemyFromTarget(target),
+    enemy: enemyFromSketch(target),
     maxSeconds: targetMaxSeconds,
     traceSeconds: Math.min(Math.max(5, toNumber(traceSeconds, 60)), Math.max(5, targetMaxSeconds)),
     seed: `${seed}:${resolvedTargetId}:trace`,
@@ -219,10 +221,10 @@ export function createCompanionAnalysis({
   maxSeconds = 120,
   seed = "game-companion",
 } = {}) {
-  const save = decodeSaveForWeb(saveText);
+  const save = decodeSaveText(saveText);
   const resolvedTargetId = inferCompanionTargetId({ save, sketches, targetId });
   const analysis = createWebAnalysis({
-    saveText: JSON.stringify(save),
+    save,
     sketches,
     dataMetadata,
     targetId: resolvedTargetId,
@@ -281,6 +283,8 @@ export function summarizeGameBundle({ sketches = {}, dataMetadata = null } = {})
 
   return {
     gameVersion: dataMetadata?.gameVersion ?? null,
+    platform: dataMetadata?.platform ?? null,
+    buildId: dataMetadata?.buildId ?? null,
     saveVersion: dataMetadata?.saveVersion ?? null,
     asset: dataMetadata?.asset ?? null,
     capturedAt: dataMetadata?.capturedAt ?? null,
@@ -298,7 +302,6 @@ export function createTargetOptions({ sketches = {} } = {}) {
     .map((id) => ({ ...targetSummary(sketches[id]), ...targetRewardsSummary(sketches[id]), group: "key" }));
   const rest = Object.values(sketches)
     .filter((sketch) => !IMPORTANT_TARGET_IDS.includes(sketch.id))
-    .filter((sketch) => sketch.rarity === "masterpiece" || sketch.rarity === "opus")
     .map((sketch) => ({ ...targetSummary(sketch), ...targetRewardsSummary(sketch), group: sketch.rarity }))
     .sort((a, b) => a.rarity.localeCompare(b.rarity) || a.name.localeCompare(b.name));
   return [...important, ...rest];
@@ -333,6 +336,7 @@ function createActiveSketchRows({ analysis, sketches, baseStats, trialsSetting, 
       remainingToMax: item.rewardProgress?.remainingToMax ?? 0,
       runVictories: item.rewardProgress?.runVictories ?? 0,
       winRate: round(result.winRate),
+      winRateCi95: result.winRateCi95,
       ci95HalfWidth: round(result.winRateCi95?.halfWidth ?? 0),
       trials: result.trials,
       timeoutRate: round(result.timeoutRate ?? 0),
@@ -354,6 +358,7 @@ function createBuildComparison({ sketches, finalStats, activeSketches, trialsSet
     targetId: farmTarget?.id ?? null,
     targetName: farmTarget?.name ?? "No active farm target",
     winRate: farmTarget?.winRate ?? null,
+    winRateCi95: farmTarget?.winRateCi95 ?? null,
     ci95HalfWidth: farmTarget?.ci95HalfWidth ?? null,
     trials: farmTarget?.trials ?? null,
     p90Seconds: farmTarget?.p90Seconds ?? null,
@@ -376,6 +381,7 @@ function createBuildComparison({ sketches, finalStats, activeSketches, trialsSet
       targetId: id,
       targetName: target.name ?? id,
       winRate: round(result.winRate),
+      winRateCi95: result.winRateCi95,
       ci95HalfWidth: round(result.winRateCi95?.halfWidth ?? 0),
       trials: result.trials,
       p90Seconds: round(result.p90Seconds ?? 0),
@@ -416,6 +422,7 @@ function createTargetComparisons({ sketches, activeSketches, finalStats, trialsS
       rarity: item.rarity,
       source: "active_run",
       winRate: item.winRate,
+      winRateCi95: item.winRateCi95,
       ci95HalfWidth: item.ci95HalfWidth,
       trials: item.trials,
       p90Seconds: item.p90Seconds,
@@ -434,6 +441,7 @@ function comparisonRow({ target, result, source }) {
     rarity: target.rarity ?? "unknown",
     source,
     winRate: round(result.winRate),
+    winRateCi95: result.winRateCi95,
     ci95HalfWidth: round(result.winRateCi95?.halfWidth ?? 0),
     trials: result.trials,
     p90Seconds: round(result.p90Seconds ?? 0),
@@ -560,6 +568,7 @@ function createRollWishlist({
   for (const candidate of preselected) {
     const sketch = candidate.sketch;
     const nextStats = applySketchRewards({
+      state,
       baseStats: finalStats,
       sketches,
       defeatedIds: [sketch.id],
@@ -747,19 +756,10 @@ function secondsLabel(value) {
   return Number.isFinite(number) ? `${number.toFixed(1)}s` : "--";
 }
 
-function decodeSaveForWeb(saveText) {
-  const text = String(saveText ?? "").trim();
-  if (!text) throw new Error("Save export is empty.");
-  try {
-    return decodeSaveText(text);
-  } catch {
-    return JSON.parse(text);
-  }
-}
-
 function applyAssumedVictories({ baseStats, sketches, state, assumedVictoryIds }) {
   if (assumedVictoryIds.length === 0) return baseStats;
   return applySketchRewards({
+    state,
     baseStats,
     sketches,
     defeatedIds: assumedVictoryIds,
@@ -888,7 +888,7 @@ function simulateTargetWithAdaptiveLimit({ target, player, trialsSetting, maxSec
 function simulateTarget({ target, player, trialsSetting, maxSeconds, seed, assumptions = {} }) {
   return runCombatSimulation({
     player,
-    enemy: enemyFromTarget(target),
+    enemy: enemyFromSketch(target),
     trialsSetting,
     maxSeconds,
     seed,
@@ -953,16 +953,6 @@ function appendTimeLimitDiagnostics(diagnostics, result) {
     },
     ...(diagnostics.why ?? []),
   ].slice(0, 8);
-}
-
-function enemyFromTarget(target) {
-  return {
-    id: target.id,
-    name: target.name,
-    ...target.stats,
-    immunities: target.immunities,
-    vulnerability: target.vulnerability,
-  };
 }
 
 function normalizeStrategyOptions(options = {}) {

@@ -272,7 +272,7 @@ function createSpecialCurrencyModels({ state, goalCurrencies, runEV, generatorEV
       goal: goal > 0 ? roundNumber(goal) : null,
       missing: roundNumber(missing),
       generatorPerSecond: roundNumber(toNumber(generatorEV.currencies?.[currency]?.perSecond)),
-      runPerSecond: roundNumber(toNumber(runEV?.currencies?.[currency]?.perSecond)),
+      runPerSecond: roundNumber(battleCurrencyPerSecond({ currency, runEV })),
       perSecond: roundNumber(perSecond),
       expectedPerRun: roundNumber(expectedPerRun),
       secondsToGoal: missing > 0 ? secondsToGoal(missing, perSecond) : 0,
@@ -455,7 +455,13 @@ function secretUpgradeMateriality({ item, profile, generatorEV }) {
 }
 
 function combinedCurrencyPerSecond({ currency, runEV, generatorEV }) {
-  return toNumber(runEV?.currencies?.[currency]?.perSecond) + toNumber(generatorEV.currencies?.[currency]?.perSecond);
+  return battleCurrencyPerSecond({ currency, runEV }) + toNumber(generatorEV.currencies?.[currency]?.perSecond);
+}
+
+function battleCurrencyPerSecond({ currency, runEV }) {
+  const item = runEV?.currencies?.[currency];
+  if (item?.battlePerSecond != null) return toNumber(item.battlePerSecond);
+  return Math.max(0, toNumber(item?.perSecond) - toNumber(item?.passiveExpected) / Math.max(1, toNumber(runEV?.windowSeconds)));
 }
 
 function isSecretStashUnlocked(state) {

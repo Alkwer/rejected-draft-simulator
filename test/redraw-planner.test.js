@@ -103,6 +103,50 @@ test("estimateFindNewSketchOdds models Find New Sketches as a separate mode", ()
   assert.ok(result.newSketchPool.byRarity.opus > 0);
 });
 
+test("Find New Sketches uses the Steam glossary even for a sketch with no victories", () => {
+  const options = {
+    sketches: { rough_a: sketches.rough_a },
+    totalSlots: 1,
+    maxRedraws: 2,
+    trials: 5,
+  };
+  const seen = estimateFindNewSketchOdds({
+    ...options,
+    state: { glossaryUnlocks: ["rough_a"], sketchVictories: { rough_a: 0 } },
+  });
+  const unseen = estimateFindNewSketchOdds({
+    ...options,
+    state: { glossaryUnlocks: [], glossarySketchIds: ["rough_a"], sketchVictories: { rough_a: 1 } },
+  });
+  assert.equal(seen.newSketchPool.total, 0);
+  assert.equal(seen.probabilities.singleRedrawNewSketch, 0);
+  assert.equal(unseen.newSketchPool.total, 1);
+  assert.equal(unseen.probabilities.singleRedrawNewSketch, 1);
+});
+
+test("Targeted Redraw respects the slot limit when guarantees or minimums overfill a draw", () => {
+  const guaranteeOverflow = estimateRedrawOdds({
+    sketches,
+    totalSlots: 1,
+    guaranteedIds: ["rough_a", "duct"],
+    targetIds: ["duct"],
+    trials: 5,
+  });
+  const minimumOverflow = estimateRedrawOdds({
+    sketches,
+    totalSlots: 2,
+    minimums: { rough: 2, opus: 1 },
+    trials: 5,
+  });
+
+  assert.equal(guaranteeOverflow.targetRates.duct, 0);
+  assert.equal(guaranteeOverflow.averageCountsByRarity.rough, 1);
+  assert.equal(guaranteeOverflow.averageCountsByRarity.masterpiece, 0);
+  assert.equal(minimumOverflow.averageCountsByRarity.opus, 0);
+  assert.equal(minimumOverflow.probabilities.rarityMinimums, 0);
+  assert.equal(minimumOverflow.targetedRedraw.enabled, false);
+});
+
 test("estimateRedrawOdds supports paragon weighting and Unscrambled Guarantee", () => {
   const weighted = estimateRedrawOdds({
     sketches,
@@ -265,6 +309,39 @@ test("recommendTargetedRedrawSettings ranks target and farm tradeoffs", () => {
   assert.ok(result.recommendations[0].targetProbability > 0);
   assert.equal(result.recommendations[1].targetProbability, 0);
   assert.ok(result.recommendations[1].farmScore > result.recommendations[0].farmScore);
+});
+
+test("Targeted Redraw excludes infeasible candidates from the ranking", () => {
+  const candidates = [
+    { name: "slots", totalSlots: 1, minimums: { rough: 1 } },
+    { name: "pool", totalSlots: 3, minimums: { framed: 2 } },
+    { name: "valid", totalSlots: 1, minimums: { opus: 1 } },
+  ];
+  const options = { sketches, candidates, trials: 5, guaranteedIds: ["opus_a"] };
+  const ranked = recommendTargetedRedrawSettings(options);
+  assert.deepEqual(ranked.recommendations.map(({ name }) => name), ["valid"]);
+  assert.deepEqual(ranked.blockedCandidates.map(({ name, score, tradeoff }) => [name, score, tradeoff]), [
+    ["slots", null, "infeasible"],
+    ["pool", null, "infeasible"],
+  ]);
+  assert.deepEqual(ranked.blockedCandidates.map(({ estimate }) => estimate.targetedRedraw.infeasibleReasons[0].code), [
+    "targeted_redraw_insufficient_slots",
+    "targeted_redraw_insufficient_pool",
+  ]);
+
+  const unavailable = recommendTargetedRedrawSettings({ ...options, unscrambledGuaranteeIds: ["false_paragon"] });
+  assert.deepEqual(unavailable.recommendations, []);
+  assert.equal(unavailable.blockedCandidates.length, candidates.length);
+  assert.ok(unavailable.blockedCandidates.every(({ estimate }) => estimate.targetedRedraw.infeasibleReasons
+    .some(({ code }) => code === "targeted_redraw_guarantee_unavailable")));
+
+  const overCapacity = recommendTargetedRedrawSettings({
+    ...options,
+    state: { fundamentals: { opusSketches: 0 } },
+  });
+  assert.deepEqual(overCapacity.recommendations, []);
+  assert.ok(overCapacity.blockedCandidates.every(({ estimate }) => estimate.targetedRedraw.infeasibleReasons
+    .some(({ code }) => code === "targeted_redraw_guarantee_capacity_exceeded")));
 });
 
 test("evaluateCurrentRun returns keep/redraw decisions from active save sketches", () => {

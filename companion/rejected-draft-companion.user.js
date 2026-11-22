@@ -380,7 +380,8 @@
     const parity = capture && capture.parity ? capture.parity : null;
     const fixture = capture && capture.fixture ? capture.fixture : null;
     const warnings = capture && capture.warnings ? capture.warnings : [];
-    const status = parity ? (parity.ok ? "Fixture PASS" : "Fixture mismatch") : "Fixture captured";
+    const status = parity?.status === "no_observation" ? "No observation"
+      : parity ? (parity.ok ? "Fixture PASS" : "Fixture mismatch") : "Fixture captured";
     const message = capture && capture.source === "no_observed_fight"
       ? "No observed fight log was found"
       : "Captured " + ((capture && capture.targetName) || "target") + " fixture";
@@ -393,7 +394,7 @@
       message: message,
       detail: detail,
       warnings: warnings,
-      kind: parity && !parity.ok ? "error" : "ok",
+      kind: parity && !parity.ok && parity.status !== "no_observation" ? "error" : "ok",
     });
 
     if (fixture) {

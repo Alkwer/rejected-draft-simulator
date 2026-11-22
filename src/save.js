@@ -1,13 +1,78 @@
 import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { isRecord, isSteamSave, parseSaveEnvelope } from "../web/save-format.js";
+export { isFullSteamSave, isSteamSave } from "../web/save-format.js";
 
-export function readSaveFile(path) {
-  return decodeSaveText(fs.readFileSync(path, "utf8"));
+const STEAM_SLOT_COUNT = 6;
+
+export function findActiveSteamSave(steamSaveDir = defaultSteamSaveDir()) {
+  if (!steamSaveDir) return null;
+
+  const directory = path.resolve(steamSaveDir);
+  const slotMarker = path.join(directory, "last-slot.txt");
+  let lastSlot;
+  try {
+    if (fs.lstatSync(slotMarker, { throwIfNoEntry: false })?.isFile()) {
+      lastSlot = fs.readFileSync(slotMarker, "utf8").trim();
+    }
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+  }
+
+  // The selected slot can be older than another slot on disk.
+  const slots = Array.from({ length: STEAM_SLOT_COUNT }, (_, index) => index + 1)
+    .flatMap((slot) => {
+      const file = path.join(directory, `slot-${slot}.json`);
+      const stat = fs.lstatSync(file, { throwIfNoEntry: false });
+      return stat?.isFile() ? [{ slot, file, mtimeMs: stat.mtimeMs }] : [];
+    });
+
+  return slots.find(({ slot }) => String(slot) === lastSlot)?.file
+    ?? slots.sort((a, b) => b.mtimeMs - a.mtimeMs)[0]?.file
+    ?? null;
+}
+
+export function defaultSteamSaveDir() {
+  let appData;
+  switch (process.platform) {
+    case "win32":
+      appData = process.env.APPDATA;
+      break;
+    case "linux":
+      appData = process.env.XDG_CONFIG_HOME || path.join(os.homedir(), ".config");
+      break;
+    case "darwin":
+      appData = path.join(os.homedir(), "Library", "Application Support");
+      break;
+  }
+  return appData ? path.join(appData, "Rejected Draft", "saves", "steam") : null;
+}
+
+export function readSaveFile(file) {
+  return decodeSaveText(fs.readFileSync(file, "utf8"));
 }
 
 export function decodeSaveText(text) {
-  const trimmed = text.trim();
-  const json = Buffer.from(trimmed, "base64").toString("utf8");
-  return JSON.parse(json);
+  const save = parseSaveEnvelope(text, (value) => Buffer.from(value, "base64").toString("utf8"));
+  if (isSteamSave(save)) {
+    save.state.saveProfile ??= save.meta?.profile;
+    validateSteamPlayerStats(save.state.playerStats);
+  }
+
+  return save;
+}
+
+function validateSteamPlayerStats(stats) {
+  if (!isRecord(stats) || ["maxHp", "attack", "attackSpeed"].some((key) => !Object.hasOwn(stats, key))) {
+    throw new Error("Invalid Rejected Draft Steam save. Missing player stats.");
+  }
+  for (const [key, value] of Object.entries(stats)) {
+    if (key === "immunities" || key === "vulnerability") continue;
+    if (!Number.isFinite(toNumber(value, NaN))) {
+      throw new Error(`Steam player stat ${key} cannot be represented as a finite number.`);
+    }
+  }
 }
 
 export function toNumber(value, fallback = 0) {
@@ -29,10 +94,12 @@ export function toNumber(value, fallback = 0) {
 }
 
 export function extractStats(state, source = "playerStats") {
-  const raw = state?.[source] ?? {};
-  const stats = {};
-  for (const [key, value] of Object.entries(raw)) {
-    stats[key] = toNumber(value);
-  }
-  return stats;
+  return normalizeStats(state?.[source]);
+}
+
+export function normalizeStats(raw = {}) {
+  return Object.fromEntries(Object.entries(raw ?? {}).map(([key, value]) => [
+    key,
+    key === "immunities" || key === "vulnerability" ? value : toNumber(value),
+  ]));
 }

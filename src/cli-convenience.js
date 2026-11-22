@@ -3,7 +3,8 @@ import os from "node:os";
 import path from "node:path";
 
 import { runMonteCarlo } from "./combat.js";
-import { toNumber } from "./save.js";
+import { findActiveSteamSave, toNumber } from "./save.js";
+import { enemyFromSketch } from "./combat/steam-encounter.js";
 
 export const TARGET_ALIASES = {
   duct: "duct_taped_banana",
@@ -22,10 +23,10 @@ export function resolveTargetId(value) {
   return TARGET_ALIASES[normalized] ?? raw;
 }
 
-export function resolveSavePath(value, { downloadsDir = defaultDownloadsDir() } = {}) {
+export function resolveSavePath(value, { downloadsDir = defaultDownloadsDir(), steamSaveDir } = {}) {
   if (value == null || value === true) return value;
   if (String(value).toLowerCase() !== "latest") return value;
-  return findLatestSaveExport(downloadsDir);
+  return findActiveSteamSave(steamSaveDir) ?? findLatestSaveExport(downloadsDir);
 }
 
 export function findLatestSaveExport(downloadsDir = defaultDownloadsDir()) {
@@ -183,13 +184,7 @@ export function createCurrentRunReport({
 
     const simulation = runCombatSimulation({
       player: baseStats,
-      enemy: {
-        id,
-        name: sketch.name,
-        ...sketch.stats,
-        immunities: sketch.immunities,
-        vulnerability: sketch.vulnerability,
-      },
+      enemy: enemyFromSketch(sketch, id),
       trialsSetting,
       maxSeconds,
       seed: `${seed}:${id}`,
@@ -204,6 +199,7 @@ export function createCurrentRunReport({
       remainingToMax,
       trials: simulation.trials,
       winRate: round(simulation.winRate),
+      winRateCi95: simulation.winRateCi95,
       ci95HalfWidth: round(simulation.winRateCi95?.halfWidth ?? 0),
       timeoutRate: round(simulation.timeoutRate ?? 0),
       medianSeconds: round(simulation.medianSeconds ?? 0),

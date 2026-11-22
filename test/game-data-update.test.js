@@ -11,6 +11,10 @@ import {
   parseGamePageAssets,
   updateGameData,
 } from "../src/game-data-update.js";
+import { readGameBundle } from "../src/sketch-data.js";
+
+const GAME_URL = "https://example.test/rejected_draft/";
+const WEB_SKETCHES = fs.readFileSync(new URL("../data/artistLinks.js", import.meta.url), "utf8");
 
 test("parseGamePageAssets detects main and artistLinks assets from game HTML", () => {
   const html = `
@@ -47,8 +51,9 @@ test("extractGameVersion and extractSaveVersion read current patch metadata from
   assert.equal(extractSaveVersion(mainJs), 52);
 });
 
-test("updateGameData downloads assets and writes artistLinks plus metadata", async () => {
+test("updateGameData downloads assets and writes artistLinks plus metadata", async (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rd-update-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const dataPath = path.join(dir, "artistLinks.js");
   const responses = new Map([
     ["https://example.test/rejected_draft/", `
@@ -59,7 +64,7 @@ test("updateGameData downloads assets and writes artistLinks plus metadata", asy
       const patch = "v0.881";
       persist({version:53,skipHydration:false});
     `],
-    ["https://example.test/rejected_draft/assets/artistLinks-NewHash.js", "export const sketches = [];"],
+    ["https://example.test/rejected_draft/assets/artistLinks-NewHash.js", WEB_SKETCHES],
   ]);
 
   const result = await updateGameData({
@@ -73,7 +78,8 @@ test("updateGameData downloads assets and writes artistLinks plus metadata", asy
   assert.equal(result.metadata.gameVersion, "v0.881");
   assert.equal(result.metadata.saveVersion, 53);
   assert.equal(result.metadata.asset, "artistLinks-NewHash.js");
-  assert.equal(fs.readFileSync(dataPath, "utf8"), "export const sketches = [];");
+  assert.equal(fs.readFileSync(dataPath, "utf8"), WEB_SKETCHES);
+  assert.ok(readGameBundle(dataPath).sketches.rose_window);
   assert.deepEqual(JSON.parse(fs.readFileSync(path.join(dir, "metadata.json"), "utf8")), result.metadata);
 
   const versions = JSON.parse(fs.readFileSync(path.join(dir, "game-versions.json"), "utf8"));
@@ -81,8 +87,9 @@ test("updateGameData downloads assets and writes artistLinks plus metadata", asy
   assert.equal(versions.versions["v0.881"].asset, "artistLinks-NewHash.js");
 });
 
-test("updateGameData downloads split data-sketches assets when artistLinks is absent", async () => {
+test("updateGameData downloads split data-sketches assets when artistLinks is absent", async (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rd-update-split-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const dataPath = path.join(dir, "artistLinks.js");
   const responses = new Map([
     ["https://example.test/rejected_draft/", `
@@ -95,7 +102,7 @@ test("updateGameData downloads split data-sketches assets when artistLinks is ab
       import"./game-store-SplitHash.js";
     `],
     ["https://example.test/rejected_draft/assets/game-store-SplitHash.js", "persist({version:54,skipHydration:false});"],
-    ["https://example.test/rejected_draft/assets/data-sketches-SplitHash.js", "export const sketches = [];"],
+    ["https://example.test/rejected_draft/assets/data-sketches-SplitHash.js", WEB_SKETCHES],
   ]);
 
   const result = await updateGameData({
@@ -111,7 +118,113 @@ test("updateGameData downloads split data-sketches assets when artistLinks is ab
   assert.equal(result.metadata.asset, "data-sketches-SplitHash.js");
   assert.equal(result.metadata.assetKind, "data-sketches");
   assert.equal(result.metadata.storeAsset, "game-store-SplitHash.js");
-  assert.equal(fs.readFileSync(dataPath, "utf8"), "export const sketches = [];");
+  assert.equal(fs.readFileSync(dataPath, "utf8"), WEB_SKETCHES);
+});
+
+function webImport(dataPath, sketches, main = 'persist({version:54,skipHydration:false});') {
+  return {
+    dataPath, gameUrl: GAME_URL, fetchImpl: createMockFetch(new Map([
+      [GAME_URL, '<script src="assets/main-New.js"></script>'],
+      [GAME_URL + "assets/main-New.js", `import "./data-sketches-New.js"; ${main}`],
+      [GAME_URL + "assets/data-sketches-New.js", sketches],
+    ])),
+  };
+}
+
+function cacheWebCatalog(t) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rd-update-cache-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const metadata = { asset: "data-sketches-Cached.js", saveVersion: 52 };
+  const original = {
+    "artistLinks.js": WEB_SKETCHES,
+    "metadata.json": JSON.stringify(metadata),
+    "game-versions.json": JSON.stringify({ current: "main-Old.js", versions: { "main-Old.js": metadata } }),
+  };
+  for (const [file, contents] of Object.entries(original)) fs.writeFileSync(path.join(dir, file), contents);
+  return {
+    dir, metadata, dataPath: path.join(dir, "artistLinks.js"),
+    checkUnchanged() {
+      assert.deepEqual(fs.readdirSync(dir).sort(), Object.keys(original).sort());
+      for (const [file, contents] of Object.entries(original)) {
+        assert.equal(fs.readFileSync(path.join(dir, file), "utf8"), contents);
+      }
+    },
+  };
+}
+
+test("invalid web downloads preserve the catalog, metadata and version history", async (t) => {
+  const cache = cacheWebCatalog(t);
+  const truncated = WEB_SKETCHES.slice(0, WEB_SKETCHES.lastIndexOf("],n="));
+  const invalid = [
+    [webImport(cache.dataPath, "export const sketches = [];"), /catalog.*missing/i],
+    [webImport(cache.dataPath, WEB_SKETCHES.replace('id:"rose_window"', 'id:"placeholder"')), /missing.*rose_window/i],
+    [webImport(cache.dataPath, WEB_SKETCHES.replace('id:"stick man"', "id:'stick man'")), /incomplete/i],
+    [webImport(cache.dataPath, truncated), /bundle syntax/i],
+    [webImport(cache.dataPath, WEB_SKETCHES, ""), /web save schema version/i],
+  ];
+  for (const [options, expected] of invalid) {
+    const result = await updateGameData(options);
+    assert.equal(result.updated, false);
+    assert.equal(result.offline, true);
+    assert.deepEqual(result.metadata, cache.metadata);
+    assert.match(result.error, expected);
+    cache.checkUnchanged();
+    await assert.rejects(updateGameData({ ...options, offlineFallback: false }), expected);
+    cache.checkUnchanged();
+  }
+});
+
+test("a complete web bundle can remove a target", async (t) => {
+  const cache = cacheWebCatalog(t);
+  const previous = readGameBundle(cache.dataPath);
+  const revised = WEB_SKETCHES.replace(/\{id:"stick man",name:"Stick Man",.*?\},(?=\{id:"fountain_pen_duelist")/, "");
+  const result = await updateGameData(webImport(cache.dataPath, revised));
+  assert.equal(result.updated, true);
+  const { sketches } = readGameBundle(cache.dataPath);
+  assert.equal(Object.keys(sketches).length, Object.keys(previous.sketches).length - 1);
+  assert.equal(Object.hasOwn(sketches, "stick man"), false);
+  assert.ok(sketches.rose_window);
+});
+
+test("web publication can retry after interruption between file replacements", async (t) => {
+  const cache = cacheWebCatalog(t);
+  const abandoned = fs.mkdtempSync(path.join(cache.dir, ".web-catalog-update-"));
+  const revised = WEB_SKETCHES + "\n// New bundle";
+  fs.renameSync(cache.dataPath, path.join(abandoned, "backup-0"));
+  fs.writeFileSync(cache.dataPath, revised);
+  fs.writeFileSync(path.join(abandoned, "next-1"), "{}");
+
+  const retried = await updateGameData(webImport(cache.dataPath, revised));
+  assert.equal(retried.updated, true);
+  assert.deepEqual(readGameBundle(cache.dataPath).dataMetadata, retried.metadata);
+  const history = JSON.parse(fs.readFileSync(path.join(cache.dir, "game-versions.json"), "utf8"));
+  assert.equal(history.current, retried.metadata.gameVersion);
+  assert.deepEqual(history.versions["main-Old.js"], cache.metadata);
+  assert.equal(fs.readFileSync(path.join(abandoned, "backup-0"), "utf8"), WEB_SKETCHES);
+});
+
+test("a web publication failure restores both the previous source and metadata before retry", async (t) => {
+  const cache = cacheWebCatalog(t);
+  const renameSync = fs.renameSync;
+  const failPublish = t.mock.method(fs, "renameSync", (from, to) => {
+    if (path.basename(from) === "next-2") throw Object.assign(new Error("version file is busy"), { code: "EBUSY" });
+    return renameSync(from, to);
+  });
+  const options = webImport(cache.dataPath, WEB_SKETCHES + "\n// New bundle");
+  const result = await updateGameData(options);
+  assert.equal(result.updated, false);
+  assert.equal(result.offline, true);
+  assert.match(result.error, /version file is busy/);
+  cache.checkUnchanged();
+
+  failPublish.mock.restore();
+  const retried = await updateGameData(options);
+  assert.equal(retried.updated, true);
+  assert.equal(retried.metadata.asset, "data-sketches-New.js");
+  assert.equal(fs.readFileSync(cache.dataPath, "utf8"), WEB_SKETCHES + "\n// New bundle");
+  const history = JSON.parse(fs.readFileSync(path.join(cache.dir, "game-versions.json"), "utf8"));
+  assert.equal(history.current, "main-New.js");
+  assert.deepEqual(history.versions["main-Old.js"], cache.metadata);
 });
 
 test("checkGameDataFreshness warns when local asset differs from current page", async () => {
@@ -143,6 +256,7 @@ test("updateGameData uses last local data when offline fallback is enabled", asy
 
   const result = await updateGameData({
     dataPath,
+    gameUrl: "https://example.test/rejected_draft/",
     fetchImpl: async () => {
       throw new Error("network unavailable");
     },
