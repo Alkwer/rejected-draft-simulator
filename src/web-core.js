@@ -113,7 +113,10 @@ export function createWebAnalysis({
     seed: `${seed}:${resolvedTargetId}:trace`,
     assumptions: combatAssumptions,
   });
-  const activeSketches = createActiveSketchRows({ analysis, sketches, baseStats, trialsSetting: auxiliaryTrialsSetting, maxSeconds, seed, assumptions: combatAssumptions });
+  const activeSketches = createActiveSketchRows({
+    analysis, sketches, baseStats, trialsSetting: auxiliaryTrialsSetting, maxSeconds, seed, assumptions: combatAssumptions,
+    targetId: resolvedTargetId, currentTargetResult: assumedRouteIds.length ? null : result,
+  });
   const recommendation = createRunRecommendation({
     targetId: resolvedTargetId,
     currentRun: { targets: activeSketches.filter((row) => !hiddenSketchIds.includes(row.id)) },
@@ -310,7 +313,7 @@ export function createTargetOptions({ sketches = {} } = {}) {
   return [...important, ...rest];
 }
 
-function createActiveSketchRows({ analysis, sketches, baseStats, trialsSetting, maxSeconds, seed, assumptions = {} }) {
+function createActiveSketchRows({ analysis, sketches, baseStats, trialsSetting, maxSeconds, seed, assumptions, targetId, currentTargetResult }) {
   const remaining = [
     ...analysis.run.active.remaining,
     analysis.run.active.target,
@@ -323,14 +326,10 @@ function createActiveSketchRows({ analysis, sketches, baseStats, trialsSetting, 
     seen.add(item.id);
     const sketch = sketches[item.id];
     if (!sketch?.stats) continue;
-    const result = simulateTarget({
-      target: sketch,
-      player: baseStats,
-      trialsSetting,
-      maxSeconds,
-      seed: `${seed}:active:${item.id}`,
-      assumptions,
-    });
+    const options = { target: sketch, player: baseStats, trialsSetting, maxSeconds, seed: `${seed}:active:${item.id}`, assumptions };
+    const result = item.id === targetId
+      ? currentTargetResult ?? simulateTargetWithAdaptiveLimit(options).result
+      : simulateTarget(options);
     rows.push({
       id: item.id,
       name: sketch.name ?? item.name ?? item.id,
@@ -732,7 +731,7 @@ function applyAssumedVictories({ baseStats, sketches, state, assumedVictoryIds }
     baseStats,
     sketches,
     defeatedIds: assumedVictoryIds,
-    boostedIds: new Set(),
+    boostedIds: new Set(state?.boostedSketchIds ?? []),
     rewardDecay: toNumber(state?.fundamentals?.rewardDecay, 1),
     rewardBoosterEffect: toNumber(state?.fundamentals?.rewardBoosterEffect, 50),
     existingVictories: state?.sketchVictories ?? {},

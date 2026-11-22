@@ -34,6 +34,14 @@ try {
   const range = `${(100 * lower).toFixed(1)}%–${(100 * upper).toFixed(1)}%`;
   assert.ok((await page.locator("#winRateCi").textContent()).includes(range));
 
+  await page.getByRole("tab", { name: "Battle", exact: true }).press("Enter");
+  for (const width of [1440, 768, 390]) {
+    await page.setViewportSize({ width, height: 900 });
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth), width, `Battle panel overflows at ${width}px`);
+  }
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.getByRole("tab", { name: "Run", exact: true }).press("Enter");
+
   const { state } = JSON.parse(Buffer.from(saveText, "base64").toString());
   const steamFile = JSON.stringify({ meta: { profile: "steam" }, version: 86, state });
   const steamResponse = page.waitForResponse((r) => r.url().endsWith("/api/analyze"));
@@ -69,7 +77,7 @@ try {
   assert.equal(await page.locator("#fightTraceList").textContent(), "No trace");
   assert.equal(await page.locator("#fullCompareTable tr").count(), 0);
   assert.deepEqual(errors, []);
-  console.log("Passed save imports, confidence interval, queued analysis changes and clearing results.");
+  console.log("Passed save imports, Battle panel widths, confidence interval, queued analysis changes and clearing results.");
 } finally {
   await browser.close();
   if (server.listening) await new Promise((resolve) => server.close(resolve));

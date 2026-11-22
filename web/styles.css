@@ -570,7 +570,7 @@ button:active {
 }
 
 [data-tooltip]::after {
-  content: attr(data-tooltip);
+  content: none;
   position: absolute;
   left: 50%;
   bottom: calc(100% + 9px);
@@ -596,6 +596,7 @@ button:active {
 
 [data-tooltip]:hover::after,
 [data-tooltip]:focus-visible::after {
+  content: attr(data-tooltip);
   opacity: 1;
   transform: translate(-50%, 0) rotate(-.4deg);
 }
@@ -1272,6 +1273,12 @@ body[data-density="dense"] td {
 }
 
 @media (max-width: 980px) {
+  .sketch-frame::before,
+  .panel::after {
+    inset: 4px;
+    transform: none;
+  }
+
   .app-shell {
     padding: 14px 14px 22px;
   }

@@ -109,7 +109,7 @@ test("createWebAnalysis applies requested kill counts and caps them at remaining
   assert.ok(Math.abs(analysis.finalStats.attack - expectedAttack) < 1e-9);
 });
 
-test("createWebAnalysis keeps legacy assumedVictoryIds as one kill per checked sketch", () => {
+test("legacy assumed victories count each checked sketch once and include its saved booster", () => {
   const saveText = encodeSave({
     playerStats: { maxHp: 1000, attack: 1, attackSpeed: 1000, accuracy: 100, minDamage: 100, maxDamage: 100 },
     battleStats: { maxHp: 1000, attack: 1, attackSpeed: 1000, accuracy: 100, minDamage: 100, maxDamage: 100 },
@@ -118,6 +118,7 @@ test("createWebAnalysis keeps legacy assumedVictoryIds as one kill per checked s
     sketchRunVictories: {},
     sketchVictories: {},
     fundamentals: { maxVictories: 3, rewardDecay: 1, rewardBoosterEffect: 50 },
+    boostedSketchIds: ["farm_a"],
   });
 
   const analysis = createWebAnalysis({
@@ -132,7 +133,7 @@ test("createWebAnalysis keeps legacy assumedVictoryIds as one kill per checked s
 
   assert.deepEqual(analysis.assumedVictories, { farm_a: 1 });
   assert.deepEqual(analysis.assumedVictoryIds, ["farm_a"]);
-  assert.equal(analysis.finalStats.attack, 1001);
+  assert.equal(analysis.finalStats.attack, 1501);
 });
 
 test("createWebAnalysis defaults omitted trials to auto", () => {
@@ -197,6 +198,9 @@ test("createWebAnalysis extends target-only timeout windows before reporting a f
   assert.equal(analysis.result.timeLimit.baseline.winRate, 0);
   assert.ok(analysis.result.timeLimit.effectiveMaxSeconds >= 300);
   assert.match(analysis.diagnostics.sanityChecks[0].detail, /extended/i);
+  assert.equal(analysis.recommendation.action, "fight_target");
+  assert.equal(analysis.nextAction.title, "Fight Slow Target");
+  assert.equal(analysis.activeSketches[0].p90Seconds, analysis.result.p90Seconds);
 });
 
 test("rejected long-fight probes preserve the configured timeout and quantiles", () => {
@@ -228,6 +232,7 @@ test("reward deltas and wishlist use paired trials from the current hypothetical
   assert.equal(before.rollWishlist.items.find((item) => item.id === "cash").targetWinRateDelta, 0);
   const after = createWebAnalysis({ ...input, assumedVictories: { farm_a: 1 } });
   assert.equal(after.result.winRate, 1);
+  assert.ok(after.activeSketches.find((row) => row.id === "boss").winRate < 1);
   assert.equal(after.activeDeltas.cash.winRate, 1);
   assert.equal(after.activeDeltas.cash.p90Delta, 0);
 });
@@ -454,7 +459,8 @@ test("createWebAnalysis caps auxiliary dashboard simulations for UI performance"
 
   assert.equal(analysis.result.autoTrials.mode, "auto");
   assert.ok(analysis.result.trials >= 200);
-  assert.ok(analysis.activeSketches.every((item) => item.trials <= 100));
+  assert.equal(analysis.activeSketches.find((item) => item.id === analysis.target.id).trials, analysis.result.trials);
+  assert.ok(analysis.activeSketches.filter((item) => item.id !== analysis.target.id).every((item) => item.trials <= 100));
   assert.ok(analysis.targetComparisons.every((item) => item.trials <= 100));
   assert.ok(analysis.buildComparison.every((item) => item.trials == null || item.trials <= 100));
   assert.ok(Object.values(analysis.activeDeltas).every((item) => item.trials <= 100));
