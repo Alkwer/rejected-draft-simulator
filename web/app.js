@@ -99,12 +99,21 @@ const state = {
   activeSketches: [],
   selectedSketchId: null,
   autoAnalyzeTimer: null,
+  pendingAnalysis: false,
+  analysisGeneration: 0,
   lastAnalysis: null,
   isBusy: false,
   slotName: null,
   platform: null,
   targetRequest: 0,
 };
+
+const emptyResultFields = [
+  els.stripQ, els.stripQDelta, els.stripTarget, els.stripWin, els.stripWinDetail, els.stripTimeout,
+  els.stripTimeDetail, els.stripDecision, els.nextActionBadge, els.nextActionBody, els.targetLabel,
+  els.winRate, els.winRateCi, els.timeoutRate, els.fightTime, els.decision, els.decisionReason,
+  els.failureBreakdown, els.thresholds, els.confidenceBadge,
+].map((element) => ({ element, text: element.textContent, className: element.className }));
 
 init();
 
@@ -174,6 +183,9 @@ function bindEvents() {
     if (tab) setMobileTab(tab);
   });
   els.clearButton.addEventListener("click", () => {
+    state.analysisGeneration += 1;
+    state.pendingAnalysis = false;
+    window.clearTimeout(state.autoAnalyzeTimer);
     state.targetRequest += 1;
     state.slotName = null;
     els.saveInput.placeholder = "Or paste a save export";
@@ -184,8 +196,25 @@ function bindEvents() {
     state.routeIds = [];
     state.hiddenSketchIds.clear();
     state.selectedSketchId = null;
+    state.lastAnalysis = null;
+    hideMessage();
+    renderCurrentSpecs();
     renderActiveSketches([]);
     renderRoutePlanner();
+    renderRoutePreview(null);
+    renderDiagnostics(null);
+    renderAssumptionComparisons([]);
+    renderFightTrace(null);
+    renderStrategyPlan(null);
+    renderSketchDelta(null);
+    renderRollWishlist(null);
+    renderTargetComparisons([]);
+    renderBuildComparison([]);
+    for (const { element, text, className } of emptyResultFields) {
+      element.textContent = text;
+      element.className = className;
+    }
+    renderUiDiagnostics();
   });
   els.saveFile.addEventListener("change", async () => {
     const [file] = els.saveFile.files;
@@ -204,11 +233,19 @@ function bindEvents() {
 }
 
 function analyzeIfReady() {
-  if (state.isBusy || !(els.saveInput.value.trim() || state.slotName) || !hasSelectedTarget()) return;
+  if (state.isBusy) {
+    state.pendingAnalysis = true;
+    return;
+  }
+  if (!(els.saveInput.value.trim() || state.slotName) || !hasSelectedTarget()) return;
   analyze();
 }
 
 function scheduleAnalyze() {
+  if (state.isBusy) {
+    state.pendingAnalysis = true;
+    return;
+  }
   if (!(els.saveInput.value.trim() || state.slotName) || !hasSelectedTarget()) return;
   window.clearTimeout(state.autoAnalyzeTimer);
   state.autoAnalyzeTimer = window.setTimeout(analyzeIfReady, 450);
@@ -288,11 +325,13 @@ async function importBundle() {
   } finally {
     setBusy(false);
   }
-  if (reanalyze) analyzeIfReady();
+  if (reanalyze && !state.isBusy) analyzeIfReady();
 }
 
 async function analyze({ loadSlot = false } = {}) {
   if (state.isBusy) return;
+  window.clearTimeout(state.autoAnalyzeTimer);
+  const generation = state.analysisGeneration;
   setBusy(true);
   hideMessage();
   try {
@@ -300,7 +339,7 @@ async function analyze({ loadSlot = false } = {}) {
     const fromSlot = Boolean(loadSlot || state.slotName);
     const edition = fromSlot || isSteamSave(parseSaveEnvelope(exportText)) ? "steam" : "web";
     await loadTargets(edition);
-    if (els.saveInput.value !== exportText) return;
+    if (generation !== state.analysisGeneration || els.saveInput.value !== exportText) return;
     if (!hasSelectedTarget()) throw new Error("Choose a target before running the simulation.");
     const payload = {
       saveSource: loadSlot || state.slotName ? "steam" : "export",
@@ -308,6 +347,7 @@ async function analyze({ loadSlot = false } = {}) {
       targetId: els.targetSelect.value,
       assumedVictories: loadSlot ? [] : assumedVictoriesPayload(),
       routeIds: loadSlot ? [] : state.routeIds,
+      hiddenSketchIds: loadSlot ? [] : [...state.hiddenSketchIds],
       trials: els.trialsSelect.value,
       maxSeconds: Number(els.maxSecondsInput.value || 300),
       observedOutcome: els.observedOutcomeSelect.value,
@@ -319,7 +359,7 @@ async function analyze({ loadSlot = false } = {}) {
       method: "POST",
       body: JSON.stringify(payload),
     });
-    if (els.saveInput.value !== exportText) return;
+    if (generation !== state.analysisGeneration || els.saveInput.value !== exportText) return;
     if (loadSlot) {
       state.assumed.clear();
       state.routeIds = [];
@@ -336,13 +376,14 @@ async function analyze({ loadSlot = false } = {}) {
     if (data.analysis.bundle.platform && state.platform !== data.analysis.bundle.platform) {
       await loadTargets(data.analysis.bundle.platform);
     }
+    if (generation !== state.analysisGeneration || state.pendingAnalysis) return;
     state.lastAnalysis = data.analysis;
     renderAnalysis(data.analysis);
     if (data.analysis.warnings.length) showMessage(data.analysis.warnings.map((item) => item.message).join(" "));
     pushHistory(data.analysis);
     renderHistory();
   } catch (error) {
-    showMessage(error.message);
+    if (generation === state.analysisGeneration && !state.pendingAnalysis) showMessage(error.message);
   } finally {
     setBusy(false);
   }
@@ -432,7 +473,7 @@ function renderActiveSketches(items) {
       <input class="assumed-toggle" type="checkbox" title="Assume defeated before target" aria-label="Assume ${escapeHtml(item.name)} defeated before target" ${count > 0 ? "checked" : ""}>
       <span class="sketch-main">
         <strong>${escapeHtml(item.name)}</strong>
-        <span>${escapeHtml(item.id)} | ${escapeHtml(item.rarity)} | kills ${item.runVictories}/${item.runVictories + maxCount} | left ${maxCount}</span>
+        <span>${escapeHtml(item.id)} | ${escapeHtml(item.rarity)} | kills ${item.totalVictories}/${item.maxVictories} | left ${maxCount}</span>
       </span>
       <span class="kill-controls">
         <input class="kill-count" type="number" min="0" max="${maxCount}" step="1" value="${count}" title="Extra kills">
@@ -645,36 +686,13 @@ function traceStatuses(statuses = {}) {
 }
 
 function renderNextAction(analysis) {
-  const action = chooseNextAction(analysis);
-  els.nextActionBadge.textContent = action.badge;
+  const action = analysis.nextAction;
+  els.nextActionBadge.textContent = action.type;
   els.nextActionBody.className = "next-action-body";
   els.nextActionBody.innerHTML = `
     <strong>${escapeHtml(action.title)}</strong>
     <span>${escapeHtml(action.detail)}</span>
   `;
-}
-
-function chooseNextAction(analysis) {
-  const targetWin = Number(analysis.result?.winRate ?? 0);
-  const bestActive = [...analysis.activeSketches ?? []]
-    .filter((item) => !state.hiddenSketchIds.has(item.id))
-    .sort((a, b) => b.winRate - a.winRate || a.p90Seconds - b.p90Seconds)[0];
-  const softcap = analysis.strategicPlan?.softcap;
-  const recommendation = analysis.recommendation?.action ?? "";
-
-  if (targetWin >= 0.5) {
-    return { badge: "target", title: `Fight ${analysis.target.name}`, detail: `Target has ${percent(targetWin)} win rate.` };
-  }
-  if (bestActive && bestActive.winRate >= 0.8) {
-    return { badge: "farm", title: `Finish ${bestActive.name}`, detail: `Best active sketch has ${percent(bestActive.winRate)} and p90 ${seconds(bestActive.p90Seconds)}.` };
-  }
-  if (softcap?.decision === "wait_softcap") {
-    return { badge: "softcap", title: "Wait for softcap", detail: softcap.secondsToSoftcap == null ? softcap.reason : `${seconds(softcap.secondsToSoftcap)} | ${softcap.reason}` };
-  }
-  if (String(recommendation).includes("redraw")) {
-    return { badge: "redraw", title: "Consider redraw", detail: analysis.recommendation?.reason ?? "Current run has low expected value." };
-  }
-  return { badge: "approach", title: "Farm for target", detail: `Target has ${percent(targetWin)}. Look for rewards that improve the largest missing stats.` };
 }
 
 function renderSketchDelta(analysis) {
@@ -1221,7 +1239,10 @@ function setBusy(isBusy) {
   els.targetSelect.disabled = isBusy;
   els.saveInput.disabled = isBusy;
   els.saveFile.disabled = isBusy;
-  els.clearButton.disabled = isBusy;
+  if (!isBusy && state.pendingAnalysis) {
+    state.pendingAnalysis = false;
+    analyzeIfReady();
+  }
 }
 
 function showMessage(message, kind = "error") {

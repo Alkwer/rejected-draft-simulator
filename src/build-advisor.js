@@ -1,5 +1,6 @@
 import { toNumber } from "./save.js";
 import { getPreciseEraserEligibility } from "./tool-rules.js";
+import { remainingSketchVictories } from "./victory-limit.js";
 
 const TARGET_PROFILES = {
   duct_taped_banana: {
@@ -223,8 +224,6 @@ function problem(code, stat, current, target, message) {
 
 function getActiveRunItems({ sketches, state, targetId, profile }) {
   const hidden = new Set(normalizeList(state.hiddenSketches));
-  const maxVictories = toNumber(state.fundamentals?.maxVictories, 250);
-  const runVictories = numericObject(state.sketchRunVictories ?? {});
   const availableIds = normalizeList(state.availableSketches);
   const ids = availableIds.length > 0
     ? availableIds
@@ -234,7 +233,7 @@ function getActiveRunItems({ sketches, state, targetId, profile }) {
     sketches: Object.fromEntries(ids
       .filter((id) => id !== targetId)
       .filter((id) => !hidden.has(id))
-      .filter((id) => toNumber(runVictories[id]) < maxVictories)
+      .filter((id) => remainingSketchVictories(state, id) > 0)
       .map((id) => [id, sketches[id]])
       .filter(([, sketch]) => Boolean(sketch))),
     profile,

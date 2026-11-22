@@ -24,7 +24,7 @@ function sampleSave(overrides = {}) {
       availableSketches: ["a", "b", "c", "target"],
       hiddenSketches: ["b"],
       sketchRunVictories: { a: 3, b: 0, c: 1, target: 0 },
-      sketchVictories: { a: 10, b: 250, c: 7, target: 0 },
+      sketchVictories: { a: 3, b: 1, c: 2, target: 0 },
       fundamentals: { maxVictories: 3 },
       autoBoosterSketches: ["a"],
       autoEraserSketches: ["b"],
@@ -121,6 +121,7 @@ test("analyzeSave classifies active sketches and reward progress", () => {
   assert.equal(analysis.run.rewardProgress.a.runVictories, 3);
   assert.equal(analysis.run.rewardProgress.a.remainingToMax, 0);
   assert.equal(analysis.run.rewardProgress.c.rewardsCollectedThisRun, 1);
+  assert.equal(analysis.run.rewardProgress.c.remainingToMax, 1);
 });
 
 test("analyzeSave reads automation tools and meditation state", () => {
@@ -148,7 +149,7 @@ test("analyzeSave detects run phases", () => {
 
   const cleared = sampleSave({
     availableSketches: ["a"],
-    sketchRunVictories: { a: 3 },
+    sketchRunVictories: { a: 0 },
     hiddenSketches: [],
   });
   assert.equal(analyzeSave({ save: cleared, sketches }).run.phase, "cleared_run");

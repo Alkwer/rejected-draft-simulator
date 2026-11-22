@@ -131,10 +131,11 @@ test("createCurrentRunReport simulates unbeaten visible active sketches", () => 
   const report = createCurrentRunReport({
     sketches,
     state: {
-      fundamentals: { maxVictories: 2 },
+      fundamentals: { maxVictories: 2, beyondMaxVictories: 1 },
       availableSketches: ["easy", "hard", "hidden", "done"],
       hiddenSketches: ["hidden"],
-      sketchRunVictories: { done: 2 },
+      sketchVictories: { done: 2 },
+      sketchRunVictories: { easy: 2, done: 1 },
     },
     baseStats: { maxHp: 1000, attack: 1000, attackSpeed: 1000, accuracy: 100, minDamage: 100, maxDamage: 100 },
     trialsSetting: parseTrialsSetting(10),

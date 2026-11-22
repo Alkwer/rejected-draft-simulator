@@ -90,7 +90,7 @@ test("createWebAnalysis applies requested kill counts and caps them at remaining
     hiddenSketches: [],
     sketchRunVictories: { farm_a: 1 },
     sketchVictories: { farm_a: 5 },
-    fundamentals: { maxVictories: 3, rewardDecay: 1, rewardBoosterEffect: 50 },
+    fundamentals: { maxVictories: 7, rewardDecay: 1, rewardBoosterEffect: 50 },
   });
 
   const analysis = createWebAnalysis({
@@ -109,7 +109,7 @@ test("createWebAnalysis applies requested kill counts and caps them at remaining
   assert.ok(Math.abs(analysis.finalStats.attack - expectedAttack) < 1e-9);
 });
 
-test("createWebAnalysis keeps legacy assumedVictoryIds as one kill per checked sketch", () => {
+test("legacy assumed victories count each checked sketch once and include its saved booster", () => {
   const saveText = encodeSave({
     playerStats: { maxHp: 1000, attack: 1, attackSpeed: 1000, accuracy: 100, minDamage: 100, maxDamage: 100 },
     battleStats: { maxHp: 1000, attack: 1, attackSpeed: 1000, accuracy: 100, minDamage: 100, maxDamage: 100 },
@@ -118,6 +118,7 @@ test("createWebAnalysis keeps legacy assumedVictoryIds as one kill per checked s
     sketchRunVictories: {},
     sketchVictories: {},
     fundamentals: { maxVictories: 3, rewardDecay: 1, rewardBoosterEffect: 50 },
+    boostedSketchIds: ["farm_a"],
   });
 
   const analysis = createWebAnalysis({
@@ -132,7 +133,7 @@ test("createWebAnalysis keeps legacy assumedVictoryIds as one kill per checked s
 
   assert.deepEqual(analysis.assumedVictories, { farm_a: 1 });
   assert.deepEqual(analysis.assumedVictoryIds, ["farm_a"]);
-  assert.equal(analysis.finalStats.attack, 1001);
+  assert.equal(analysis.finalStats.attack, 1501);
 });
 
 test("createWebAnalysis defaults omitted trials to auto", () => {
@@ -197,6 +198,54 @@ test("createWebAnalysis extends target-only timeout windows before reporting a f
   assert.equal(analysis.result.timeLimit.baseline.winRate, 0);
   assert.ok(analysis.result.timeLimit.effectiveMaxSeconds >= 300);
   assert.match(analysis.diagnostics.sanityChecks[0].detail, /extended/i);
+  assert.equal(analysis.recommendation.action, "fight_target");
+  assert.equal(analysis.nextAction.title, "Fight Slow Target");
+  assert.equal(analysis.activeSketches[0].p90Seconds, analysis.result.p90Seconds);
+});
+
+test("rejected long-fight probes preserve the configured timeout and quantiles", () => {
+  const wall = { ...sketches.rose_window, stats: { maxHp: 1e12, attack: 0, attackSpeed: 10000 } };
+  const analysis = createWebAnalysis({
+    save: { state: { playerStats: { maxHp: 100, attack: 1, attackSpeed: 1000 } } },
+    sketches: { rose_window: wall }, targetId: "rose", trials: 1, maxSeconds: 60,
+  });
+  assert.equal(analysis.result.timeLimit.extended, false);
+  assert.equal(analysis.result.timeLimit.checkedMaxSeconds, 1800);
+  assert.equal(analysis.result.timeLimit.probe.medianSeconds, 1800);
+  assert.equal(analysis.result.timeLimit.effectiveMaxSeconds, 60);
+  assert.equal(analysis.result.medianSeconds, 60);
+  assert.equal(analysis.result.p90Seconds, 60);
+});
+
+test("reward deltas and wishlist use paired trials from the current hypothetical build", () => {
+  const boss = { id: "boss", name: "Boss", rarity: "rough",
+    stats: { maxHp: 15, attack: 100, attackSpeed: 1500, accuracy: 100, minDamage: 100, maxDamage: 100 } };
+  const cash = { ...sketches.farm_a, id: "cash", rewards: [] };
+  const input = {
+    save: { state: { playerStats: { maxHp: 10, attack: 10, attackSpeed: 1000, minDamage: 100, maxDamage: 100,
+      accuracy: 100, critChance: 50, critDmg: 200 }, availableSketches: ["cash", "farm_a", "boss"] } },
+    sketches: { boss, cash, farm_a: sketches.farm_a }, targetId: "boss", trials: 500, maxSeconds: 5, seed: "paired",
+  };
+  const before = createWebAnalysis(input);
+  assert.ok(before.result.winRate > 0 && before.result.winRate < 1);
+  assert.equal(before.activeDeltas.cash.winRateDelta, 0);
+  assert.equal(before.rollWishlist.items.find((item) => item.id === "cash").targetWinRateDelta, 0);
+  const after = createWebAnalysis({ ...input, assumedVictories: { farm_a: 1 } });
+  assert.equal(after.result.winRate, 1);
+  assert.ok(after.activeSketches.find((row) => row.id === "boss").winRate < 1);
+  assert.equal(after.activeDeltas.cash.winRate, 1);
+  assert.equal(after.activeDeltas.cash.p90Delta, 0);
+});
+
+test("best next click follows the available alternative to an unbeatable target", () => {
+  const input = { save: { state: { playerStats: { maxHp: 1000, attack: 10, attackSpeed: 1000 },
+    availableSketches: ["farm_a", "rose_window"] } }, sketches, targetId: "rose", trials: 5, maxSeconds: 5 };
+  const analysis = createWebAnalysis(input);
+  assert.equal(analysis.recommendation.action, "finish_first");
+  assert.equal(analysis.recommendation.targetId, "farm_a");
+  assert.equal(analysis.nextAction.title, "Farm Farm A");
+  const hidden = createWebAnalysis({ ...input, hiddenSketchIds: ["farm_a"] });
+  assert.equal(hidden.recommendation.action, "redraw");
 });
 
 test("createWebAnalysis returns a strategic planner section when strategy options are supplied", () => {
@@ -300,7 +349,9 @@ test("createWebAnalysis returns priority 13 planner data for UI comparisons and 
   assert.equal(analysis.routePreview.steps.length, 1);
   assert.equal(analysis.routePreview.steps[0].id, "farm_a");
   assert.ok(analysis.routePreview.steps[0].targetWinRate > analysis.result.winRate);
-  assert.ok(analysis.activeDeltas.farm_a.winRateDelta > 0);
+  // The first farm kill already makes the target certain. Another kill adds no win chance.
+  assert.equal(analysis.activeDeltas.farm_a.winRate, 1);
+  assert.equal(analysis.activeDeltas.farm_a.winRateDelta, 0);
   assert.ok(analysis.activeDeltas.farm_a.statRewards.some((item) => item.statName === "attack"));
 });
 
@@ -408,7 +459,8 @@ test("createWebAnalysis caps auxiliary dashboard simulations for UI performance"
 
   assert.equal(analysis.result.autoTrials.mode, "auto");
   assert.ok(analysis.result.trials >= 200);
-  assert.ok(analysis.activeSketches.every((item) => item.trials <= 100));
+  assert.equal(analysis.activeSketches.find((item) => item.id === analysis.target.id).trials, analysis.result.trials);
+  assert.ok(analysis.activeSketches.filter((item) => item.id !== analysis.target.id).every((item) => item.trials <= 100));
   assert.ok(analysis.targetComparisons.every((item) => item.trials <= 100));
   assert.ok(analysis.buildComparison.every((item) => item.trials == null || item.trials <= 100));
   assert.ok(Object.values(analysis.activeDeltas).every((item) => item.trials <= 100));

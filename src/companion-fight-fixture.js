@@ -2,6 +2,7 @@ import { extractCombatLogs } from "./calibration.js";
 import { combatAssumptionsFromSave } from "./combat-assumptions.js";
 import { resolveTargetId } from "./cli-convenience.js";
 import { compareFightParityFixture } from "./fight-parity.js";
+import { normalizeFightOutcome } from "./fight-outcome.js";
 import { analyzeSave } from "./save-analysis.js";
 import { decodeSaveText, toNumber } from "./save.js";
 
@@ -276,8 +277,8 @@ function saveHistoryCandidateIds(beforeState, afterState, targetId) {
 function normalizeObservedCandidate(raw) {
   const parsed = parseJsonLike(raw);
   if (!parsed || typeof parsed !== "object") return null;
-  const nested = parsed.observed ?? parsed.actual ?? parsed.result ?? null;
-  if (nested && nested !== parsed) return normalizeObservedCandidate(nested);
+  const nested = parseJsonLike(parsed.observed ?? parsed.actual ?? parsed.result);
+  if (nested && typeof nested === "object" && nested !== parsed) return normalizeObservedCandidate(nested);
 
   const activeBattleLog = normalizeArray(parsed.activeBattleLog ?? parsed.events ?? parsed.logEvents);
   const combatState = parsed.combatState ?? parsed.state?.combatState ?? {};
@@ -285,7 +286,7 @@ function normalizeObservedCandidate(raw) {
   const observed = {
     targetId: firstString(parsed.targetId, parsed.enemyId, parsed.sketchId, combatState.enemyId, target.id),
     targetName: firstString(parsed.targetName, parsed.enemyName, parsed.sketchName, target.name),
-    outcome: normalizeOutcome(parsed),
+    outcome: normalizeFightOutcome(parsed),
     seconds: firstFiniteOrNull(parsed.seconds, parsed.durationSeconds, parsed.elapsedSeconds, combatState.elapsedSeconds),
     reason: firstString(parsed.reason, parsed.cause, parsed.deathCause, parsed.resultReason),
     playerHp: firstFiniteOrNull(
@@ -401,22 +402,6 @@ function targetNameToId(name) {
 function fixtureFilename({ targetId, saveVersion, source }) {
   const date = new Date().toISOString().slice(0, 19).replace(/[-:T]/g, "");
   return `rejected-draft-fight-fixture-${safeName(targetId)}-S${saveVersion ?? "unknown"}-${safeName(source)}-${date}.json`;
-}
-
-function normalizeOutcome(raw) {
-  if (raw.winner != null) {
-    const winner = String(raw.winner).toLowerCase();
-    if (winner === "player" || winner === "attacker") return "win";
-    if (winner === "enemy" || winner === "target" || winner === "defender") return "loss";
-    if (winner === "timeout") return "timeout";
-  }
-  if (raw.won === true || raw.playerWon === true || raw.victory === true) return "win";
-  if (raw.won === false || raw.playerWon === false || raw.loss === true || raw.defeat === true) return "loss";
-  const text = String(raw.outcome ?? raw.result ?? raw.status ?? "").toLowerCase();
-  if (/timeout|stall/.test(text)) return "timeout";
-  if (/win|victory|success|clear|player/.test(text)) return "win";
-  if (/loss|lose|lost|death|defeat|enemy|player_hp_zero|fail/.test(text)) return "loss";
-  return "unknown";
 }
 
 function parseJsonLike(value) {

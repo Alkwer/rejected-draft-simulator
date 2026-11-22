@@ -39,6 +39,22 @@ test("createFightTrace records a deterministic timeline with HP, statuses and da
   assert.ok(trace.events.some((event) => Object.keys(event.statuses.player).length > 0 || Object.keys(event.statuses.enemy).length > 0));
 });
 
+test("createFightTrace exposes the complete damage breakdown independently of the timeline", () => {
+  const fight = {
+    player: { maxHp: 100, attack: 30, attackSpeed: 1000, accuracy: 100, minDamage: 100, maxDamage: 100 },
+    enemy: { maxHp: 50, attack: 0, attackSpeed: 10000 },
+    maxSeconds: 5,
+    seed: "trace-final-damage",
+  };
+  const shortTrace = createFightTrace({ ...fight, traceSeconds: 0.5 });
+  const fullTrace = createFightTrace({ ...fight, traceSeconds: 5 });
+
+  assert.ok(shortTrace.events.every(({ time }) => time <= 0.5));
+  assert.ok(shortTrace.result.seconds > 0.5);
+  assert.equal(shortTrace.result.damageBreakdown.enemy.total, 50);
+  assert.deepEqual(shortTrace.result.damageBreakdown, fullTrace.result.damageBreakdown);
+});
+
 test("createFightTrace records status deltas for debugging engine parity", () => {
   const trace = createFightTrace({
     player: {

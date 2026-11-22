@@ -254,7 +254,7 @@ Implemented:
 - Damage breakdowns by source: direct, status, reflect, parry, self and energy wave.
 - Timeout diagnoses for common walls: regen, armor, absorb, opacity/remedy and leap/status blocking.
 - Save inspection with `--inspect-save`: recommended stat source, player-vs-battle stat differences, active run sketches, target, hidden/defeated/remaining groups, auto tools, meditation buffs, reward progress and stale data warnings.
-- Route simulation with `--route`: ordered sketch rewards, reward decay, Beyond Max Victories, Reward Booster including retroactive rewards, Precise Eraser, Sketch Swapper/Pivot, meditation, Secret Stash hidden upgrades, currency multipliers, passive generator income and stat upgrade purchases.
+- Route simulation with `--route`: ordered sketch rewards, victory caps, reward decay, Reward Booster including retroactive rewards, Precise Eraser, Sketch Swapper/Pivot, meditation, Secret Stash hidden upgrades, currency multipliers, passive generator income and stat upgrade purchases.
 - Route comparison with `--compare-routes` for checking "what if I beat X/Y/Z before target?" decisions.
 - Targeted Redraw planner with `--plan-redraw`: rarity minimum estimates, target Masterpiece hit rate, Paragon weighting, Unscrambled Guarantee, `(*)` Masterpiece low-weight handling, settings recommendations and keep/redraw current-run decisions.
 - Find New Sketches planner with `--find-new-sketches`: separate estimate for finding any unseen Rough+ sketch within the mode's redraw limit.

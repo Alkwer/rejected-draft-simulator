@@ -3,6 +3,7 @@ import { createEconomyPlan } from "./economy.js";
 import { steamCurrencyPerkWinsRemaining, steamSketchRewards } from "./rewards.js";
 import { currencyRewardAmount, simulateRoute } from "./route.js";
 import { toNumber } from "./save.js";
+import { remainingSketchVictories } from "./victory-limit.js";
 
 const DEFAULT_TARGET_WIN_RATE = 0.5;
 const DEFAULT_FARM_SECONDS = 3600;
@@ -327,7 +328,7 @@ export function rankOpusStrategicValue({
   const rowsById = new Map(normalizeCurrentRows({ currentRun: { targets: currentRows }, state, sketches })
     .map((row) => [row.id, row]));
   return Object.values(sketches)
-    .filter((sketch) => sketch?.rarity === "opus")
+    .filter((sketch) => sketch?.rarity === "opus" && remainingSketchVictories(state, sketch.id) > 0)
     .map((sketch) => {
       const steamRewards = estimateSteamPayout({ sketch, state });
       const statRewards = steamRewards?.statRewards ?? sketch.rewards;
@@ -521,7 +522,7 @@ function estimateProfileProgress({ profile, profileGoal, approach, runEV, curren
     expectedPerRun = toNumber(runEV.currencies?.[profileGoal.currency]?.expected);
     unit = profileGoal.currency;
   } else if (type === "masterpiece_count") {
-    expectedPerRun = estimateMasterpieceKillsPerRun({ currentRows, sketches, state });
+    expectedPerRun = estimateMasterpieceKillsPerRun({ currentRows, sketches });
     unit = "masterpiece";
   } else if (type === "target_win_rate") {
     missing = Math.max(0, toNumber(profile.targetWinRate, DEFAULT_TARGET_WIN_RATE) - toNumber(approach.winRate.current));
@@ -844,19 +845,21 @@ function estimateRunEV({ sketches, state, currentRows, targetStatWeights, farmSe
   const priorWinProbabilities = new Float64Array(perkWinsRemaining);
   if (perkWinsRemaining > 0) priorWinProbabilities[0] = 1;
   let statValue = 0;
+  let battleSeconds = 0;
 
   for (const row of currentRows) {
     const sketch = sketches[row.id];
     if (!sketch || row.hidden) continue;
     const winRate = clamp01(toNumber(row.winRate));
     const seconds = Math.max(1, toNumber(row.p90Seconds, row.medianSeconds ?? 60));
+    battleSeconds += seconds;
     const steamRewards = estimateSteamPayout({
       sketch,
       state,
       perkWinsRemaining,
       perkProbability: priorWinProbabilities.reduce((sum, chance) => sum + chance, 0),
     });
-    if (steamRewards?.canWin && perkWinsRemaining > 0) {
+    if (steamRewards && perkWinsRemaining > 0) {
       for (let wins = priorWinProbabilities.length - 1; wins > 0; wins -= 1) {
         priorWinProbabilities[wins] = priorWinProbabilities[wins] * (1 - winRate) + priorWinProbabilities[wins - 1] * winRate;
       }
@@ -872,7 +875,7 @@ function estimateRunEV({ sketches, state, currentRows, targetStatWeights, farmSe
       });
       const expected = rewardAmount * winRate;
       expectedCurrencies[reward.name] = toNumber(expectedCurrencies[reward.name]) + expected;
-      addCurrencyEV(currencies, reward.name, expected, seconds);
+      addCurrencyEV(currencies, reward.name, expected);
     }
     const expectedStatScore = estimateStatRewardValue({
       rewards: steamRewards?.statRewards ?? sketch.rewards,
@@ -892,7 +895,7 @@ function estimateRunEV({ sketches, state, currentRows, targetStatWeights, farmSe
   }
 
   for (const [currency, rate] of Object.entries(generatorRates(state))) {
-    addCurrencyEV(currencies, currency, toNumber(rate) * windowSeconds, windowSeconds, true);
+    addCurrencyEV(currencies, currency, toNumber(rate) * windowSeconds, true);
   }
 
   const quintessenceRate = quintessencePerSecond(state);
@@ -904,7 +907,7 @@ function estimateRunEV({ sketches, state, currentRows, targetStatWeights, farmSe
   return {
     windowSeconds,
     quintessence,
-    currencies: roundCurrencyEV(currencies),
+    currencies: roundCurrencyEV(currencies, battleSeconds, windowSeconds),
     statValue: roundNumber(statValue),
     totalValue: roundNumber(totalEVValue({ currencies, quintessence, statValue })),
     sketches: sketchesEV.sort((a, b) => b.expectedStatScore - a.expectedStatScore),
@@ -1151,14 +1154,10 @@ function countDefeatedMasterpieces({ state, sketches = {} }) {
     .length;
 }
 
-function estimateMasterpieceKillsPerRun({ currentRows, sketches, state }) {
-  const maxVictories = Math.max(1, toNumber(state.fundamentals?.maxVictories, 1));
+function estimateMasterpieceKillsPerRun({ currentRows, sketches }) {
   const expected = currentRows
     .filter((row) => row.rarity === "masterpiece" || sketches[row.id]?.rarity === "masterpiece")
-    .reduce((sum, row) => {
-      const remaining = Math.max(0, toNumber(row.remainingToMax, maxVictories));
-      return sum + clamp01(toNumber(row.winRate)) * Math.min(1, remaining);
-    }, 0);
+    .reduce((sum, row) => sum + clamp01(row.winRate) * Math.min(1, row.remainingToMax), 0);
   return roundNumber(expected);
 }
 
@@ -1263,25 +1262,27 @@ function bestStatRewards(rewards = [], targetStatWeights = {}) {
 }
 
 function normalizeCurrentRows({ currentRun, state, sketches }) {
-  const rows = currentRun?.targets ?? [];
-  if (rows.length > 0) return rows.map(normalizeCurrentRow);
-  const hidden = new Set(normalizeList(state.hiddenSketches));
-  const ids = normalizeList(state.availableSketches);
-  return ids
-    .map((id) => sketches[id])
-    .filter(Boolean)
-    .map((sketch) => ({
-      id: sketch.id,
-      name: sketch.name ?? sketch.id,
-      rarity: sketch.rarity ?? "unknown",
-      hidden: hidden.has(sketch.id),
-      winRate: 0,
-      p90Seconds: 60,
-      remainingToMax: 1,
-    }));
+  let rows = currentRun?.targets ?? [];
+  if (rows.length === 0) {
+    const hidden = new Set(normalizeList(state.hiddenSketches));
+    rows = normalizeList(state.availableSketches)
+      .map((id) => sketches[id])
+      .filter(Boolean)
+      .map((sketch) => ({
+        id: sketch.id,
+        name: sketch.name,
+        rarity: sketch.rarity,
+        hidden: hidden.has(sketch.id),
+      }));
+  }
+
+  return rows
+    .map((row) => normalizeCurrentRow(row, state))
+    .filter((row) => row.remainingToMax > 0);
 }
 
-function normalizeCurrentRow(row) {
+function normalizeCurrentRow(row, state) {
+  const remaining = remainingSketchVictories(state, row.id);
   return {
     id: row.id,
     name: row.name ?? row.id,
@@ -1290,7 +1291,7 @@ function normalizeCurrentRow(row) {
     winRate: toNumber(row.winRate),
     p90Seconds: toNumber(row.p90Seconds, row.medianSeconds ?? 60),
     medianSeconds: toNumber(row.medianSeconds),
-    remainingToMax: toNumber(row.remainingToMax, 1),
+    remainingToMax: Math.min(toNumber(row.remainingToMax, remaining), remaining),
   };
 }
 
@@ -1314,15 +1315,10 @@ function estimateSteamPayout({ sketch, state, perkWinsRemaining = 0, perkProbabi
   };
   const rewards = steamSketchRewards(rewardContext);
   if (!rewards) return null;
-  const cap = toNumber(state.fundamentals?.maxVictories, 250) + toNumber(state.fundamentals?.beyondMaxVictories);
-  if (Math.max(victoriesBefore, toNumber(state.sketchRunVictories?.[id])) >= cap) {
-    return { canWin: false, statRewards: [], currencyRewards: [] };
-  }
   const afterPerk = perkWinsRemaining > 0 && perkProbability < 1
     ? steamSketchRewards({ ...rewardContext, newWins: perkWinsRemaining })
     : null;
   return {
-    canWin: true,
     statRewards: (sketch.rewards ?? []).map((reward) => ({ ...reward, amount: rewards.statGain(reward) })),
     currencyRewards: (sketch.currencyRewards ?? []).map((reward) => ({
       ...reward,
@@ -1333,28 +1329,29 @@ function estimateSteamPayout({ sketch, state, perkWinsRemaining = 0, perkProbabi
   };
 }
 
-function addCurrencyEV(currencies, name, expected, seconds, passive = false) {
+function addCurrencyEV(currencies, name, expected, passive = false) {
   const item = currencies[name] ?? {
     expected: 0,
-    perSecond: 0,
-    battlePerSecond: 0,
+    battleExpected: 0,
     passiveExpected: 0,
   };
-  const perSecond = expected / Math.max(1, seconds);
   item.expected += expected;
-  item.perSecond += perSecond;
   if (passive) item.passiveExpected += expected;
-  else item.battlePerSecond += perSecond;
+  else item.battleExpected += expected;
   currencies[name] = item;
 }
 
-function roundCurrencyEV(currencies) {
-  return Object.fromEntries(Object.entries(currencies).map(([name, item]) => [name, {
-    expected: roundNumber(item.expected),
-    perSecond: roundNumber(item.perSecond),
-    battlePerSecond: roundNumber(item.battlePerSecond),
-    passiveExpected: roundNumber(item.passiveExpected),
-  }]));
+function roundCurrencyEV(currencies, battleSeconds, windowSeconds) {
+  return Object.fromEntries(Object.entries(currencies).map(([name, item]) => {
+    const battlePerSecond = battleSeconds > 0 ? item.battleExpected / battleSeconds : 0;
+    const passivePerSecond = item.passiveExpected / windowSeconds;
+    return [name, {
+      expected: roundNumber(item.expected),
+      perSecond: roundNumber(battlePerSecond + passivePerSecond),
+      battlePerSecond: roundNumber(battlePerSecond),
+      passiveExpected: roundNumber(item.passiveExpected),
+    }];
+  }));
 }
 
 function totalEVValue({ currencies, quintessence, statValue }) {

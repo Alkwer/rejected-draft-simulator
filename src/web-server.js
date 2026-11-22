@@ -4,7 +4,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { createCompanionFightFixture } from "./companion-fight-fixture.js";
-import { createCompanionAnalysis, createTargetOptions, createWebAnalysis, summarizeGameBundle } from "./web-core.js";
+import { createTargetOptions, summarizeGameBundle } from "./web-core.js";
+import { createAnalysisRunner } from "./analysis-worker.js";
 import { DEFAULT_DATA_PATH, LEGACY_DATA_PATH, updateGameData } from "./game-data-update.js";
 import { readGameBundle } from "./sketch-data.js";
 import { decodeSaveText, findActiveSteamSave, isSteamSave, readSaveFile } from "./save.js";
@@ -26,6 +27,7 @@ export function createWebServer({
   updateGameDataImpl = updateGameData,
 } = {}) {
   const monitor = createSteamFightMonitor({ root: fightLogDir, steamSaveDir });
+  const analysisRunner = createAnalysisRunner();
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url ?? "/", "http://127.0.0.1");
     try {
@@ -87,11 +89,8 @@ export function createWebServer({
           return sendJson(res, { ok: false, error: "Missing targetId" }, 400);
         }
         save ??= decodeSaveText(body.saveText);
-        const { sketches, dataMetadata } = readGameBundle(isSteamSave(save) ? dataPath : legacyDataPath);
-        const analysis = createWebAnalysis({
+        const analysis = await analysisRunner.run(isSteamSave(save) ? dataPath : legacyDataPath, {
           save,
-          sketches,
-          dataMetadata,
           targetId: body.targetId,
           assumedVictoryIds: body.assumedVictoryIds,
           assumedVictories: body.assumedVictories,
@@ -100,6 +99,7 @@ export function createWebServer({
           seed: body.seed ?? "web-ui",
           strategyOptions: body.strategyOptions,
           routeIds: body.routeIds,
+          hiddenSketchIds: body.hiddenSketchIds,
           observedOutcome: body.observedOutcome,
           traceSeconds: body.traceSeconds,
         });
@@ -110,16 +110,13 @@ export function createWebServer({
         if (!body.saveText) {
           return sendJson(res, { ok: false, error: "Missing saveText" }, 400, companionCorsHeaders(req));
         }
-        const { sketches, dataMetadata } = readGameBundle(legacyDataPath);
-        const companion = createCompanionAnalysis({
+        const companion = await analysisRunner.run(legacyDataPath, {
           saveText: body.saveText,
-          sketches,
-          dataMetadata,
           targetId: body.targetId,
           trials: body.trials ?? 100,
           maxSeconds: body.maxSeconds ?? 120,
           seed: body.seed ?? "game-companion",
-        });
+        }, true);
         return sendJson(res, { ok: true, companion }, 200, companionCorsHeaders(req));
       }
       if (url.pathname === "/api/companion/fight-fixture" && req.method === "POST") {
@@ -152,6 +149,7 @@ export function createWebServer({
   });
   if (watchSteamFightsOnStart) server.once("listening", () => monitor.start());
   server.once("close", () => monitor.stop());
+  server.once("close", () => analysisRunner.close());
   return server;
 }
 
