@@ -110,12 +110,12 @@ export function shouldSkipForParalysis(rng, statuses) {
   return true;
 }
 
-export function applySteamBuff({ combat, rng, status, stacks, intendedSide }) {
+export function applySteamBuff({ combat, rng, status, stacks, intendedSide, allowIntercept = true }) {
   const intended = combat[intendedSide];
   if (intended.immunities.has(SELF_BUFF_TO_STAT[status])) return null;
   const otherSide = intendedSide === "player" ? "enemy" : "player";
   const interceptChance = stat(combat[otherSide], "interceptChance");
-  const intercepted = interceptChance > 0
+  const intercepted = allowIntercept && interceptChance > 0
     && !intended.immunities.has("interceptChance")
     && rollPercent(rng, interceptChance, "buff.Intercept");
   const side = intercepted ? otherSide : intendedSide;
@@ -124,7 +124,7 @@ export function applySteamBuff({ combat, rng, status, stacks, intendedSide }) {
   if (!combat[side].immunities.has(SELF_BUFF_TO_STAT[status])) {
     const bonus = Math.max(0, combat.assumptions.steam.buffStackCapBonuses?.[status] ?? 0);
     const cap = side === "player" ? (STATUS_CAPS[status] ?? Infinity) + bonus : Infinity;
-    statuses[status] = Math.min(cap, before + stacks);
+    statuses[status] = Math.max(before, Math.min(cap, before + stacks));
   }
   return { intercepted, side, before, after: statuses[status] ?? 0 };
 }

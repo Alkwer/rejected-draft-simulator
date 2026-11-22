@@ -1487,7 +1487,7 @@ function applyResonance(rng, attacker, attackerStatuses, options = {}) {
   if (active.length === 0) return;
   const picked = active[Math.floor(rng("self.Resonance.pick") * active.length)];
   const before = attackerStatuses[picked] ?? 0;
-  addStatus(attackerStatuses, picked, stacks);
+  applyCombatBuff({ combat: options.combat, rng, status: picked, stacks, intendedSide: options.side, allowIntercept: false });
   recordMechanic(options.combat, {
     type: "resonance",
     side: options.side,
@@ -1548,9 +1548,9 @@ function applySelfBuffs({ rng, combat, attackerSide, attacker }) {
   }
 }
 
-function applyCombatBuff({ combat, rng, status, stacks, intendedSide }) {
+function applyCombatBuff({ combat, rng, status, stacks, intendedSide, allowIntercept = true }) {
   if (combat.assumptions.steam) {
-    const result = applySteamBuff({ combat, rng, status, stacks, intendedSide });
+    const result = applySteamBuff({ combat, rng, status, stacks, intendedSide, allowIntercept });
     if (result?.intercepted) {
       recordMechanic(combat, { type: "intercept", intendedSide, status, stacks, ...result });
     }

@@ -98,6 +98,18 @@ test("Steam Seppuku evaluates configured rule combinations at the fight clock", 
   assert.equal(result.damageBreakdown.player.self > 0, true);
 });
 
+test("Steam Resonance uses the player Inspiration cap bonus and uncapped enemy buffs", () => {
+  const stats = { maxHp: 1e9, attack: 1, attackSpeed: 1100, inspirationChance: 20000, resonanceChance: 100 };
+  const assumptions = combatAssumptionsFromSave({ saveProfile: "steam", fundamentals: { inspirationCapBonus: 1000 } });
+  const fight = simulateFight({
+    player: stats, enemy: stats, assumptions, rng: () => 0.5, maxSeconds: 1.5, trace: { seconds: 1.5 },
+  });
+  const resonance = fight.trace.flatMap((event) => event.mechanics ?? []).filter((item) => item.type === "resonance");
+  assert.deepEqual(resonance.map(({ side, before, after }) => [side, before, after]).sort(), [
+    ["enemy", 200, 201], ["player", 200, 201],
+  ]);
+});
+
 test("Steam cards affect positive rewards and currency after exponentiation", () => {
   const sketch = {
     rarity: "scrap",
