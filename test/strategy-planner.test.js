@@ -243,6 +243,28 @@ test("createStrategyPlan ranks booster choices with route simulation", () => {
   assert.equal(plan.boosters.choices[0].simulated, true);
 });
 
+test("createStrategyPlan uses the same fight samples after renaming a booster choice", () => {
+  const plan = createStrategyPlan({
+    sketches: { ...sketches, target: { ...sketches.target, stats: { ...sketches.target.stats, dodge: 50 } } },
+    state: state(),
+    targetId: "target",
+    baseStats: { maxHp: 1000, attack: 60, attackSpeed: 1000, accuracy: 50, minDamage: 100, maxDamage: 100 },
+    targetSimulation: { winRate: 0.1, trials: 24 },
+    currentRun,
+    boosterCandidates: [
+      { name: "First", ids: ["opus_currency"] },
+      { name: "Renamed", ids: ["opus_currency"] },
+    ],
+    trials: 24,
+    maxSeconds: 6,
+    seed: "same-booster",
+  });
+  const [first, renamed] = plan.boosters.choices;
+
+  assert.deepEqual(renamed, { ...first, name: "Renamed" });
+  assert.ok(first.winRate > 0 && first.winRate < 1);
+});
+
 test("parseStrategyCurrencyGoals accepts comma separated currency goals", () => {
   assert.deepEqual(parseStrategyCurrencyGoals("Graphite=1e6,Gold Leaf:2.5e3"), {
     Graphite: 1e6,

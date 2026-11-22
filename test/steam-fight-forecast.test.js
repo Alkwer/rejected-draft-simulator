@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { runMonteCarlo } from "../src/combat.js";
+import { analyzeSave } from "../src/save-analysis.js";
 import { compareSteamFightObservation, createSteamFightForecast } from "../src/steam-fight-forecast.js";
 
 function forecastInput() {
@@ -76,6 +77,20 @@ test("Steam forecast requires the full Steam profile, valid timing settings, and
   }), /Steam sketch catalog/);
   assert.throws(() => createSteamFightForecast({ ...input, trials: 5001 }), /Trials must/);
   assert.throws(() => createSteamFightForecast({ ...input, maxSeconds: 0 }), /time limit/);
+});
+
+test("Steam forecasts retain the standard analysis compatibility warnings", () => {
+  const input = forecastInput();
+  input.save.meta.gameVersion = "v0.9999";
+  input.save.state.multiverse.currentUniverseId = "new-universe";
+  input.save.state.currencies = { quintessence: { mantissa: 1, exponent: 999 } };
+  Object.assign(input.dataMetadata, { buildId: "future-build", gameVersion: "v0.9771", saveVersion: 85 });
+  const { warnings } = createSteamFightForecast(input);
+  assert.deepEqual(warnings, analyzeSave({ ...input, targetId: "hyena_hulk" }).warnings);
+  assert.deepEqual(warnings.map(({ code }) => code), [
+    "unknown_universe", "unverified_build", "economy_numeric_range", "game_version_mismatch", "stale_sketch_data",
+  ]);
+  assert.deepEqual(createSteamFightForecast(forecastInput()).warnings, []);
 });
 
 test("Steam forecast compares observations in elapsed real seconds and handles the forecast horizon", () => {

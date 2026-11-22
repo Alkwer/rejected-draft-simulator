@@ -42,6 +42,7 @@ function busy(active) {
   byId("captureFields").disabled = active || !targetsReady;
   byId("fightPicker").disabled = active;
   byId("resultFields").disabled = active || !current;
+  byId("retryForecast").disabled = active;
 }
 
 function sourceLabel(source) {
@@ -50,9 +51,11 @@ function sourceLabel(source) {
 
 function pickerOption(fight) {
   const outcome = fight.outcome ?? fight.observation?.outcome;
-  const state = outcome ? outcomeLabels[outcome] : "Awaiting result";
+  const state = fight.pending ? "Forecast pending" : outcome ? outcomeLabels[outcome] : "Awaiting result";
   const target = fight.target ?? fight.forecast.target;
-  return new Option(`${dateTime.format(new Date(fight.capturedAt))} · ${target.name} · ${state}`, fight.id);
+  const option = new Option(`${dateTime.format(new Date(fight.capturedAt))} · ${target.name} · ${state}`, fight.id);
+  if (fight.pending) option.dataset.pending = "true";
+  return option;
 }
 
 function monitorsHyena(fight) {
@@ -82,6 +85,7 @@ function showFight(fight, monitorStatus) {
   if (previous) previous.replaceWith(option);
   else picker.prepend(option);
   picker.value = fight.id;
+  byId("retryForecast").hidden = true;
   const url = new URL(location.href);
   url.searchParams.set("fight", fight.id);
   history.replaceState(null, "", url);
@@ -92,6 +96,13 @@ function showFight(fight, monitorStatus) {
   byId("fightTitle").textContent = forecast.target.name;
   byId("resultState").textContent = observation ? "Result recorded" : "Awaiting result";
   byId("captureInfo").textContent = `${sourceLabel(fight.source)} · ${dateTime.format(new Date(fight.capturedAt))}`;
+  const warnings = byId("forecastWarnings");
+  warnings.replaceChildren(...(forecast.warnings ?? []).map(({ message }) => {
+    const item = document.createElement("li");
+    item.textContent = message;
+    return item;
+  }));
+  warnings.hidden = warnings.childElementCount === 0;
   byId("forecastOdds").textContent = `Victory ${percentages.format(probabilities.win)} · Defeat ${percentages.format(probabilities.loss)} · At limit ${percentages.format(probabilities.timeout)}`;
   byId("forecastMedian").textContent = `${quantile(duration.medianSeconds, duration.medianCensored)} median`;
   byId("forecastRange").textContent = `${quantile(duration.p10Seconds, duration.p10Censored)} – ${quantile(duration.p90Seconds, duration.p90Censored)}`;
@@ -137,8 +148,21 @@ function showFight(fight, monitorStatus) {
 }
 
 async function loadFight(id) {
-  const { fight, monitorStatus } = await api(`${endpoint}/${id}`);
-  showFight(fight, monitorStatus);
+  const retry = byId("retryForecast");
+  const pending = [...byId("fightPicker").options].some((option) => option.value === id && option.dataset.pending);
+  retry.hidden = true;
+  if (pending) status("resultStatus", "Finishing the forecast from your saved pre-fight state…");
+  try {
+    const { fight, monitorStatus } = await api(`${endpoint}/${id}`);
+    showFight(fight, monitorStatus);
+    status("resultStatus", "");
+  } catch (error) {
+    if (pending) {
+      retry.dataset.fightId = id;
+      retry.hidden = false;
+    }
+    throw error;
+  }
 }
 
 let refreshing = false;
@@ -179,11 +203,16 @@ async function loadTargets() {
 
 async function loadSaved() {
   const { fights } = await api(endpoint);
-  byId("fightPicker").replaceChildren(...fights.map(pickerOption));
+  const picker = byId("fightPicker");
+  picker.replaceChildren(...fights.map(pickerOption));
   const linked = new URL(location.href).searchParams.get("fight");
   const id = fights.find((fight) => fight.id === linked)?.id ?? fights[0]?.id;
-  if (id) await loadFight(id);
-  else byId("emptyFights").textContent = "Saved forecasts and their results will appear here.";
+  if (id) {
+    byId("emptyFights").hidden = true;
+    byId("fightPickerLabel").hidden = false;
+    picker.value = id;
+    await loadFight(id);
+  } else byId("emptyFights").textContent = "Saved forecasts and their results will appear here.";
   if (linked && linked !== id) status("resultStatus", "The linked fight is unavailable.", true);
 }
 
@@ -219,19 +248,21 @@ byId("captureForm").addEventListener("submit", async (event) => {
   }
 });
 
-byId("fightPicker").addEventListener("change", async () => {
+async function selectFight(id) {
   busy(true);
   const picker = byId("fightPicker");
   try {
-    await loadFight(picker.value);
-    status("resultStatus", "");
+    await loadFight(id);
   } catch (error) {
     if (current) picker.value = current.id;
     status("resultStatus", error.message, true);
   } finally {
     busy(false);
   }
-});
+}
+
+byId("fightPicker").addEventListener("change", (event) => selectFight(event.target.value));
+byId("retryForecast").addEventListener("click", (event) => selectFight(event.currentTarget.dataset.fightId));
 
 byId("resultForm").addEventListener("input", () => { resultEdited = true; });
 byId("resultForm").addEventListener("submit", async (event) => {

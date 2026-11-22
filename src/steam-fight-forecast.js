@@ -2,8 +2,9 @@ import { combatAssumptionsFromSave } from "./combat-assumptions.js";
 import { runMonteCarlo } from "./combat.js";
 import { buildSteamEnemy, enemyFromSketch } from "./combat/steam-encounter.js";
 import { extractStats, isFullSteamSave, toNumber } from "./save.js";
+import { validateDataCompatibility } from "./save-analysis.js";
 
-export function createSteamFightForecast({
+export function validateSteamFightForecastInput({
   save,
   sketches = {},
   dataMetadata = null,
@@ -35,7 +36,11 @@ export function createSteamFightForecast({
     || toNumber(rawPlayer.maxHp) <= 0 || toNumber(rawPlayer.attackSpeed) <= 0) {
     throw new Error("The Steam save must contain valid effective player stats.");
   }
+  return { save, sketches, dataMetadata, targetId, trials, maxSeconds, seed };
+}
 
+export function createSteamFightForecast(input) {
+  const { save, sketches, dataMetadata, targetId, trials, maxSeconds, seed } = validateSteamFightForecastInput(input);
   const sketch = sketches[targetId];
   const target = { id: targetId, name: sketch.name ?? targetId };
   const player = extractStats(save.state, "playerStats");
@@ -57,6 +62,7 @@ export function createSteamFightForecast({
     enemy,
     assumptions,
     dataMetadata,
+    warnings: validateDataCompatibility({ save, dataMetadata }),
     saveVersion: save.version ?? null,
     seed,
     trials,

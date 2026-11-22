@@ -304,3 +304,49 @@ test("compareRoutes ranks route options for the same target", () => {
   assert.equal(comparison.routes[0].name, "warmup");
   assert.ok(comparison.routes[0].finalStats.attack > comparison.routes[1].finalStats.attack);
 });
+
+test("compareRoutes uses identical fight samples for identical routes with different names", () => {
+  const options = {
+    sketches: { ...sketches, target: { ...sketches.target, stats: { ...sketches.target.stats, dodge: 50 } } },
+    state: state(),
+    baseStats: { maxHp: 1000, attack: 100, attackSpeed: 1000, accuracy: 50 },
+    targetId: "target",
+    trials: 24,
+    seed: "same-route",
+    maxSeconds: 22,
+  };
+  const direct = simulateRoute({ ...options, routeIds: ["warmup"] });
+  const comparison = compareRoutes({
+    ...options,
+    routes: [{ name: "First", ids: ["warmup"] }, { name: "Renamed", ids: ["warmup"] }],
+  });
+
+  for (const entry of comparison.routes) assert.deepEqual(entry.target.simulation, direct.target.simulation);
+});
+
+test("simulateRoute uses the legacy save's time acceleration and Flow State", () => {
+  const player = { maxHp: 100, attack: 100, attackSpeed: 1000, accuracy: 100, minDamage: 100, maxDamage: 100 };
+  const options = {
+    sketches: { target: { ...sketches.target, stats: { ...player, attackSpeed: 800 } } },
+    baseStats: player,
+    targetId: "target",
+    trials: 4,
+    maxSeconds: 2,
+  };
+  const save = {
+    fundamentals: { timeAcceleration: 2, flowStateLevel: 50 },
+    autoRetryActive: true,
+    glossaryUnlocks: ["target"],
+  };
+  const known = simulateRoute({ ...options, state: save }).target.simulation;
+  const unknown = simulateRoute({ ...options, state: { ...save, glossaryUnlocks: [] } }).target.simulation;
+  const normalSpeed = simulateRoute({
+    ...options,
+    state: { ...save, fundamentals: { ...save.fundamentals, timeAcceleration: 1 } },
+  }).target.simulation;
+
+  assert.equal(known.winRate, 1);
+  assert.equal(unknown.winRate, 0);
+  assert.equal(known.avgSeconds, 0.4);
+  assert.equal(known.avgSeconds * 2, normalSpeed.avgSeconds);
+});

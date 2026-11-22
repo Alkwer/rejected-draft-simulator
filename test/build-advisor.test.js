@@ -138,6 +138,24 @@ test("analyzeBuildAdvice recommends tools and active run actions", () => {
   assert.ok(advice.activeRun.bestNextRewards.some((item) => item.id === "bleed_route"));
 });
 
+test("analyzeBuildAdvice reserves remaining booster uses for new assignments", () => {
+  const advice = analyzeBuildAdvice({
+    sketches,
+    targetId: "duct_taped_banana",
+    state: {
+      availableSketches: ["bleed_route", "sustain_route", "freeze_route"],
+      boostedSketchIds: ["bleed_route"],
+      fundamentals: { rewardBoosterUses: 1 },
+    },
+  });
+
+  assert.deepEqual(advice.tools.booster.map(({ id, action }) => [id, action]), [
+    ["bleed_route", "already_boosted"],
+    ["sustain_route", "boost"],
+    ["freeze_route", "save_for_later"],
+  ]);
+});
+
 test("analyzeBuildAdvice filters capped fights by sketch victories", () => {
   const advice = analyzeBuildAdvice({
     sketches,

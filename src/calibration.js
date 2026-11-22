@@ -373,6 +373,7 @@ export function suggestCalibrationTuning(comparisons = []) {
       + breakdownValue(simulatedBreakdown, "player", "parry");
     pushRatio(reflectRatios, actualReflect, simulatedReflect);
 
+    if (comparison.actual?.outcome === "timeout" || comparison.predicted?.medianCensored) continue;
     const actualSeconds = toNumber(comparison.actual?.seconds, NaN);
     const simulatedSeconds = toNumber(comparison.simulated?.summary?.medianSeconds, NaN)
       || toNumber(comparison.simulated?.fight?.seconds, NaN);
@@ -555,11 +556,16 @@ function compareLogToSimulation({
     winRate: summary.winRate,
     timeoutRate: summary.timeoutRate,
     medianSeconds: summary.medianSeconds,
+    medianCensored: summary.timeouts >= Math.ceil(summary.trials / 2),
     topVictoryCause: topKey(summary.victoryCauses),
     topDefeatCause: topKey(summary.defeatCauses),
   };
 
-  if (log.outcome !== "unknown" && predicted.outcome !== "uncertain" && log.outcome !== predicted.outcome) {
+  // Compare outcomes only when the observation establishes the result at the simulated horizon.
+  const outsideHorizon = log.outcome === "timeout"
+    ? Number.isFinite(log.seconds) && log.seconds < maxSeconds
+    : Number.isFinite(log.seconds) && log.seconds >= maxSeconds;
+  if (!outsideHorizon && log.outcome !== "unknown" && predicted.outcome !== "uncertain" && log.outcome !== predicted.outcome) {
     deviations.push({
       code: "outcome_mismatch",
       targetId: log.targetId,
@@ -570,7 +576,8 @@ function compareLogToSimulation({
     });
   }
 
-  const durationDeviation = compareDuration(log.seconds, summary.medianSeconds);
+  const durationDeviation = !predicted.medianCensored && log.outcome !== "timeout" &&
+    compareDuration(log.seconds, summary.medianSeconds);
   if (durationDeviation) {
     deviations.push({
       code: "duration_mismatch",
@@ -579,7 +586,7 @@ function compareLogToSimulation({
     });
   }
 
-  const causeDeviation = compareCause(log.reason, summary);
+  const causeDeviation = !outsideHorizon && compareCause(log.reason, summary);
   if (causeDeviation) {
     deviations.push({
       code: "cause_mismatch",

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { createRunRecommendation, parseTrialsSetting, resolveTargetId, runCombatSimulation } from "./cli-convenience.js";
 import { combatAssumptionsFromSave } from "./combat-assumptions.js";
 import { createDiagnosticReport, createModelAssumptionComparisons } from "./diagnostics.js";
@@ -44,7 +45,23 @@ export function createWebAnalysis({
   hiddenSketchIds = [],
   observedOutcome = null,
   traceSeconds = 60,
+  identifyInputs = false,
+  expectedSaveHash,
+  expectedCatalogHash,
 } = {}) {
+  let replayIdentity;
+  if (identifyInputs) {
+    const hash = (value) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
+    const saveHash = hash(save);
+    if (expectedSaveHash && saveHash !== expectedSaveHash) {
+      throw Object.assign(new Error("The save has changed. Load the original save to repeat this analysis."), { status: 409 });
+    }
+    const catalogHash = hash({ sketches, dataMetadata });
+    if (expectedCatalogHash && catalogHash !== expectedCatalogHash) {
+      throw Object.assign(new Error("The catalog has changed since this analysis. Run a new analysis instead."), { status: 409 });
+    }
+    replayIdentity = { saveHash, catalogHash };
+  }
   const resolvedTargetId = resolveTargetId(targetId) ?? "duct_taped_banana";
   const combatAssumptions = combatAssumptionsFromSave(save);
   const target = sketchForEncounter(sketches[resolvedTargetId], combatAssumptions);
@@ -114,7 +131,7 @@ export function createWebAnalysis({
     assumptions: combatAssumptions,
   });
   const activeSketches = createActiveSketchRows({
-    analysis, sketches, baseStats, trialsSetting: auxiliaryTrialsSetting, maxSeconds, seed, assumptions: combatAssumptions,
+    analysis, sketches, baseStats, trialsSetting: auxiliaryTrialsSetting, maxSeconds: targetMaxSeconds, seed, assumptions: combatAssumptions,
     targetId: resolvedTargetId, currentTargetResult: assumedRouteIds.length ? null : result,
   });
   const recommendation = createRunRecommendation({
@@ -122,6 +139,8 @@ export function createWebAnalysis({
     currentRun: { targets: activeSketches.filter((row) => !hiddenSketchIds.includes(row.id)) },
   });
   const targetComparisons = createTargetComparisons({
+    analyzedId: resolvedTargetId,
+    analyzedResult: result,
     sketches,
     activeSketches,
     finalStats,
@@ -180,6 +199,7 @@ export function createWebAnalysis({
   });
 
   return {
+    ...(replayIdentity && { replayIdentity }),
     saveVersion: save.version ?? null,
     target: targetSummary(target),
     statSource,
@@ -201,15 +221,7 @@ export function createWebAnalysis({
     activeDeltas,
     routePreview,
     rollWishlist,
-    buildComparison: createBuildComparison({
-      sketches,
-      finalStats,
-      activeSketches,
-      trialsSetting: auxiliaryTrialsSetting,
-      maxSeconds,
-      seed,
-      assumptions: combatAssumptions,
-    }),
+    buildComparison: createBuildComparison({ targetComparisons, activeSketches }),
     bundle: summarizeGameBundle({ sketches, dataMetadata }),
     performance: {
       primaryTrials: result.trials,
@@ -327,9 +339,7 @@ function createActiveSketchRows({ analysis, sketches, baseStats, trialsSetting, 
     const sketch = sketches[item.id];
     if (!sketch?.stats) continue;
     const options = { target: sketch, player: baseStats, trialsSetting, maxSeconds, seed: `${seed}:active:${item.id}`, assumptions };
-    const result = item.id === targetId
-      ? currentTargetResult ?? simulateTargetWithAdaptiveLimit(options).result
-      : simulateTarget(options);
+    const result = (item.id === targetId && currentTargetResult) || simulateTarget(options);
     rows.push({
       id: item.id,
       name: sketch.name ?? item.name ?? item.id,
@@ -354,7 +364,7 @@ function createActiveSketchRows({ analysis, sketches, baseStats, trialsSetting, 
   return rows.sort((a, b) => b.winRate - a.winRate || rarityRank(b.rarity) - rarityRank(a.rarity) || a.id.localeCompare(b.id));
 }
 
-function createBuildComparison({ sketches, finalStats, activeSketches, trialsSetting, maxSeconds, seed, assumptions = {} }) {
+function createBuildComparison({ targetComparisons, activeSketches }) {
   const farmTarget = activeSketches[0] ?? null;
   const rows = [];
   rows.push({
@@ -370,33 +380,14 @@ function createBuildComparison({ sketches, finalStats, activeSketches, trialsSet
   });
 
   for (const [label, id] of [["Duct", "duct_taped_banana"], ["Rose", "rose_window"]]) {
-    const target = sketches[id];
-    if (!target) continue;
-    const result = simulateTarget({
-      target,
-      player: finalStats,
-      trialsSetting,
-      maxSeconds,
-      seed: `${seed}:compare:${id}`,
-      assumptions,
-    });
-    rows.push({
-      label,
-      targetId: id,
-      targetName: target.name ?? id,
-      winRate: round(result.winRate),
-      winRateCi95: result.winRateCi95,
-      ci95HalfWidth: round(result.winRateCi95?.halfWidth ?? 0),
-      trials: result.trials,
-      p90Seconds: round(result.p90Seconds ?? 0),
-      problem: topKey(result.defeatCauses) ?? topKey(result.timeoutDiagnoses) ?? topKey(result.victoryCauses) ?? "none",
-    });
+    const target = targetComparisons.find((row) => row.id === id);
+    if (target) rows.push({ ...target, label, targetId: id, targetName: target.name });
   }
 
   return rows;
 }
 
-function createTargetComparisons({ sketches, activeSketches, finalStats, trialsSetting, maxSeconds, seed, assumptions = {} }) {
+function createTargetComparisons({ sketches, activeSketches, finalStats, trialsSetting, maxSeconds, seed, assumptions = {}, analyzedId, analyzedResult }) {
   const rows = [];
   const seen = new Set();
   const addTarget = ({ id, source }) => {
@@ -404,7 +395,7 @@ function createTargetComparisons({ sketches, activeSketches, finalStats, trialsS
     const target = sketches[id];
     if (!target?.stats) return;
     seen.add(id);
-    const result = simulateTarget({
+    const result = id === analyzedId ? analyzedResult : simulateTarget({
       target,
       player: finalStats,
       trialsSetting,
@@ -420,6 +411,10 @@ function createTargetComparisons({ sketches, activeSketches, finalStats, trialsS
   for (const item of activeSketches) {
     if (item.rarity !== "opus") continue;
     if (seen.has(item.id)) continue;
+    if (item.id === analyzedId) {
+      addTarget({ id: analyzedId, source: "active_run" });
+      continue;
+    }
     rows.push({
       id: item.id,
       name: item.name,
@@ -618,7 +613,7 @@ function createRollWishlist({
   };
 }
 
-function createRoutePreview({ sketches, state, baseStats, routeIds, targetId, trialsSetting, maxSeconds, seed }) {
+function createRoutePreview({ sketches, state, baseStats, routeIds, targetId, trialsSetting, maxSeconds, seed, assumptions }) {
   const ids = normalizeIds(routeIds);
   if (ids.length === 0) {
     return { routeIds: [], steps: [], finalStats: null, currencies: null };
@@ -631,12 +626,13 @@ function createRoutePreview({ sketches, state, baseStats, routeIds, targetId, tr
     latest = simulateRoute({
       sketches,
       state,
+      assumptions,
       baseStats,
       routeIds: ids.slice(0, index + 1),
       targetId,
       trials,
       maxSeconds,
-      seed: `${seed}:route-preview:${index}`,
+      seed: `${seed}:route-preview`,
     });
     const step = latest.steps.at(-1) ?? { id: ids[index], status: "missing" };
     const simulation = latest.target?.simulation ?? {};

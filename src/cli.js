@@ -93,6 +93,10 @@ if (args["inspect-save"]) {
 }
 
 const requestedStatsSource = args.stats ?? "auto";
+if (!["auto", "playerStats", "battleStats", "runStats"].includes(requestedStatsSource)) {
+  console.error("--stats must be auto, playerStats, battleStats, or runStats.");
+  process.exit(1);
+}
 const statSource = requestedStatsSource === "auto"
   ? analysis.stats.recommendedSource
   : requestedStatsSource;
@@ -103,6 +107,15 @@ let player = requestedStatsSource === "auto"
 const trialsSetting = parseTrialsSetting(args.trials);
 const trials = fixedTrialsFromSetting(trialsSetting);
 const maxSeconds = Number(args["max-seconds"] ?? 300);
+if (args["max-seconds"] === true || !Number.isFinite(maxSeconds) || maxSeconds <= 0) {
+  console.error("--max-seconds must be a positive, finite number.");
+  process.exit(1);
+}
+if (args.trials !== undefined && String(args.trials).toLowerCase() !== "auto" &&
+    (args.trials === true || !Number.isSafeInteger(Number(args.trials)) || Number(args.trials) < 1)) {
+  console.error("--trials must be auto or a positive integer.");
+  process.exit(1);
+}
 const seed = args.seed ?? `${targetId ?? "calibration"}:${Date.now()}`;
 const combatAssumptions = combatAssumptionsFromSave(save);
 
@@ -167,7 +180,7 @@ if (!target) {
 }
 
 if (args.explain) {
-  const explanation = explainTarget({ target, player });
+  const explanation = explainTarget({ target, player, maxSeconds });
   if (wantsJsonOutput(args)) console.log(JSON.stringify({ target: targetSummary(target), statSource, explanation }, null, 2));
   else printTargetExplanation({ target, statSource, explanation });
   process.exit(0);
@@ -290,6 +303,7 @@ if (args.route) {
       target,
       player: routeResult.finalStats,
       simulation: routeResult.target.simulation,
+      maxSeconds,
       label: `Route: ${routeResult.routeIds.join(", ") || "empty"}`,
     })
     : null;
@@ -399,7 +413,7 @@ if (args["trace-fight"]) {
 }
 
 const result = runCombatSimulation({ player, enemy, trialsSetting, maxSeconds, seed, assumptions: combatAssumptions });
-const report = createCombatReport({ target, player, simulation: result });
+const report = createCombatReport({ target, player, simulation: result, maxSeconds });
 const assumptionComparisons = createModelAssumptionComparisons({
   target,
   player,
@@ -1147,8 +1161,9 @@ function printCalibrationReport({ statSource, calibration }) {
   }
   for (const item of calibration.comparisons.slice(0, 12)) {
     const predictedRate = item.predicted.winRate == null ? "n/a" : `${(item.predicted.winRate * 100).toFixed(2)}%`;
-    const seconds = item.actual.seconds == null ? "n/a" : `${item.actual.seconds.toFixed(2)}s`;
-    console.log(`  ${String(item.targetId ?? "unknown").padEnd(28)} real ${item.actual.outcome.padEnd(8)} sim ${item.predicted.outcome.padEnd(9)} win ${predictedRate.padEnd(8)} real time ${seconds}`);
+    const seconds = item.actual.seconds == null ? "n/a" : `${item.actual.outcome === "timeout" ? "≥" : ""}${item.actual.seconds.toFixed(2)}s`;
+    const median = item.predicted.medianSeconds == null ? "n/a" : `${item.predicted.medianCensored ? "≥" : ""}${item.predicted.medianSeconds.toFixed(2)}s`;
+    console.log(`  ${String(item.targetId ?? "unknown").padEnd(28)} real ${item.actual.outcome.padEnd(8)} sim ${item.predicted.outcome.padEnd(9)} win ${predictedRate.padEnd(8)} real time ${seconds} simulated median ${median}`);
   }
   if (calibration.comparisons.length > 12) {
     console.log(`  ... ${calibration.comparisons.length - 12} more`);

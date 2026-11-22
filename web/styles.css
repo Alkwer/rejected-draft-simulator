@@ -1024,6 +1024,10 @@ td {
   align-items: center;
 }
 
+.history-item .mini-button {
+  justify-self: start;
+}
+
 .ui-diagnostics {
   grid-column: 1 / -1;
   padding-bottom: 16px;

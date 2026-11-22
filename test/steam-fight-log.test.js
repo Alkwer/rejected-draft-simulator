@@ -164,7 +164,7 @@ test("Steam monitor imports a Hyena result in the background from the captured s
   assert.equal((await fetchFight(second.id)).fight.revision, 2);
 });
 
-test("Steam monitor restores inspected coverage after a restart with a full, overlapping history", (t) => {
+test("Steam monitor restores inspected coverage after a restart with a full, overlapping history", async (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rd-fight-checkpoint-"));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const root = path.join(dir, "log");
@@ -174,7 +174,7 @@ test("Steam monitor restores inspected coverage after a restart with a full, ove
   }));
   const options = { root, dataPath: DEFAULT_DATA_PATH, steamSaveDir: dir };
   writeSlot(slot.meta.savedAt, []);
-  const { fight: captured } = handleSteamFightRequest({
+  const { fight: captured } = await handleSteamFightRequest({
     ...options, pathname: "/api/steam-fights", method: "POST", body: { trials: 1, maxSeconds: 2 },
   });
   const since = Date.parse(captured.capturedAt);
@@ -225,4 +225,94 @@ test("Steam monitor restores inspected coverage after a restart with a full, ove
   assert.equal(fight.observation.elapsedSeconds, 5.4);
   restarted.captured();
   assert.equal(handleSteamFightRequest(request).fight.revision, 1);
+});
+
+test("concurrent captures share work and a failed forecast can reuse the original save and catalog", async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rd-in-flight-forecast-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const root = path.join(dir, "log");
+  const dataPath = path.join(dir, "catalog.json");
+  const file = path.join(dir, "slot-1.json");
+  const original = { ...slot, meta: { ...slot.meta, slot: 1, savedAt: Date.now(), gameVersion: "fixture-patch" },
+    state: { ...slot.state, notificationHistory: [] } };
+  const bytes = JSON.stringify(original);
+  fs.writeFileSync(file, bytes);
+  const catalog = JSON.parse(fs.readFileSync(DEFAULT_DATA_PATH, "utf8"));
+  fs.writeFileSync(dataPath, JSON.stringify(catalog));
+
+  const monitor = createSteamFightMonitor({ root, steamSaveDir: dir });
+  t.after(() => monitor.stop());
+  monitor.start();
+  const id = randomUUID();
+  let rejectForecast;
+  const failedForecast = new Promise((resolve, reject) => { rejectForecast = reject; });
+  let attempts = 0;
+  const request = {
+    root, dataPath, steamSaveDir: dir, pathname: "/api/steam-fights", method: "POST",
+    body: { id, trials: 1, maxSeconds: 2 }, pendingCaptures: new Map(), onCapture: monitor.captured,
+    calculateForecast: (options) => {
+      attempts++;
+      assert.equal(options.save.state.playerStats.attack, original.state.playerStats.attack);
+      assert.deepEqual(options.dataMetadata, catalog.metadata);
+      assert.deepEqual(options.sketches.hyena_hulk, catalog.sketches.hyena_hulk);
+      return failedForecast;
+    },
+  };
+  const first = handleSteamFightRequest(request);
+  const duplicate = handleSteamFightRequest(request);
+  await assert.rejects(handleSteamFightRequest({ ...request, body: { ...request.body, trials: 2 } }), { status: 409 });
+  assert.equal(attempts, 1);
+  const download = handleSteamFightRequest({ ...request, pathname: `/api/steam-fights/${id}/save`, method: "GET" });
+  assert.equal(download.download.toString("utf8"), bytes);
+  const snapshot = JSON.parse(fs.readFileSync(path.join(root, id, "capture.json"), "utf8"));
+  const startedAt = Date.parse(snapshot.record.capturedAt) + 10;
+  const timestamp = startedAt + 1250;
+  fs.writeFileSync(file, JSON.stringify({
+    ...original, meta: { ...original.meta, savedAt: timestamp },
+    state: { ...original.state, playerStats: { ...original.state.playerStats, attack: 42 },
+      notificationHistory: [{ type: "DEFEAT", message: "Defeated by Hyena Hulk!", timestamp,
+        action: { kind: "combat-log", startTime: startedAt, encounterId: "while-running" } }] },
+  }));
+  monitor.captured();
+  assert.ok(fs.existsSync(path.join(root, id, "result-1", "steam-observation.json")));
+  fs.writeFileSync(dataPath, "{}");
+  rejectForecast(new Error("Worker stopped"));
+  for (const result of await Promise.allSettled([first, duplicate])) assert.match(result.reason.message, /Worker stopped/);
+
+  const server = await startServer({ fightLogDir: root, steamSaveDir: dir, dataPath });
+  t.after(() => server.close());
+  const { fights } = await (await server.request()).json();
+  assert.deepEqual(fights, [{ id, capturedAt: snapshot.record.capturedAt, source: "slot-1.json",
+    target: snapshot.target, outcome: "loss", pending: true }]);
+  const [firstRead, secondRead] = await Promise.all([server.request(`/${id}`), server.request(`/${id}`)]);
+  assert.equal(firstRead.status, 200);
+  assert.equal(secondRead.status, 200);
+  const { fight } = await firstRead.json();
+  assert.deepEqual((await secondRead.json()).fight, fight);
+  assert.deepEqual(fight.forecast.dataMetadata, catalog.metadata);
+  assert.equal(fight.forecast.player.attack, original.state.playerStats.attack);
+  assert.equal(fight.capturedAt, snapshot.record.capturedAt);
+  assert.equal(fight.observation.encounterId, "while-running");
+  assert.equal(fight.observation.elapsedSeconds, 1.3);
+  assert.equal(fight.observation.outcomeProbability, fight.forecast.probabilities.loss);
+  assert.ok(fight.forecast.warnings.some(({ code }) => code === "game_version_mismatch"));
+  const pendingAfterRead = (await (await server.request()).json()).fights[0];
+  assert.equal(pendingAfterRead.pending, undefined);
+  assert.deepEqual((await (await server.request("", "POST", request.body)).json()).fight, fight);
+});
+
+test("the fight log reads and retries historical forecasts without stored warnings", async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-old-forecast-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const id = randomUUID();
+  const dir = path.join(root, id);
+  fs.mkdirSync(dir);
+  const historical = { id, source: "slot-1.json", capturedAt: new Date().toISOString(),
+    forecast: { target: { id: "hyena_hulk", name: "Hyena Hulk" }, trials: 1000, maxSeconds: 300 } };
+  fs.writeFileSync(path.join(dir, "forecast.json"), JSON.stringify(historical));
+  const request = { root, pathname: "/api/steam-fights", method: "GET" };
+  assert.equal(handleSteamFightRequest(request).fights[0].id, id);
+  const { fight } = handleSteamFightRequest({ ...request, pathname: `${request.pathname}/${id}` });
+  assert.deepEqual(fight, { ...historical, revision: 0, observation: null });
+  assert.deepEqual(await handleSteamFightRequest({ ...request, method: "POST", body: { id } }), { fight });
 });
