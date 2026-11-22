@@ -16,7 +16,7 @@ export function createCompanionFightFixture({
   maxSeconds = 300,
   traceSeconds = 60,
 } = {}) {
-  const save = decodeCompanionSave(saveText);
+  const save = decodeSaveText(saveText);
   const resolvedTargetId = inferTargetId({ save, sketches, targetId, observed, browserSnapshot });
   const target = sketches[resolvedTargetId];
   if (!target) throw new Error(`Unknown target sketch: ${resolvedTargetId}`);
@@ -211,7 +211,7 @@ function decodeHistorySave(entry) {
   const text = firstString(entry.saveText, entry.value, entry.raw);
   if (!text) return null;
   try {
-    return decodeCompanionSave(text);
+    return decodeSaveText(text);
   } catch {
     return null;
   }
@@ -396,16 +396,6 @@ function outcomeFromVisibleCombatLog(text) {
 function targetNameToId(name) {
   if (!name) return null;
   return String(name).toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "") || null;
-}
-
-function decodeCompanionSave(saveText) {
-  const text = String(saveText ?? "").trim();
-  if (!text) throw new Error("Save export is empty.");
-  try {
-    return decodeSaveText(text);
-  } catch {
-    return JSON.parse(text);
-  }
 }
 
 function fixtureFilename({ targetId, saveVersion, source }) {

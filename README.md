@@ -1,8 +1,6 @@
 # Rejected Draft Simulator
 
-Monte Carlo simulator for Rejected Draft combat checks.
-
-This is a local approximation of the combat engine. It is useful for comparing builds and target difficulty, but it is not a byte-for-byte clone of the game.
+Local Monte Carlo combat simulator for the full Steam edition of Rejected Draft. The included catalog covers **v0.9771, Steam build 26823208, save schema 86**. It contains 232 sketches and four training dummies.
 
 ## Requirements
 
@@ -30,9 +28,40 @@ To open the browser automatically from the command line:
 npm.cmd run dev:open
 ```
 
-Open the printed local URL, usually `http://127.0.0.1:5173`. The UI accepts a pasted save export or a `.txt` save file, supports active-run checkboxes for assumed pre-target victories, target selection, result panels, build comparison, local history and one-click local bundle import.
+Open the printed local URL, usually `http://127.0.0.1:5173`. Under **Run**, choose a target and click **Use active Steam slot**. Further simulations read that slot from disk. You can also open a specific `slot-N.json`, choose an exported `.txt` file, or paste an export. The simulator reads saves locally. Each fight starts at full health.
 
-## Game Companion Overlay
+On Windows, the game stores its six slots under `%APPDATA%\Rejected Draft\saves\steam`. The simulator follows `last-slot.txt` and uses the most recently modified slot if the selected file is missing. CLI users can run:
+
+```powershell
+npm.cmd run simulate -- --save latest --inspect-save
+npm.cmd run simulate -- --save latest --target mega_pan --trials 500
+```
+
+After a Steam patch, use **Refresh Steam data** or run `npm.cmd run update-data`. The import reads the installed game's renderer manifest, verifies the sketch and store assets, and refreshes the local catalog. It works offline. To select a custom installation:
+
+```powershell
+npm.cmd run update-data -- --steam-dir "D:\SteamLibrary\steamapps\common\Rejected Draft"
+```
+
+You can also set `REJECTED_DRAFT_STEAM_DIR` for both the UI and CLI. `npm.cmd run update-data -- --check` compares the catalog with the installed build. It requires access to the installation. Simulation can use the included snapshot on its own.
+
+## Compare a Steam fight
+
+1. For automatic Hyena Hulk results, unlock the **Combat Log** and enable **Victory** and **Defeat** in the game's in-game notification settings. Save the active Steam slot just before starting the fight.
+2. Open **Steam fight log** in the simulator, leave **Hyena Hulk** selected and click **Save pre-fight state**. The simulator copies the slot from disk and stores a forecast alongside it. You can also choose an exported Steam save. The default forecast runs 1,000 fights with a 300-second limit.
+3. Fight Hyena Hulk with that setup and keep the simulator server running. After Steam writes its next save, the simulator reads the original slot and fills in **Steam result**. You can close the simulator tab while playing. The entry shows the start time and the source of the result.
+
+The Steam slot contains recent victory and defeat notifications. Each linked notification identifies the encounter and records its start and notification timestamps. The imported duration (**≈**) is their difference in real seconds, rounded to a tenth. The in-game Combat Log finalizes the encounter separately, so its displayed duration can differ slightly.
+
+The monitor accepts the first matching fight it sees that started after the capture and finished before the next Hyena Hulk capture for that slot. Steam retains up to ten notifications in docked mode and five in basic mode. If the saved history has rolled over or lacks timing, the entry explains how to proceed. **Enter or correct a result manually** also works with exports and other opponents.
+
+The comparison shows how often the observed outcome occurred in the simulations, the difference from their median duration and whether the time fell between the 10th and 90th percentiles. If you stop timing a fight that is still running, select **Still fighting at cutoff**. A **≥** marks a lower bound wherever the time limit prevents an exact duration.
+
+Reopen the entry under **Saved fights** to review it, correct the observed result or download the original pre-fight save. The local archive lives in `.local/steam-fights/` and survives server restarts and slot changes. Capturing another fight creates a separate entry.
+
+## Legacy web companion
+
+The original browser game has its own save format and balance. Recognized web saves use the archived web catalog. The Tampermonkey overlay below is for that edition. [Developer announcement on save compatibility](https://steamcommunity.com/app/4574820/allnews/)
 
 For a read-only integration with the live game page, install the Tampermonkey script:
 
@@ -183,20 +212,23 @@ npm.cmd run simulate -- --save "C:\path\to\save.txt" --calibrate --target mobius
 npm.cmd run simulate -- --save "C:\path\to\save.txt" --calibrate --combat-log "C:\path\to\combat-log.json" --export json
 ```
 
-`npm run update-data` downloads the current Rejected Draft page, finds the current `main-*.js` and `artistLinks-*.js` assets, refreshes `data/artistLinks.js`, and updates local metadata/version history. If the game page is unavailable, it falls back to the last local data unless `--no-offline` is passed.
+The default catalog is `data/steam-catalog.json`. It contains normalized combat records and build provenance. If the installation is unavailable, an update reports when it keeps the cached Steam catalog. Use `--no-offline` to require the installation. The legacy web updater is available explicitly through `--game-url https://kuzzigames.com/rejected_draft/` and writes to `data/artistLinks.js`. Companion fixtures, the generated combat reference and its parity map document the legacy web build.
 
 `--calibrate` imports `combatLog` from the save when available, can also include an external JSON/base64 log file, compares observed outcomes to simulated outcomes, reports deviations, and suggests status tick / Thorns-Counter / duration tuning multipliers. Current tested saves have `combatLog: []` with combat logging disabled, so calibration reports that no real fight samples are available instead of inventing evidence.
 
 Quality and performance checks:
 
 ```powershell
+npm.cmd ci
 npm.cmd test
 npm.cmd run lint
 npm.cmd run benchmark -- --trials 1000
 npm.cmd run benchmark -- --trials 1000 --json
 ```
 
-`npm run lint` syntax-checks JavaScript files in `src`, `test` and `web`. `npm run benchmark` runs a fixed combat benchmark and reports simulations per second so engine changes can be compared.
+`npm run lint` syntax-checks the simulator, tests, web UI, companion and browser test script. `npm run benchmark` reports simulations per second for a fixed combat scenario.
+
+`npm run test:browser` checks save imports and the displayed confidence interval in headless Chrome. To use Edge on Windows, set `$env:PLAYWRIGHT_CHANNEL = "msedge"` in PowerShell.
 
 Current-run convenience commands:
 
@@ -232,11 +264,14 @@ Implemented:
 - Calibration tools: `--calibrate` combat-log import/comparison, deviation reports, tuning suggestions, known regression scenarios and versioned patch sanity checks for Duct/Rose/Mobius.
 - CLI convenience: target aliases, `--save latest`, `--trials auto`, `--current-run`, `--remaining`, concrete `--recommend` decisions and compact number formatting.
 - Local web UI with `npm run dev`: paste/file save input, active sketch assumptions, target dropdown, result panel, build comparison, local simulation history and one-click local bundle import.
-- Automatic game data refresh with `npm run update-data`: fetches current game assets, updates `data/artistLinks.js`, records `main-*.js` patch metadata, checks for stale local assets and keeps an offline fallback.
+- Steam catalog refresh with `npm run update-data`, including discovery of additional Steam libraries and local build verification.
 - Quality tooling: combat helpers split into small modules, fixture saves/snapshots, CLI regression tests, `npm run lint` and `npm run benchmark`.
 
 Known approximations:
 
+- On Steam, direct fights use the effective `playerStats` saved by the game, including existing upgrades. Encounter stats include the current universe and Precise Eraser. Reward projections account for cards and reward multipliers, then estimate the resulting effective player stats. The game recalculates these from accumulated battle rewards and upgrades.
+- The model covers individual sketch fights. Full counterattack ordering, Overkill and Victory Lap reward batches, and resuming a partially completed fight remain approximate or outside its scope. Refreshing a catalog after a patch updates data; changes to combat rules require independent verification. The full-game catalog also differs from the Steam demo.
+- Calculations use JavaScript finite numbers. The importer reports out-of-range player stats and the analysis warns when a saved currency exceeds that range.
 - Some game mechanics are still approximate until enough real combat-log samples are available. The calibration layer now reports missing logs and suggests tuning only from observed samples.
 - Route mode simulates a declared plan. It does not yet choose the optimal route automatically.
 - Redraw planning is a Monte Carlo estimate. Exact game redraw weights are still inferred from observed mechanics and local bundle parsing.

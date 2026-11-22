@@ -46,6 +46,7 @@ test("compareFightParityFixture matches a deterministic observed fight", () => {
   });
 
   assert.equal(parity.ok, true);
+  assert.equal(parity.comparedFields, 7);
   assert.equal(parity.fixtureId, "deterministic_direct_win");
   assert.equal(parity.targetId, "training_target");
   assert.deepEqual(parity.deviations, []);
@@ -79,6 +80,17 @@ test("compareFightParityFixture reports outcome and numeric mismatches", () => {
   assert.ok(parity.deviations.some((item) => item.code === "duration_mismatch"));
   assert.ok(parity.deviations.some((item) => item.code === "player_hp_mismatch"));
   assert.ok(parity.deviations.some((item) => item.code === "enemy_hp_mismatch"));
+});
+
+test("empty observations cannot pass parity, while an observed zero or event can", () => {
+  const compare = (observed) => compareFightParityFixture({ fixture: { ...deterministicWinFixture, observed } });
+  const empty = compare({ outcome: "unknown", reason: "No combat log", events: [null, {}] });
+  assert.equal(empty.status, "no_observation");
+  assert.equal(empty.ok, false);
+  assert.equal(empty.comparedFields, 0);
+  assert.match(renderFightParityMarkdown(empty), /NO OBSERVATION/);
+  assert.equal(compare({ enemyHp: 0 }).comparedFields, 1);
+  assert.equal(compare({ events: [{ event: "attack" }] }).status, "match");
 });
 
 test("compareFightParityFixture applies combat speed multiplier from fixture assumptions", () => {

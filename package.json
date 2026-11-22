@@ -6,6 +6,7 @@
   "type": "module",
   "scripts": {
     "test": "node --test",
+    "test:browser": "node scripts/check-save-editions.js",
     "lint": "node src/lint.js",
     "benchmark": "node src/benchmark.js",
     "simulate": "node src/cli.js",
@@ -17,5 +18,8 @@
   },
   "engines": {
     "node": ">=20"
+  },
+  "devDependencies": {
+    "playwright-core": "1.65.1"
   }
 }

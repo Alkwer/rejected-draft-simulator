@@ -19,6 +19,8 @@ export const STATUS_TO_STAT = {
   HotPotato: "hotPotatoChance",
   Balloon: "balloonChance",
   Brittle: "brittleChance",
+  Wound: "woundChance",
+  Paralysis: "paralysisChance",
 };
 
 export const SELF_BUFF_TO_STAT = {
@@ -36,6 +38,7 @@ export const STATUS_CAPS = {
   Hinder: 1000,
   Hypnotize: 1000,
   BananaPeel: 1000,
+  Paralysis: 1000,
   Haste: 1000,
   EnergyWave: 1000,
   Leap: 1000,
@@ -145,10 +148,17 @@ function harmfulStatusSnapshot(statuses) {
   return result;
 }
 
-export function shouldSkipTurn(rng, attacker, statuses) {
+export function shouldSkipTurn(rng, attacker, statuses, steam = false) {
   if ((statuses.Hinder ?? 0) > 0 && rng("skip.Hinder") < Math.min(1, statuses.Hinder / 1000)) {
     statuses.Hinder = Math.floor(statuses.Hinder / 2);
     if (statuses.Hinder <= 0) delete statuses.Hinder;
+    if (steam) {
+      for (const status of ["Freeze", "Paralysis", "Irradiate"]) {
+        if (statuses[status] > 0 && !attacker.immunities.has(STATUS_TO_STAT[status])) {
+          addStatus(statuses, status, statuses[status]);
+        }
+      }
+    }
     return { skipped: true, damage: 0 };
   }
 

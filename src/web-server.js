@@ -5,20 +5,28 @@ import { fileURLToPath } from "node:url";
 
 import { createCompanionFightFixture } from "./companion-fight-fixture.js";
 import { createCompanionAnalysis, createTargetOptions, createWebAnalysis, summarizeGameBundle } from "./web-core.js";
-import { updateGameData } from "./game-data-update.js";
-import { readDataMetadata, readSketchData } from "./sketch-data.js";
+import { DEFAULT_DATA_PATH, LEGACY_DATA_PATH, updateGameData } from "./game-data-update.js";
+import { readGameBundle } from "./sketch-data.js";
+import { decodeSaveText, findActiveSteamSave, isSteamSave, readSaveFile } from "./save.js";
+import { createSteamFightMonitor, handleSteamFightRequest } from "./steam-fight-log.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = path.resolve(__dirname, "..");
 
 export function createWebServer({
   publicDir = path.join(PROJECT_ROOT, "web"),
-  dataPath = path.join(PROJECT_ROOT, "data", "artistLinks.js"),
   gameUrl,
+  dataPath = gameUrl ? LEGACY_DATA_PATH : DEFAULT_DATA_PATH,
+  legacyDataPath = dataPath === DEFAULT_DATA_PATH ? LEGACY_DATA_PATH : dataPath,
+  steamSaveDir,
+  steamDir,
+  fightLogDir = path.join(PROJECT_ROOT, ".local", "steam-fights"),
+  watchSteamFightsOnStart = false,
   updateDataOnImport = true,
   updateGameDataImpl = updateGameData,
 } = {}) {
-  return http.createServer(async (req, res) => {
+  const monitor = createSteamFightMonitor({ root: fightLogDir, steamSaveDir });
+  const server = http.createServer(async (req, res) => {
     const url = new URL(req.url ?? "/", "http://127.0.0.1");
     try {
       if (url.pathname.startsWith("/api/companion/") && req.method === "OPTIONS") {
@@ -29,15 +37,35 @@ export function createWebServer({
       if (url.pathname === "/api/health") {
         return sendJson(res, { ok: true });
       }
+      if (url.pathname === "/api/steam-fights" || url.pathname.startsWith("/api/steam-fights/")) {
+        res.setHeader("cache-control", "no-store");
+        if (!isLocalRequest(req)) return sendJson(res, { ok: false, error: "Open the Steam fight log on localhost." }, 403);
+        monitor.start();
+        const body = ["POST", "PUT"].includes(req.method) ? await readJsonBody(req) : {};
+        const result = handleSteamFightRequest({
+          root: fightLogDir, dataPath, steamSaveDir, pathname: url.pathname, method: req.method, body,
+        });
+        if (result.download) {
+          res.writeHead(200, { "content-type": "application/octet-stream", "content-disposition": `attachment; filename="${result.filename}"` });
+          res.end(result.download);
+          return;
+        }
+        if (result.fight) {
+          if (req.method === "POST") monitor.captured();
+          if (result.fight.observation) monitor.recorded(result.fight.id);
+          result.monitorStatus = monitor.status(result.fight.id);
+        }
+        return sendJson(res, { ok: true, ...result });
+      }
       if (url.pathname === "/api/import-bundle" && req.method === "POST") {
         const update = updateDataOnImport
-          ? await updateGameDataImpl({ dataPath, gameUrl, offlineFallback: true })
+          ? await updateGameDataImpl({ dataPath, gameUrl, steamDir, offlineFallback: true })
           : { updated: false, offline: false };
-        const { sketches, dataMetadata } = readBundle(dataPath);
+        const { sketches, dataMetadata } = readGameBundle(dataPath);
         return sendJson(res, { ok: true, update, bundle: summarizeGameBundle({ sketches, dataMetadata }) });
       }
       if (url.pathname === "/api/targets") {
-        const { sketches, dataMetadata } = readBundle(dataPath);
+        const { sketches, dataMetadata } = readGameBundle(url.searchParams.get("edition") === "web" ? legacyDataPath : dataPath);
         return sendJson(res, {
           ok: true,
           bundle: summarizeGameBundle({ sketches, dataMetadata }),
@@ -46,12 +74,22 @@ export function createWebServer({
       }
       if (url.pathname === "/api/analyze" && req.method === "POST") {
         const body = await readJsonBody(req);
+        let save;
+        let slotName;
+        if (body.saveSource === "steam") {
+          if (!isLocalRequest(req)) return sendJson(res, { ok: false, error: "Open the simulator on localhost to read a Steam slot." }, 403);
+          const file = findActiveSteamSave(steamSaveDir);
+          if (!file) return sendJson(res, { ok: false, error: "No Steam save slot found. Choose a save file or paste an export." }, 404);
+          save = readSaveFile(file);
+          slotName = path.basename(file);
+        }
         if (!body.targetId) {
           return sendJson(res, { ok: false, error: "Missing targetId" }, 400);
         }
-        const { sketches, dataMetadata } = readBundle(dataPath);
+        save ??= decodeSaveText(body.saveText);
+        const { sketches, dataMetadata } = readGameBundle(isSteamSave(save) ? dataPath : legacyDataPath);
         const analysis = createWebAnalysis({
-          saveText: body.saveText,
+          save,
           sketches,
           dataMetadata,
           targetId: body.targetId,
@@ -65,14 +103,14 @@ export function createWebServer({
           observedOutcome: body.observedOutcome,
           traceSeconds: body.traceSeconds,
         });
-        return sendJson(res, { ok: true, analysis });
+        return sendJson(res, { ok: true, analysis, slotName });
       }
       if (url.pathname === "/api/companion/analyze" && req.method === "POST") {
         const body = await readJsonBody(req);
         if (!body.saveText) {
           return sendJson(res, { ok: false, error: "Missing saveText" }, 400, companionCorsHeaders(req));
         }
-        const { sketches, dataMetadata } = readBundle(dataPath);
+        const { sketches, dataMetadata } = readGameBundle(legacyDataPath);
         const companion = createCompanionAnalysis({
           saveText: body.saveText,
           sketches,
@@ -89,7 +127,7 @@ export function createWebServer({
         if (!body.saveText) {
           return sendJson(res, { ok: false, error: "Missing saveText" }, 400, companionCorsHeaders(req));
         }
-        const { sketches, dataMetadata } = readBundle(dataPath);
+        const { sketches, dataMetadata } = readGameBundle(legacyDataPath);
         const fixtureCapture = createCompanionFightFixture({
           saveText: body.saveText,
           sketches,
@@ -109,9 +147,12 @@ export function createWebServer({
       return sendJson(res, {
         ok: false,
         error: error.message ?? String(error),
-      }, 500, url.pathname.startsWith("/api/companion/") ? companionCorsHeaders(req) : {});
+      }, error.status ?? 500, url.pathname.startsWith("/api/companion/") ? companionCorsHeaders(req) : {});
     }
   });
+  if (watchSteamFightsOnStart) server.once("listening", () => monitor.start());
+  server.once("close", () => monitor.stop());
+  return server;
 }
 
 const COMPANION_ALLOWED_ORIGINS = new Set([
@@ -119,11 +160,11 @@ const COMPANION_ALLOWED_ORIGINS = new Set([
   "https://www.kuzzigames.com",
 ]);
 
-function readBundle(dataPath) {
-  return {
-    sketches: readSketchData(dataPath),
-    dataMetadata: readDataMetadata(dataPath),
-  };
+function isLocalRequest(req) {
+  const host = req.headers.host ?? "";
+  const loopback = ["::1", "127.0.0.1", "::ffff:127.0.0.1"].includes(req.socket.remoteAddress);
+  return loopback && /^(?:localhost|127\.0\.0\.1|\[::1\])(?::\d+)?$/i.test(host) &&
+    (!req.headers.origin || req.headers.origin === `http://${host}`);
 }
 
 function serveStatic({ res, publicDir, url }) {
@@ -165,7 +206,17 @@ async function readJsonBody(req) {
   const chunks = [];
   for await (const chunk of req) chunks.push(chunk);
   const text = Buffer.concat(chunks).toString("utf8");
-  return text ? JSON.parse(text) : {};
+  if (!text) return {};
+  let body;
+  try {
+    body = JSON.parse(text);
+  } catch {
+    throw Object.assign(new Error("Invalid JSON request."), { status: 400 });
+  }
+  if (body === null || typeof body !== "object" || Array.isArray(body)) {
+    throw Object.assign(new Error("Expected a JSON object."), { status: 400 });
+  }
+  return body;
 }
 
 function mimeType(filePath) {

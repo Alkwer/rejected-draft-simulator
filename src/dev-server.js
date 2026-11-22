@@ -9,7 +9,7 @@ const options = parseDevServerArgs(process.argv.slice(2));
 listen(startPort);
 
 function listen(port) {
-  const server = createWebServer();
+  const server = createWebServer({ watchSteamFightsOnStart: true });
   server.once("error", (error) => {
     if (error.code === "EADDRINUSE" && port < startPort + 20) {
       listen(port + 1);

@@ -1,6 +1,8 @@
 import { runMonteCarlo, simulateFight } from "./combat.js";
 import { createRng } from "./rng.js";
 import { toNumber } from "./save.js";
+import { readFileSync } from "node:fs";
+import { combatAssumptionsFromSave } from "./combat-assumptions.js";
 
 export const GAME_DATA_VERSIONS = {
   "v0.874": {
@@ -197,6 +199,9 @@ GAME_DATA_VERSIONS["main-Dmswlyp_.js"] = {
   targets: GAME_DATA_VERSIONS["v0.881"].targets,
 };
 
+const steamSnapshot = JSON.parse(readFileSync(new URL("../fixtures/sketch-snapshots.json", import.meta.url), "utf8"));
+GAME_DATA_VERSIONS[steamSnapshot.gameVersion] = steamSnapshot;
+
 export const KNOWN_REGRESSION_SCENARIOS = [
   {
     id: "duct_raw_attack_kills_underbuilt_player",
@@ -320,6 +325,7 @@ export function createCalibrationReport({
     log,
     sketches,
     fallbackPlayer: player,
+    assumptions: combatAssumptionsFromSave(save),
     trials,
     maxSeconds,
     seed: `${seed}:${index}:${log.targetId ?? "unknown"}`,
@@ -494,6 +500,7 @@ function compareLogToSimulation({
   log,
   sketches,
   fallbackPlayer,
+  assumptions,
   trials,
   maxSeconds,
   seed,
@@ -522,10 +529,13 @@ function compareLogToSimulation({
 
   const enemy = {
     ...targetStats,
+    id: log.targetId,
+    ...(hasStats(log.targetStats) ? {} : { source: "catalog", rarity: sketch?.rarity }),
     immunities: log.immunities ?? sketch?.immunities ?? [],
     vulnerability: log.vulnerability ?? sketch?.vulnerability ?? null,
   };
   const summary = runMonteCarlo({
+    assumptions,
     player,
     enemy,
     trials,
@@ -533,6 +543,7 @@ function compareLogToSimulation({
     seed,
   });
   const fight = simulateFight({
+    assumptions,
     rng: createRng(`${seed}:single`),
     player,
     enemy,
@@ -868,7 +879,7 @@ function approximatelyEqual(actual, expected, tolerance) {
 }
 
 function latestGameDataVersion() {
-  return Object.keys(GAME_DATA_VERSIONS).sort().at(-1);
+  return steamSnapshot.gameVersion;
 }
 
 function median(values) {

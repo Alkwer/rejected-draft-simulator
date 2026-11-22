@@ -1,4 +1,5 @@
-import { toNumber } from "./save.js";
+import { isFullSteamSave, toNumber } from "./save.js";
+import { steamEncounterContext } from "./combat/steam-encounter.js";
 
 export function combatAssumptionsFromSave(save = {}) {
   const state = save?.state ?? save ?? {};
@@ -7,6 +8,7 @@ export function combatAssumptionsFromSave(save = {}) {
     flowStateActive: flowStateActiveFromState(state),
     flowStateLevel: positiveFiniteOrDefault(state.fundamentals?.flowStateLevel, 0),
     flowStateKnownTargetIds: normalizeStringList(state.glossaryUnlocks),
+    ...(isFullSteamSave(save) && { steam: steamEncounterContext(state) }),
   };
 }
 
@@ -18,7 +20,7 @@ export function combatSpeedMultiplierFromState(state = {}) {
   const battleSpeedupActive = !isTraining && toNumber(state.activeBattleSpeedupRemainingSeconds, 0) > 0;
   const combatSpeedMultiplier = baseSpeed
     * (isTraining && fastForward ? 10 : 1)
-    * (battleSpeedupActive ? 2 : 1);
+    * (battleSpeedupActive ? positiveFiniteOrDefault(state.fundamentals?.battleSpeedupRate, 2) : 1);
   return positiveFiniteOrDefault(combatSpeedMultiplier, 1);
 }
 

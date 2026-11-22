@@ -20,7 +20,8 @@ test("web UI visible copy is English", () => {
   assert.match(html, /<html lang="en">/);
   for (const expected of [
     "Bundle: loading",
-    "Import bundle",
+    "Refresh Steam data",
+    "Use active Steam slot",
     "Simulate",
     "Compare",
     "Target filter",
@@ -254,7 +255,7 @@ test("web UI completes priority 19 polish, density controls, and diagnostics", (
   const html = fs.readFileSync(path.join(projectRoot, "web", "index.html"), "utf8");
   const app = fs.readFileSync(path.join(projectRoot, "web", "app.js"), "utf8");
   const css = fs.readFileSync(path.join(projectRoot, "web", "styles.css"), "utf8");
-  const improvements = fs.readFileSync(path.join(projectRoot, "Improvements.md"), "utf8");
+  const improvements = fs.readFileSync(path.join(projectRoot, "IMPROVEMENTS.md"), "utf8");
 
   for (const id of [
     "densityModeSelect",

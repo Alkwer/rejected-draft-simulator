@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
+import { simulateRoute } from "../src/route.js";
 import {
   createStrategyPlan,
   parseStrategyCurrencyGoals,
@@ -113,6 +114,85 @@ test("rankOpusStrategicValue prioritizes currency Opus when a currency goal is m
   assert.equal(values[0].id, "opus_currency");
   assert.ok(values[0].currencyScore > values[0].statScore);
   assert.ok(values.some((item) => item.id === "opus_attack" && item.statScore > 0));
+});
+
+test("Steam strategy EV and Opus rankings use the same next-win payout as routes", () => {
+  const steamSketches = {
+    ...sketches,
+    opus_currency: {
+      ...sketches.opus_currency,
+      currencyRewards: [{ name: "Photon", amount: 1000 }, { name: "Graphite", amount: 20 }],
+      rewards: [{ statName: "attack", amount: 100 }],
+    },
+    opus_hp: {
+      ...sketches.opus_hp,
+      currencyRewards: [{ name: "Photon", amount: 500 }],
+    },
+  };
+  const steamState = state({
+    saveProfile: "steam",
+    gameMode: "easy",
+    currencyGeneratorRates: {},
+    boostedSketchIds: ["opus_currency"],
+    sketchVictories: { opus_currency: 1 },
+    multiverse: {
+      currentUniverseId: "mv-hard-2",
+      firstClearPerkIds: ["first-ten-wins-currency"],
+      collectibles: { cards: { opus_currency: { normal: 1, shiny: 1 } } },
+    },
+  });
+  const route = simulateRoute({ state: steamState, sketches: steamSketches, routeIds: ["opus_currency"] });
+  const { currencyRewards, statRewards } = route.steps[0];
+  assert.deepEqual(currencyRewards.map(({ name, amount }) => [name, amount]), [["Photon", 0], ["Graphite", 900]]);
+  assert.equal(statRewards[0].amount, 40.5);
+
+  const plan = createStrategyPlan({
+    state: steamState,
+    sketches: steamSketches,
+    targetId: "target",
+    currentRun: { targets: [{ id: "opus_currency", winRate: 0.5, p90Seconds: 10 }] },
+    goalCurrencies: { Photon: 1000 },
+  });
+  const entry = plan.runEV.sketches.find(({ id }) => id === "opus_currency");
+  assert.deepEqual(entry.expectedCurrencies, { Photon: 0, Graphite: 450 });
+  const ranked = plan.opusValues.find(({ id }) => id === "opus_currency");
+  assert.deepEqual(ranked.bestCurrency, { name: "Graphite", amount: 900 });
+  assert.equal(ranked.bestStats[0].amount, statRewards[0].amount);
+  assert.ok(Math.abs(entry.expectedStatScore - ranked.statScore * 0.5) <= 1e-6);
+  const photonOnly = plan.opusValues.find(({ id }) => id === "opus_hp");
+  assert.equal(photonOnly.currencyScore, 0);
+  assert.equal(photonOnly.bestCurrency, null);
+});
+
+test("Steam run EV accounts for earlier fights exhausting the first-ten-win currency perk", () => {
+  const steamSketches = {
+    ...sketches,
+    opus_attack: {
+      ...sketches.opus_attack,
+      currencyRewards: [{ name: "Graphite", amount: 20 }],
+    },
+  };
+  const steamState = state({
+    saveProfile: "steam",
+    currentUniverseBoostedCurrencyWins: 9,
+    multiverse: { firstClearPerkIds: ["first-ten-wins-currency"] },
+    currencyGeneratorRates: {},
+  });
+  const twoWins = simulateRoute({ state: steamState, sketches: steamSketches, routeIds: ["opus_currency", "opus_attack"] });
+  const oneWin = simulateRoute({ state: steamState, sketches: steamSketches, routeIds: ["opus_attack"] });
+  const plan = createStrategyPlan({
+    state: steamState,
+    sketches: steamSketches,
+    targetId: "target",
+    currentRun: { targets: [{ id: "opus_currency", winRate: 0.5 }, { id: "opus_attack", winRate: 1 }] },
+  });
+  const fullPayout = oneWin.steps[0].currencyRewards[0].amount;
+  const reducedPayout = twoWins.steps[1].currencyRewards[0].amount;
+  assert.equal(fullPayout, 200);
+  assert.equal(reducedPayout, 20);
+  assert.equal(plan.runEV.sketches.find(({ id }) => id === "opus_attack").expectedCurrencies.Graphite,
+    (fullPayout + reducedPayout) / 2);
+  assert.equal(plan.opusValues.find(({ id }) => id === "opus_attack").bestCurrency.amount, fullPayout);
 });
 
 test("createStrategyPlan ranks booster choices with route simulation", () => {
@@ -287,7 +367,7 @@ test("strategy planner exposes Priority 17 economy planning", () => {
     targetSimulation: { winRate: 0.2, trials: 100 },
     currentRun,
     strategyProfile: "farm-photon",
-    goalCurrencies: { Photon: 1000, "Gold Leaf": 10 },
+    goalCurrencies: { Graphite: 500, Photon: 1000, "Gold Leaf": 10 },
     softcapSeconds: 120,
     farmSeconds: 60,
   });
@@ -297,6 +377,13 @@ test("strategy planner exposes Priority 17 economy planning", () => {
   assert.ok(plan.economy.purchasePlan.buyNow.some((item) => item.id === "upgrade_atk_graphite"));
   assert.equal(plan.economy.generatorEV.currencies.Graphite.perSecond, 12);
   assert.equal(plan.economy.generatorEV.currencies.Photon.perSecond, 4);
+  assert.equal(plan.economy.specialCurrencies.Photon.perSecond, 4);
+  assert.equal(plan.economy.specialCurrencies.Photon.runPerSecond, 0);
+  assert.equal(plan.economy.specialCurrencies.Photon.secondsToGoal, 243.75);
+  const mixedForecast = plan.economy.currencyForecasts.find(({ currency }) => currency === "Graphite");
+  assert.equal(plan.runEV.currencies.Graphite.perSecond, 72);
+  assert.equal(mixedForecast.perSecond, 72);
+  assert.equal(mixedForecast.secondsToGoal, 5.555555556);
   assert.equal(plan.economy.softcapEV.waitCurrencies.Graphite.expected, 1440);
   assert.equal(plan.economy.secretStash.canUnlock, true);
   assert.ok(plan.economy.secretStash.hiddenUpgrades.some((item) => item.hidden && item.id === "upgrade_secret_burn_damage_graphite"));

@@ -1,4 +1,5 @@
 import { toNumber } from "./save.js";
+import { confidenceInterval95 } from "./combat/math.js";
 
 const TARGET_THRESHOLD_PROFILES = {
   duct_taped_banana: [
@@ -29,7 +30,9 @@ export function createCombatReport({
 } = {}) {
   const trials = toNumber(simulation?.trials);
   const winRate = simulation?.winRate ?? safeRate(simulation?.wins, trials);
-  const ci = simulation?.winRateCi95 ?? confidenceInterval95(winRate, trials);
+  const provided = simulation?.winRateCi95;
+  const ci = Number.isFinite(provided?.lower) && Number.isFinite(provided?.upper)
+    ? provided : confidenceInterval95(winRate, trials);
   const explanation = explainTarget({ target, player });
 
   return {
@@ -141,7 +144,8 @@ export function exportMarkdownReport(report) {
   lines.push("");
   lines.push("## Summary");
   lines.push(`- Trials: ${report.trials}`);
-  lines.push(`- Win rate: ${formatPercent(report.winRate.value)} +/- ${formatPercent(report.winRate.ci95HalfWidth)} (95% CI)`);
+  const interval = { lower: report.winRate.ci95Lower, upper: report.winRate.ci95Upper };
+  lines.push(`- Win rate: ${formatPercent(report.winRate.value)} (95% CI ${formatConfidenceInterval(interval)})`);
   lines.push(`- Wins / losses / timeouts: ${report.outcomes.wins} / ${report.outcomes.losses} / ${report.outcomes.timeouts}`);
   lines.push(`- Average / median fight: ${formatSeconds(report.time.averageSeconds)} / ${formatSeconds(report.time.medianSeconds)}`);
   lines.push(`- p10 / p90: ${formatSeconds(report.time.p10Seconds)} / ${formatSeconds(report.time.p90Seconds)}`);
@@ -267,18 +271,9 @@ function interactionLines(items) {
   return items.map((item) => `- ${item.title}: ${item.detail}`);
 }
 
-function confidenceInterval95(rate, trials) {
-  if (trials <= 0) return { lower: 0, upper: 0, halfWidth: 0 };
-  const z = 1.96;
-  const z2 = z * z;
-  const denominator = 1 + z2 / trials;
-  const center = (rate + z2 / (2 * trials)) / denominator;
-  const halfWidth = z * Math.sqrt((rate * (1 - rate) + z2 / (4 * trials)) / trials) / denominator;
-  return {
-    lower: clamp(center - halfWidth, 0, 1),
-    upper: clamp(center + halfWidth, 0, 1),
-    halfWidth,
-  };
+export function formatConfidenceInterval(interval) {
+  if (!Number.isFinite(interval?.lower) || !Number.isFinite(interval?.upper)) return "--";
+  return `${formatPercent(interval.lower)}–${formatPercent(interval.upper)}`;
 }
 
 function safeRate(count, total) {
@@ -309,8 +304,4 @@ function formatNumber(value) {
 function round(value) {
   if (!Number.isFinite(value)) return 0;
   return Math.round(value * 1e6) / 1e6;
-}
-
-function clamp(value, min, max) {
-  return Math.max(min, Math.min(max, value));
 }

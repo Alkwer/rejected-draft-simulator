@@ -1,6 +1,9 @@
 import { runMonteCarlo } from "./combat.js";
+import { combatAssumptionsFromSave } from "./combat-assumptions.js";
+import { buildSteamEnemy } from "./combat/steam-encounter.js";
+import { applyStatReward, steamSketchRewards } from "./rewards.js";
 import { createRng } from "./rng.js";
-import { toNumber } from "./save.js";
+import { isFullSteamSave, normalizeStats, toNumber } from "./save.js";
 import { getPreciseEraserEligibility } from "./tool-rules.js";
 
 const SECRET_STASH_ID = "stats-hidden-upgrades";
@@ -141,7 +144,9 @@ export function simulateRoute({
   maxSeconds = 300,
 } = {}) {
   const fundamentals = numericObject(state.fundamentals ?? {});
-  const stats = numericObject(baseStats ?? state.runStats ?? state.battleStats ?? state.playerStats ?? {});
+  const assumptions = isFullSteamSave(state) ? combatAssumptionsFromSave(state) : {};
+  const savedStats = assumptions.steam ? state.playerStats : state.runStats ?? state.battleStats ?? state.playerStats;
+  const stats = normalizeStats(baseStats ?? savedStats);
   const currencies = numericObject(state.currencies ?? {});
   const totalEarnedCurrencies = numericObject(state.totalEarnedCurrencies ?? {});
   const totalBattleEarnedCurrencies = numericObject(state.totalBattleEarnedCurrencies ?? {});
@@ -150,6 +155,7 @@ export function simulateRoute({
   const runVictories = numericObject(state.sketchRunVictories ?? {});
   const shopLevels = numericObject(state.shopLevels ?? {});
   const steps = [];
+  let newWins = 0;
   const tools = {
     boostedApplied: [],
     boostedSkipped: [],
@@ -172,6 +178,7 @@ export function simulateRoute({
     totalBattleEarnedCurrencies,
     victories,
     fundamentals,
+    state,
     tools,
   });
 
@@ -241,12 +248,21 @@ export function simulateRoute({
       continue;
     }
 
+    const steamRewards = steamSketchRewards({
+      state,
+      id,
+      sketch,
+      victoriesBefore: totalVictoriesBefore,
+      boosted: boostedSet.has(id),
+      newWins,
+    });
     const rewardMultiplier = createRewardMultiplier({
       victoriesBefore: totalVictoriesBefore,
       boosted: boostedSet.has(id),
       fundamentals,
+      steamRewards,
     });
-    const statRewards = applyRewardsToStats({ stats, rewards: sketch.rewards, multiplier: rewardMultiplier.total });
+    const statRewards = applyRewardsToStats({ stats, rewards: sketch.rewards, multiplier: rewardMultiplier.total, steamRewards });
     const currencyRewards = applyCurrencyRewards({
       currencies,
       totalEarnedCurrencies,
@@ -254,10 +270,12 @@ export function simulateRoute({
       rewards: sketch.currencyRewards,
       multiplier: rewardMultiplier.total,
       fundamentals,
+      steamRewards,
     });
 
     victories[id] = totalVictoriesBefore + 1;
     runVictories[id] = runVictoriesBefore + 1;
+    newWins += 1;
     steps.push({
       originalId,
       id,
@@ -283,7 +301,7 @@ export function simulateRoute({
     });
   }
 
-  const target = targetId ? buildTarget({ sketches, targetId, erasedSet, tools }) : null;
+  const target = targetId ? buildTarget({ sketches, targetId, erasedSet, tools, steam: assumptions.steam }) : null;
   if (target && trials > 0) {
     target.simulation = runMonteCarlo({
       player: stats,
@@ -291,6 +309,7 @@ export function simulateRoute({
       trials,
       maxSeconds,
       seed,
+      assumptions,
     });
   }
 
@@ -383,6 +402,7 @@ function applyRequestedBoosters({
   totalBattleEarnedCurrencies,
   victories,
   fundamentals,
+  state,
   tools,
 }) {
   const boostedSet = new Set(existingIds);
@@ -403,6 +423,7 @@ function applyRequestedBoosters({
     uses += 1;
     tools.boostedApplied.push(id);
     applyRetroactiveBooster({
+      id,
       sketch: sketches[id],
       stats,
       currencies,
@@ -410,6 +431,7 @@ function applyRequestedBoosters({
       totalBattleEarnedCurrencies,
       victoriesBefore: toNumber(victories[id]),
       fundamentals,
+      state,
     });
   }
 
@@ -417,6 +439,7 @@ function applyRequestedBoosters({
 }
 
 function applyRetroactiveBooster({
+  id,
   sketch,
   stats,
   currencies,
@@ -424,13 +447,15 @@ function applyRetroactiveBooster({
   totalBattleEarnedCurrencies,
   victoriesBefore,
   fundamentals,
+  state,
 }) {
   if (!sketch || victoriesBefore <= 0 || toNumber(fundamentals.rewardBoosterRetroactive) <= 0) return;
 
   const boosterBonus = toNumber(fundamentals.rewardBoosterEffect, 50) / 100;
   const decay = toNumber(fundamentals.rewardDecay, 1);
   const multiplier = boosterBonus * cumulativeRewardMultiplier(0, victoriesBefore, decay);
-  applyRewardsToStats({ stats, rewards: sketch.rewards, multiplier });
+  const steamRewards = steamSketchRewards({ state, id, sketch, victoriesBefore, retroactive: true });
+  applyRewardsToStats({ stats, rewards: sketch.rewards, multiplier, steamRewards });
   applyCurrencyRewards({
     currencies,
     totalEarnedCurrencies,
@@ -438,6 +463,7 @@ function applyRetroactiveBooster({
     rewards: sketch.currencyRewards,
     multiplier,
     fundamentals,
+    steamRewards,
   });
 }
 
@@ -658,34 +684,37 @@ function addGeneratedCurrencies({
   }
 }
 
-function buildTarget({ sketches, targetId, erasedSet, tools }) {
+function buildTarget({ sketches, targetId, erasedSet, tools, steam }) {
   const sketch = sketches[targetId];
   if (!sketch) return null;
-  const stats = numericObject(sketch.stats ?? {});
-  if (erasedSet.has(targetId)) {
-    stats.maxHp = toNumber(stats.maxHp) / 2;
-    if (!tools.erasedApplied.includes(targetId)) tools.erasedApplied.push(targetId);
-  }
+  const stats = {
+    id: targetId,
+    name: sketch.name ?? targetId,
+    ...numericObject(sketch.stats),
+    immunities: sketch.immunities,
+    vulnerability: sketch.vulnerability,
+  };
+  const erased = erasedSet.has(targetId);
+  if (erased && !tools.erasedApplied.includes(targetId)) tools.erasedApplied.push(targetId);
+  if (!steam && erased) stats.maxHp = toNumber(stats.maxHp) / 2;
+  const encounter = steam ? buildSteamEnemy(
+    { ...stats, rarity: sketch.rarity, source: "catalog" },
+    { ...steam, erasedSketchIds: [...erasedSet] },
+  ) : stats;
   return {
     id: targetId,
     name: sketch.name ?? targetId,
     rarity: sketch.rarity ?? "unknown",
-    stats: {
-      id: targetId,
-      name: sketch.name ?? targetId,
-      ...stats,
-      immunities: sketch.immunities,
-      vulnerability: sketch.vulnerability,
-    },
+    stats: encounter,
   };
 }
 
-function createRewardMultiplier({ victoriesBefore, boosted, fundamentals }) {
-  const decay = rewardDecayMultiplier({
+function createRewardMultiplier({ victoriesBefore, boosted, fundamentals, steamRewards }) {
+  const decay = steamRewards?.decay ?? rewardDecayMultiplier({
     victoriesBefore,
     rewardDecay: toNumber(fundamentals.rewardDecay, 1),
   });
-  const booster = boosted ? 1 + toNumber(fundamentals.rewardBoosterEffect, 50) / 100 : 1;
+  const booster = steamRewards?.booster ?? (boosted ? 1 + toNumber(fundamentals.rewardBoosterEffect, 50) / 100 : 1);
   return {
     decay: roundNumber(decay),
     booster: roundNumber(booster),
@@ -703,13 +732,12 @@ function cumulativeRewardMultiplier(start, count, rewardDecay) {
   return total;
 }
 
-function applyRewardsToStats({ stats, rewards = [], multiplier }) {
+function applyRewardsToStats({ stats, rewards = [], multiplier, steamRewards }) {
   const applied = [];
   for (const reward of rewards ?? []) {
     const statName = reward.statName;
-    const amount = toNumber(reward.amount) * multiplier;
-    const nextValue = toNumber(stats[statName]) + amount;
-    stats[statName] = statName === "attackSpeed" ? nextValue : Math.max(0, nextValue);
+    const amount = steamRewards ? steamRewards.statGain(reward) : toNumber(reward.amount) * multiplier;
+    stats[statName] = applyStatReward(statName, toNumber(stats[statName]), amount, Boolean(steamRewards));
     applied.push({ statName, amount: roundNumber(amount), finalValue: roundNumber(stats[statName]) });
   }
   return applied;
@@ -722,10 +750,11 @@ function applyCurrencyRewards({
   rewards = [],
   multiplier,
   fundamentals,
+  steamRewards,
 }) {
   const applied = [];
   for (const reward of rewards ?? []) {
-    const amount = currencyRewardAmount({
+    const amount = steamRewards ? steamRewards.currencyGain(reward) : currencyRewardAmount({
       name: reward.name,
       amount: toNumber(reward.amount) * multiplier,
       fundamentals,

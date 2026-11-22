@@ -22,8 +22,8 @@
           </div>
         </div>
         <div class="version-ticket">
-          <strong>Version 1.0</strong>
-          <span>Strategy board</span>
+          <strong>Steam Edition</strong>
+          <a href="/steam-fights.html">Steam fight log →</a>
         </div>
       </header>
 
@@ -74,6 +74,7 @@
         <button type="button" data-mobile-tab="planner">Planner</button>
       </nav>
 
+      <div id="messageBar" class="message-bar hidden" role="status"></div>
       <main class="workspace">
         <aside id="currentSpecsPanel" class="panel controls-panel sketch-frame" data-function-panel="run" data-mobile-panel="controls">
           <section class="control-section current-specs">
@@ -99,10 +100,11 @@
 
           <section class="control-section">
             <h2>Save</h2>
-            <textarea id="saveInput" spellcheck="false" aria-label="Save export string"></textarea>
+            <button id="steamSlotButton" type="button" class="icon-button primary">Use active Steam slot</button>
+            <textarea id="saveInput" spellcheck="false" aria-label="Save export string" placeholder="Or paste a save export"></textarea>
             <div class="file-row">
               <label class="file-picker">
-                <input id="saveFile" type="file" accept=".txt,text/plain">
+                <input id="saveFile" type="file" accept=".txt,.json,text/plain,application/json">
                 <span id="saveFileLabel">Choose save file</span>
               </label>
               <button id="clearButton" type="button" class="icon-only" title="Clear save" data-tooltip="Clear save">
@@ -234,7 +236,6 @@
         </aside>
 
         <section class="main-stack" data-mobile-panel="results">
-          <div id="messageBar" class="message-bar hidden"></div>
 
           <section id="nextActionPanel" class="panel next-action-panel" data-function-panel="results">
             <div class="section-head">
@@ -498,9 +499,9 @@
             <span class="counter">active modules</span>
           </div>
           <div class="top-actions">
-            <button id="importBundleButton" class="icon-button secondary protocol-card accent-blue" type="button" title="Import game bundle" data-tooltip="Refresh local game data from the current bundle">
+            <button id="importBundleButton" class="icon-button secondary protocol-card accent-blue" type="button" title="Refresh Steam data" data-tooltip="Read the catalog from your installed Steam game">
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m0 0 4-4m-4 4-4-4M5 19h14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
-              <span>Import bundle</span>
+              <span>Refresh Steam data</span>
               <small>refresh data</small>
             </button>
             <button id="analyzeButton" class="icon-button primary protocol-card accent-green" type="button" title="Run simulation" data-tooltip="Run the selected simulation">

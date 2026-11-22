@@ -17,6 +17,16 @@ import {
   rollStacks,
 } from "./combat/math.js";
 import { combatantMaxHp, stat, statRaw } from "./combat/stats.js";
+import { buildSteamEnemy, shouldTriggerSeppuku } from "./combat/steam-encounter.js";
+import {
+  STEAM_ON_HIT_STATUSES,
+  applySteamBuff,
+  applySteamOnHitStatusSkills,
+  applySteamStatusTransitions,
+  rollSteamBuffConversion,
+  shouldSkipForParalysis,
+  spreadSteamDiseases,
+} from "./combat/steam-statuses.js";
 import {
   HARMFUL_STATUSES,
   SELF_BUFF_TO_STAT,
@@ -78,12 +88,13 @@ export function runMonteCarlo({
   };
   const durations = [];
   let totalSeconds = 0;
+  const effectiveEnemy = buildSteamEnemy(enemy, assumptions.steam);
 
   for (let i = 0; i < trials; i += 1) {
     const result = simulateFight({
       rng: createRng(`${seed}:${i}`),
       player,
-      enemy,
+      enemy: effectiveEnemy,
       maxSeconds,
       assumptions,
     });
@@ -98,10 +109,10 @@ export function runMonteCarlo({
       summary.timeoutDiagnoses[result.timeoutDiagnosis] = (summary.timeoutDiagnoses[result.timeoutDiagnosis] ?? 0) + 1;
     }
     if (result.winner === "player") {
-      const cause = classifyVictoryCause({ result, player, enemy });
+      const cause = classifyVictoryCause({ result, player });
       summary.victoryCauses[cause] = (summary.victoryCauses[cause] ?? 0) + 1;
     } else {
-      const cause = classifyDefeatCause({ result, player, enemy });
+      const cause = classifyDefeatCause({ result, player, enemy: effectiveEnemy });
       summary.defeatCauses[cause] = (summary.defeatCauses[cause] ?? 0) + 1;
     }
     totalSeconds += result.seconds;
@@ -125,15 +136,24 @@ export function simulateFight({ rng = Math.random, player, enemy, maxSeconds = 3
   const fightRng = createTraceRng(rng, traceRecorder);
   const normalizedAssumptions = normalizeCombatAssumptions(assumptions);
   const normalizedPlayer = normalizeCombatant(player);
-  const normalizedEnemy = normalizeCombatant(enemy);
+  const effectiveEnemy = buildSteamEnemy(enemy, normalizedAssumptions.steam);
+  const normalizedEnemy = normalizeCombatant(effectiveEnemy);
   const playerFirstAttackDelayMultiplier = flowStateFirstAttackDelayMultiplier(normalizedEnemy, normalizedAssumptions);
+  const steam = Boolean(normalizedAssumptions.steam);
+  const seppukuRules = normalizedAssumptions.steam?.seppukuRules ?? [];
+  const seppukuTimes = seppukuRules.flatMap(({ conditions }) => (conditions ?? [])
+    .filter(({ stat }) => stat === "timeInBattle")
+    .map(({ threshold }) => Number(threshold)));
+  let lastPlayerAttack = 0;
+  let lastEnemyAttack = 0;
+  let playerAttacked = false;
   const combat = {
     player: normalizedPlayer,
     enemy: normalizedEnemy,
     assumptions: normalizedAssumptions,
     trace: traceRecorder,
     playerHp: stat(player, "maxHp", 1),
-    enemyHp: stat(enemy, "maxHp", 1),
+    enemyHp: steam ? toFiniteNumber(effectiveEnemy?.maxHp, 1) : stat(enemy, "maxHp", 1),
     playerStatuses: {},
     enemyStatuses: {},
     damageBreakdown: {
@@ -162,24 +182,43 @@ export function simulateFight({ rng = Math.random, player, enemy, maxSeconds = 3
   recordTrace(combat, "start");
 
   while (combat.time < maxSeconds) {
+    if (steam && combat.enemyHp <= 0) return finish("player", "enemy_hp_zero", combat);
+    if (steam && combat.playerHp <= 0) return finish("enemy", "player_hp_zero", combat);
+    if (seppukuRules.length > 0 && shouldTriggerSeppuku(combat, seppukuRules)) {
+      return finishSeppuku(combat);
+    }
+    if (steam) {
+      combat.nextPlayerAttack = Math.max(combat.time, lastPlayerAttack + attackDelay(
+        combat.player,
+        combat.playerStatuses,
+        normalizedAssumptions.combatSpeedMultiplier,
+        playerAttacked ? 1 : playerFirstAttackDelayMultiplier,
+        true,
+      ));
+      combat.nextEnemyAttack = Math.max(combat.time, lastEnemyAttack + attackDelay(
+        combat.enemy, combat.enemyStatuses, normalizedAssumptions.combatSpeedMultiplier, 1, true,
+      ));
+    }
     const nextPendingEffect = nextPendingEffectTime(combat);
+    const nextSeppukuCheck = seppukuTimes.reduce(
+      (next, time) => time > combat.time ? Math.min(next, time) : next,
+      Infinity,
+    );
     const nextTime = Math.min(
       combat.nextPlayerAttack,
       combat.nextEnemyAttack,
       nextPendingEffect,
       combat.nextRegenTick,
       combat.nextStatusTick,
+      nextSeppukuCheck,
       maxSeconds,
     );
     combat.time = nextTime;
 
-    if (combat.enemyHp <= 0) {
-      return finish("player", "enemy_hp_zero", combat);
-    }
-    if (combat.playerHp <= 0) {
-      return finish("enemy", "player_hp_zero", combat);
-    }
+    if (combat.enemyHp <= 0) return finish("player", "enemy_hp_zero", combat);
+    if (combat.playerHp <= 0) return finish("enemy", "player_hp_zero", combat);
     if (combat.time >= maxSeconds) break;
+    if (seppukuRules.length > 0 && shouldTriggerSeppuku(combat, seppukuRules)) return finishSeppuku(combat);
 
     if (isDue(nextPendingEffect, combat.time)) {
       const beforeEffect = traceSnapshot(combat);
@@ -191,14 +230,22 @@ export function simulateFight({ rng = Math.random, player, enemy, maxSeconds = 3
       });
     } else if (isDue(combat.nextPlayerAttack, combat.time) && combat.nextPlayerAttack <= combat.nextEnemyAttack + TIME_EPSILON) {
       const beforeAttack = traceSnapshot(combat);
+      if (steam) delete combat.playerStatuses.BananaSlip;
       const action = performAttack({ rng: fightRng, combat, attackerSide: "player", defenderSide: "enemy" });
       recordTraceDelta(combat, "attack", beforeAttack, { attackerSide: "player", defenderSide: "enemy", action });
-      combat.nextPlayerAttack += attackDelay(combat.player, combat.playerStatuses, combat.assumptions.combatSpeedMultiplier);
+      if (steam) {
+        lastPlayerAttack = combat.time;
+        playerAttacked = true;
+      } else {
+        combat.nextPlayerAttack += attackDelay(combat.player, combat.playerStatuses, combat.assumptions.combatSpeedMultiplier);
+      }
     } else if (isDue(combat.nextEnemyAttack, combat.time)) {
       const beforeAttack = traceSnapshot(combat);
+      if (steam) delete combat.enemyStatuses.BananaSlip;
       const action = performAttack({ rng: fightRng, combat, attackerSide: "enemy", defenderSide: "player" });
       recordTraceDelta(combat, "attack", beforeAttack, { attackerSide: "enemy", defenderSide: "player", action });
-      combat.nextEnemyAttack += attackDelay(combat.enemy, combat.enemyStatuses, combat.assumptions.combatSpeedMultiplier);
+      if (steam) lastEnemyAttack = combat.time;
+      else combat.nextEnemyAttack += attackDelay(combat.enemy, combat.enemyStatuses, combat.assumptions.combatSpeedMultiplier);
     } else if (isDue(combat.nextRegenTick, combat.time)) {
       const beforeTick = traceSnapshot(combat);
       applyRegenerationTick(combat, fightRng);
@@ -209,7 +256,7 @@ export function simulateFight({ rng = Math.random, player, enemy, maxSeconds = 3
       applyStatusTick(combat, fightRng);
       recordTraceDelta(combat, "tick", beforeTick, { tickType: "status", deltaSeconds: 1 });
       combat.nextStatusTick += combatTickDelay(STATUS_TICK_SECONDS, combat.assumptions);
-    } else {
+    } else if (nextSeppukuCheck !== combat.time) {
       break;
     }
   }
@@ -252,14 +299,15 @@ function normalizeCombatant(input = {}) {
 }
 
 function normalizeCombatAssumptions(input = {}) {
+  const steam = input.steam ?? null;
   return {
     exportedEnemyStatusChanceScale: toFiniteNumber(
       input.exportedEnemyStatusChanceScale,
-      DEFAULT_COMBAT_ASSUMPTIONS.exportedEnemyStatusChanceScale,
+      steam ? 1 : DEFAULT_COMBAT_ASSUMPTIONS.exportedEnemyStatusChanceScale,
     ),
     exportedEnemyBuffChanceScale: toFiniteNumber(
       input.exportedEnemyBuffChanceScale,
-      DEFAULT_COMBAT_ASSUMPTIONS.exportedEnemyBuffChanceScale,
+      steam ? 1 : DEFAULT_COMBAT_ASSUMPTIONS.exportedEnemyBuffChanceScale,
     ),
     dotScale: toFiniteNumber(input.dotScale, DEFAULT_COMBAT_ASSUMPTIONS.dotScale),
     combatSpeedMultiplier: positiveFiniteNumber(
@@ -269,7 +317,16 @@ function normalizeCombatAssumptions(input = {}) {
     flowStateActive: input.flowStateActive === true,
     flowStateLevel: Math.max(0, toFiniteNumber(input.flowStateLevel, DEFAULT_COMBAT_ASSUMPTIONS.flowStateLevel)),
     flowStateKnownTargetIds: normalizeStringSet(input.flowStateKnownTargetIds),
+    steam,
   };
+}
+
+function finishSeppuku(combat) {
+  const before = traceSnapshot(combat);
+  addBreakdown(combat.damageBreakdown.player, "self", combat.playerHp);
+  combat.playerHp = 0;
+  recordTraceDelta(combat, "seppuku", before);
+  return finish("enemy", "seppuku", combat);
 }
 
 function combatTickDelay(seconds, assumptions) {
@@ -326,6 +383,16 @@ function applyRegenerationTick(combat, rng) {
 }
 
 function applyStatusTick(combat, rng) {
+  if (combat.assumptions.steam && combat.playerHp > 0 && combat.enemyHp > 0) {
+    applySteamStatusTransitions(combat.player, combat.playerStatuses, rng);
+    applySteamStatusTransitions(combat.enemy, combat.enemyStatuses, rng);
+    spreadSteamDiseases({
+      combat,
+      rng,
+      blockLeap: ({ defenderSide, status, stacks }) => blockStatusWithLeap({ combat, rng, defenderSide, status, stacks }),
+      onMechanic: (mechanic) => recordMechanic(combat, mechanic),
+    });
+  }
   applyPeriodicStatusTick(combat, "player", 1, rng);
   applyPeriodicStatusTick(combat, "enemy", 1, rng);
   applyInspirationTick(combat, "player", rng);
@@ -537,7 +604,6 @@ function applyEnergyWaveTick({ combat, side, defenderSide, deltaSeconds, rng, so
 
 function applyInspirationTick(combat, side, rng) {
   const combatant = combat[side];
-  const statuses = combat[`${side}Statuses`];
   if (combat[`${side}Hp`] <= 0) return;
 
   const rawChance = applicationChance(
@@ -550,16 +616,16 @@ function applyInspirationTick(combat, side, rng) {
   const stacks = rollStacks(rng, rawChance, `tick.${side}.Inspiration.apply`);
   if (stacks <= 0) return;
 
-  const before = statuses.Inspiration ?? 0;
-  addStatus(statuses, "Inspiration", stacks);
+  const buff = applyCombatBuff({ combat, rng, status: "Inspiration", stacks, intendedSide: side });
+  if (!buff) return;
   recordMechanic(combat, {
     type: "self_buff_tick",
-    side,
+    side: buff.side,
     status: "Inspiration",
     chance: rawChance,
     stacks,
-    before,
-    after: statuses.Inspiration ?? 0,
+    before: buff.before,
+    after: buff.after,
   });
 }
 
@@ -571,8 +637,19 @@ function performAttack({ rng, combat, attackerSide, defenderSide }) {
   let targetStatuses = combat[`${targetSide}Statuses`];
 
   const remedyTrace = applyRemedy(rng, attacker, attackerStatuses);
-  if (remedyTrace) recordMechanic(combat, { ...remedyTrace, side: attackerSide });
-  const skip = shouldSkipTurn(rng, attacker, attackerStatuses);
+  if (remedyTrace) {
+    recordMechanic(combat, { ...remedyTrace, side: attackerSide });
+    if (combat.assumptions.steam) {
+      const removedStacks = Object.values(remedyTrace.removed).reduce((sum, removed) => sum + removed, 0);
+      const stacks = rollSteamBuffConversion(rng, removedStacks, 0.02, "self.Remedy.inspiration");
+      if (stacks > 0) applyCombatBuff({ combat, rng, status: "Inspiration", stacks, intendedSide: attackerSide });
+    }
+  }
+  const steam = Boolean(combat.assumptions.steam);
+  if (steam && shouldSkipForParalysis(rng, attackerStatuses)) {
+    return { type: "skip_turn", reason: "paralysis", damage: 0 };
+  }
+  const skip = shouldSkipTurn(rng, attacker, attackerStatuses, steam);
   if (skip.skipped) return { type: "skip_turn", damage: 0 };
 
   const hypnotize = resolveHypnotize(rng, attackerStatuses);
@@ -643,6 +720,7 @@ function performAttack({ rng, combat, attackerSide, defenderSide }) {
       defenderSide: targetSide,
       capture: mitigationCapture,
     });
+    damage = applyParalysisExposure(combat, targetSide, damage);
 
     let electrocuteTrace = null;
     let electrocuteDamage = 0;
@@ -710,7 +788,7 @@ function performAttack({ rng, combat, attackerSide, defenderSide }) {
     }
     applyBalloonPop({ rng, combat, attacker, defender: target, defenderSide: targetSide });
     growBrittleAfterHit({ combat, defenderSide: targetSide, defenderHpBeforeHit: targetHpBeforeHit });
-    applySelfBuffs(rng, attacker, attackerStatuses, combat.assumptions);
+    applySelfBuffs({ rng, combat, attackerSide, attacker });
   }
 
   if (landedHits > 0) {
@@ -1008,6 +1086,14 @@ function applyDirectStatusDamageModifiers(damage, defenderStatuses, options = {}
   return result;
 }
 
+function applyParalysisExposure(combat, side, damage) {
+  const statuses = combat[`${side}Statuses`];
+  if (!combat.assumptions.steam || !(statuses.ParalysisExposed > 0)) return damage;
+  delete statuses.ParalysisExposed;
+  recordMechanic(combat, { type: "paralysis_exposure", side, before: damage, after: damage * 2 });
+  return damage * 2;
+}
+
 function resolveEvasion({ rng, combat, attackerSide, defenderSide, damage, isSurreal }) {
   if (isSurreal) return { type: "hit" };
 
@@ -1076,7 +1162,8 @@ function applyReactiveDamage({ rng, combat, attackerSide, defenderSide, isSurrea
   const counterChance = stat(defender, "counter");
   const counterSuccess = rollPercent(rng, counterChance, "reactive.counter");
   if (counterSuccess && !attacker.immunities.has("counter")) {
-    const scheduledTime = combat.time + COUNTER_DELAY_SECONDS;
+    const delaySeconds = combat.assumptions.steam ? combatTickDelay(COUNTER_DELAY_SECONDS, combat.assumptions) : COUNTER_DELAY_SECONDS;
+    const scheduledTime = combat.time + delaySeconds;
     combat.pendingEffects.push({
       type: "counter",
       time: scheduledTime,
@@ -1091,7 +1178,7 @@ function applyReactiveDamage({ rng, combat, attackerSide, defenderSide, isSurrea
       attackerSide,
       chance: counterChance,
       success: counterSuccess,
-      delaySeconds: COUNTER_DELAY_SECONDS,
+      delaySeconds,
       scheduledTime: roundTraceNumber(scheduledTime),
       damage: roundTraceNumber(stat(defender, "attack")),
       dealtDamage: 0,
@@ -1138,6 +1225,9 @@ function performCounterEffect({ rng, combat, effect }) {
     });
     return { type: "counter", attackerSide, defenderSide, skipped: true, reason: "dead_side", damage: 0 };
   }
+  if (combat.assumptions.steam && shouldSkipForParalysis(rng, attackerStatuses)) {
+    return { type: "counter", attackerSide, defenderSide, skipped: true, reason: "paralysis", damage: 0 };
+  }
 
   const offenseTrace = {
     type: "offense",
@@ -1181,6 +1271,7 @@ function performCounterEffect({ rng, combat, effect }) {
     defenderSide,
     capture: mitigationCapture,
   });
+  damage = applyParalysisExposure(combat, defenderSide, damage);
 
   let electrocuteTrace = null;
   let electrocuteDamage = 0;
@@ -1216,6 +1307,10 @@ function performCounterEffect({ rng, combat, effect }) {
     defenderSide,
     tags: [...directDamageTags(offenseTrace, mitigationCapture.trace, directModifierCapture.trace, electrocuteTrace), "counter"],
   });
+  if (combat.assumptions.steam) {
+    applyStatuses(rng, attacker, defender, defenderStatuses, combat.assumptions, { combat, defenderSide });
+    applySelfBuffs({ rng, combat, attackerSide, attacker });
+  }
   recordMechanic(combat, {
     type: "counter",
     defenderSide: attackerSide,
@@ -1299,41 +1394,68 @@ function recordHotPotatoBranch(combat, side, branch, stacksBefore, stacksAfter, 
 }
 
 function applyStatuses(rng, attacker, defender, defenderStatuses, assumptions = DEFAULT_COMBAT_ASSUMPTIONS, options = {}) {
-  for (const [status, statName] of Object.entries(STATUS_TO_STAT)) {
-    if (defender.immunities.has(statName)) continue;
-
-    const rawChance = applicationChance(attacker, statName, assumptions.exportedEnemyStatusChanceScale);
-    if (rawChance <= 0) continue;
-
+  const opacityMultiplier = assumptions.steam && options.isSurreal
+    ? 1
+    : 1 - clamp(stat(defender, "opacity"), 0, 100) / 100;
+  const applyStatus = (status, rawChance = applicationChance(
+    attacker, STATUS_TO_STAT[status], assumptions.exportedEnemyStatusChanceScale,
+  )) => {
+    const statName = STATUS_TO_STAT[status];
+    if (rawChance <= 0 || defender.immunities.has(statName)) return;
     const vulnerability = vulnerabilityMultiplier(defender, statName, STATUS_APPLICATION_EFFECT);
-    const opacityMultiplier = 1 - clamp(stat(defender, "opacity"), 0, 100) / 100;
     const effectiveChance = rawChance * vulnerability * opacityMultiplier;
     let stacks = rollStacks(rng, effectiveChance, `status.${status}.apply`);
-    if (!options.isSurreal && stacks > 0 && (defenderStatuses.Leap ?? 0) > 0) {
-      const attemptedStacks = stacks;
-      const leapBefore = defenderStatuses.Leap;
-      const blocked = Math.min(stacks, defenderStatuses.Leap);
-      stacks -= blocked;
-      defenderStatuses.Leap -= blocked;
-      if (defenderStatuses.Leap <= 0) delete defenderStatuses.Leap;
-      recordMechanic(options.combat, {
-        type: "leap_block",
-        side: options.defenderSide,
-        status,
-        attemptedStacks,
-        blockedStacks: blocked,
-        appliedStacks: stacks,
-        leapBefore,
-        leapAfter: defenderStatuses.Leap ?? 0,
-      });
+    if (!options.isSurreal && stacks > 0 && defenderStatuses.Leap > 0) {
+      stacks = blockStatusWithLeap({ combat: options.combat, rng, defenderSide: options.defenderSide, status, stacks });
     }
     if (stacks > 0) {
       addStatus(defenderStatuses, status, stacks);
-      if (status === "Burn") {
+      if (status === "Burn" && !assumptions.steam) {
         defenderStatuses.BurnDamage = (defenderStatuses.BurnDamage ?? 0) + stacks * stat(attacker, "burnDamage");
       }
     }
+  };
+  if (assumptions.steam) {
+    if (opacityMultiplier <= 0) return;
+    for (const status of STEAM_ON_HIT_STATUSES) applyStatus(status);
+    applySteamOnHitStatusSkills({
+      rng,
+      attacker,
+      defender,
+      statuses: defenderStatuses,
+      applyStatus,
+      onMechanic: (mechanic) => recordMechanic(options.combat, { side: options.defenderSide, ...mechanic }),
+    });
+    applyStatus("HotPotato");
+  } else {
+    for (const status of Object.keys(STATUS_TO_STAT)) {
+      if (status !== "Wound" && status !== "Paralysis") applyStatus(status);
+    }
   }
+}
+
+function blockStatusWithLeap({ combat, rng, defenderSide, status, stacks }) {
+  const statuses = combat[`${defenderSide}Statuses`];
+  const leapBefore = statuses.Leap ?? 0;
+  const blocked = Math.min(stacks, leapBefore);
+  if (blocked <= 0) return stacks;
+  statuses.Leap -= blocked;
+  if (statuses.Leap <= 0) delete statuses.Leap;
+  recordMechanic(combat, {
+    type: "leap_block",
+    side: defenderSide,
+    status,
+    attemptedStacks: stacks,
+    blockedStacks: blocked,
+    appliedStacks: stacks - blocked,
+    leapBefore,
+    leapAfter: statuses.Leap ?? 0,
+  });
+  if (combat.assumptions.steam) {
+    const haste = rollSteamBuffConversion(rng, blocked, 0.1, "self.Leap.haste");
+    if (haste > 0) applyCombatBuff({ combat, rng, status: "Haste", stacks: haste, intendedSide: defenderSide });
+  }
+  return stacks - blocked;
 }
 
 function applyExacerbate(rng, attacker, defender, defenderStatuses, assumptions = DEFAULT_COMBAT_ASSUMPTIONS, options = {}) {
@@ -1416,14 +1538,28 @@ function applyPurge(rng, attacker, defender, defenderStatuses, options = {}) {
   }
 }
 
-function applySelfBuffs(rng, attacker, attackerStatuses, assumptions = DEFAULT_COMBAT_ASSUMPTIONS) {
+function applySelfBuffs({ rng, combat, attackerSide, attacker }) {
   for (const [status, statName] of Object.entries(SELF_BUFF_TO_STAT)) {
     if (status === "Inspiration") continue;
-    const rawChance = applicationChance(attacker, statName, assumptions.exportedEnemyBuffChanceScale);
+    const rawChance = applicationChance(attacker, statName, combat.assumptions.exportedEnemyBuffChanceScale);
     if (rawChance <= 0) continue;
     const stacks = rollStacks(rng, rawChance, `self.${status}.apply`);
-    if (stacks > 0) addStatus(attackerStatuses, status, stacks);
+    if (stacks > 0) applyCombatBuff({ combat, rng, status, stacks, intendedSide: attackerSide });
   }
+}
+
+function applyCombatBuff({ combat, rng, status, stacks, intendedSide }) {
+  if (combat.assumptions.steam) {
+    const result = applySteamBuff({ combat, rng, status, stacks, intendedSide });
+    if (result?.intercepted) {
+      recordMechanic(combat, { type: "intercept", intendedSide, status, stacks, ...result });
+    }
+    return result;
+  }
+  const statuses = combat[`${intendedSide}Statuses`];
+  const before = statuses[status] ?? 0;
+  addStatus(statuses, status, stacks);
+  return { side: intendedSide, before, after: statuses[status] ?? 0 };
 }
 
 function applyBalloonPop({ rng, combat, defender, defenderSide }) {
@@ -1507,7 +1643,7 @@ function applyDamageToSide(combat, side, damage, rng, source = "direct", detail 
     const success = rollPercent(rng, chance, "defense.varnish");
     if (success) {
       statuses.VarnishTriggers = triggersBefore + 1;
-      const restorePercent = Math.max(0, 50 - (statuses.VarnishTriggers - 1));
+      const restorePercent = Math.max(0, 50 - triggersBefore) * (combat.assumptions.steam && combatant.stats.isPreciseErased ? 0.5 : 1);
       const afterDamageHp = combat[hpKey];
       combat[hpKey] = combatantMaxHp(combatant) * (restorePercent / 100);
       recordMechanic(combat, {
@@ -1616,6 +1752,7 @@ function classifyVictoryCause({ result, player }) {
 }
 
 function classifyDefeatCause({ result, player, enemy }) {
+  if (result.reason === "seppuku") return "seppuku";
   if (result.winner === "timeout") {
     if (result.timeoutDiagnosis === "regen_wall") return "regen_wall";
     if (result.timeoutDiagnosis === "armor_wall") return "armor_wall";

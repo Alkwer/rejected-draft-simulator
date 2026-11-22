@@ -28,6 +28,8 @@ export function compareFightParityFixture({
     return {
       mode: "fight-parity",
       ok: false,
+      status: "missing_stats",
+      comparedFields: 0,
       fixtureId: normalized.id,
       targetId: normalized.targetId,
       targetName: normalized.targetName,
@@ -56,8 +58,8 @@ export function compareFightParityFixture({
   });
   const simulated = summarizeTrace(trace);
 
-  compareOutcome({ observed: normalized.observed, simulated, deviations });
-  compareScalar({
+  let comparedFields = compareOutcome({ observed: normalized.observed, simulated, deviations });
+  comparedFields += compareScalar({
     code: "duration_mismatch",
     label: "duration",
     actual: normalized.observed.seconds,
@@ -67,7 +69,7 @@ export function compareFightParityFixture({
     targetId: normalized.targetId,
     unit: "s",
   });
-  compareScalar({
+  comparedFields += compareScalar({
     code: "player_hp_mismatch",
     label: "player HP",
     actual: normalized.observed.playerHp,
@@ -77,7 +79,7 @@ export function compareFightParityFixture({
     deviations,
     targetId: normalized.targetId,
   });
-  compareScalar({
+  comparedFields += compareScalar({
     code: "enemy_hp_mismatch",
     label: "enemy HP",
     actual: normalized.observed.enemyHp,
@@ -87,14 +89,14 @@ export function compareFightParityFixture({
     deviations,
     targetId: normalized.targetId,
   });
-  compareBreakdown({
+  comparedFields += compareBreakdown({
     observed: normalized.observed.damageBreakdown,
     simulated: simulated.damageBreakdown,
     tolerances: effectiveTolerances,
     deviations,
     targetId: normalized.targetId,
   });
-  compareExpectedEvents({
+  comparedFields += compareExpectedEvents({
     expectedEvents: normalized.observed.events,
     simulatedEvents: trace.events,
     tolerances: effectiveTolerances,
@@ -104,7 +106,9 @@ export function compareFightParityFixture({
 
   return {
     mode: "fight-parity",
-    ok: deviations.length === 0,
+    ok: comparedFields > 0 && deviations.length === 0,
+    status: comparedFields === 0 ? "no_observation" : deviations.length ? "mismatch" : "match",
+    comparedFields,
     fixtureId: normalized.id,
     targetId: normalized.targetId,
     targetName: normalized.targetName,
@@ -158,11 +162,16 @@ export function normalizeFightFixture(fixture, fallback = {}) {
   };
 }
 
+export function parityStatusLabel(parity) {
+  if (parity.status === "no_observation") return "NO OBSERVATION";
+  return parity.ok ? "PASS" : "FAIL";
+}
+
 export function renderFightParityMarkdown(parity) {
   const lines = [];
   lines.push(`# Fight Parity Fixture: ${parity.fixtureId}`);
   lines.push("");
-  lines.push(`Status: **${parity.ok ? "PASS" : "FAIL"}**`);
+  lines.push(`Status: **${parityStatusLabel(parity)}** (${parity.comparedFields} fields compared)`);
   lines.push(`Target: ${parity.targetName ?? parity.targetId ?? "unknown"} [${parity.targetId ?? "unknown"}]`);
   lines.push(`Seed: ${parity.seed}`);
   lines.push("");
@@ -232,6 +241,7 @@ function normalizeCombatant(raw, fallbackId = null) {
   if (!raw || typeof raw !== "object") return {};
   const statsSource = raw.stats && typeof raw.stats === "object" ? raw.stats : raw;
   return {
+    ...raw.source === "catalog" && { source: raw.source, rarity: raw.rarity },
     id: firstString(raw.id, raw.sketchId, raw.targetId, fallbackId),
     name: firstString(raw.name, raw.sketchName, raw.targetName),
     ...numericObject(statsSource),
@@ -282,14 +292,15 @@ function summarizeEvents(events = []) {
 }
 
 function compareOutcome({ observed, simulated, deviations }) {
-  if (!observed?.outcome || observed.outcome === "unknown") return;
-  if (observed.outcome === simulated.outcome) return;
+  if (!observed?.outcome || observed.outcome === "unknown") return 0;
+  if (observed.outcome === simulated.outcome) return 1;
   deviations.push({
     code: "outcome_mismatch",
     actual: observed.outcome,
     expected: simulated.outcome,
     message: `Observed outcome ${observed.outcome}, but simulated outcome is ${simulated.outcome}.`,
   });
+  return 1;
 }
 
 function compareScalar({
@@ -304,13 +315,13 @@ function compareScalar({
   targetId,
   unit = "",
 }) {
-  if (!Number.isFinite(actual) || !Number.isFinite(expected)) return;
+  if (!Number.isFinite(actual) || !Number.isFinite(expected)) return 0;
   const diff = Math.abs(actual - expected);
   const allowed = tolerance ?? Math.max(
     absoluteTolerance ?? 0,
     Math.max(Math.abs(actual), Math.abs(expected), 1) * (relativeTolerance ?? 0),
   );
-  if (diff <= allowed) return;
+  if (diff <= allowed) return 1;
   deviations.push({
     code,
     targetId,
@@ -320,15 +331,17 @@ function compareScalar({
     tolerance: round(allowed),
     message: `Observed ${label} ${formatNumber(actual)}${unit}, but simulated ${formatNumber(expected)}${unit}.`,
   });
+  return 1;
 }
 
 function compareBreakdown({ observed, simulated, tolerances, deviations, targetId }) {
-  if (!observed) return;
+  if (!observed) return 0;
+  let count = 0;
   for (const side of ["player", "enemy"]) {
     const observedSide = observed[side] ?? {};
     const simulatedSide = simulated?.[side] ?? {};
     for (const key of Object.keys(observedSide)) {
-      compareScalar({
+      count += compareScalar({
         code: "damage_breakdown_mismatch",
         label: `${side}.${key} damage`,
         actual: observedSide[key],
@@ -340,15 +353,19 @@ function compareBreakdown({ observed, simulated, tolerances, deviations, targetI
       });
     }
   }
+  return count;
 }
 
 function compareExpectedEvents({ expectedEvents, simulatedEvents, tolerances, deviations, targetId }) {
-  if (!Array.isArray(expectedEvents) || expectedEvents.length === 0) return;
+  let count = 0;
 
   let searchFrom = 0;
   for (const expected of expectedEvents) {
+    const hasIdentity = Boolean(expected.event || expected.action || Number.isInteger(expected.index));
+    if (!hasIdentity && ![expected.time, expected.playerHp, expected.enemyHp].some(Number.isFinite)) continue;
     const simulatedIndex = findSimulatedEvent(expected, simulatedEvents, searchFrom);
     if (simulatedIndex < 0) {
+      count += 1;
       deviations.push({
         code: "event_missing",
         targetId,
@@ -358,9 +375,10 @@ function compareExpectedEvents({ expectedEvents, simulatedEvents, tolerances, de
       continue;
     }
 
+    if (hasIdentity) count += 1;
     const simulated = simulatedEvents[simulatedIndex];
     searchFrom = simulatedIndex + 1;
-    compareScalar({
+    count += compareScalar({
       code: "event_time_mismatch",
       label: `${expected.event ?? "event"} time`,
       actual: expected.time,
@@ -370,7 +388,7 @@ function compareExpectedEvents({ expectedEvents, simulatedEvents, tolerances, de
       targetId,
       unit: "s",
     });
-    compareScalar({
+    count += compareScalar({
       code: "event_player_hp_mismatch",
       label: `${expected.event ?? "event"} player HP`,
       actual: expected.playerHp,
@@ -380,7 +398,7 @@ function compareExpectedEvents({ expectedEvents, simulatedEvents, tolerances, de
       deviations,
       targetId,
     });
-    compareScalar({
+    count += compareScalar({
       code: "event_enemy_hp_mismatch",
       label: `${expected.event ?? "event"} enemy HP`,
       actual: expected.enemyHp,
@@ -391,6 +409,7 @@ function compareExpectedEvents({ expectedEvents, simulatedEvents, tolerances, de
       targetId,
     });
   }
+  return count;
 }
 
 function findSimulatedEvent(expected, simulatedEvents, searchFrom) {
@@ -412,7 +431,7 @@ function findSimulatedEvent(expected, simulatedEvents, searchFrom) {
 function normalizeExpectedEvents(rawEvents) {
   const parsed = parseJsonLike(rawEvents);
   const events = Array.isArray(parsed) ? parsed : [];
-  return events.map((event) => ({
+  return events.filter((event) => event && typeof event === "object").map((event) => ({
     ...event,
     event: firstString(event.event, event.type),
     action: firstString(event.action, event.actionType, event.action?.type),
@@ -516,6 +535,7 @@ function parseJsonLike(value) {
 }
 
 function formatNumber(value) {
+  if (value == null) return "n/a";
   const number = Number(value);
   if (!Number.isFinite(number)) return "n/a";
   if (Math.abs(number) >= 1e6 || (Math.abs(number) > 0 && Math.abs(number) < 0.001)) return number.toExponential(3);

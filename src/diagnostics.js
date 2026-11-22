@@ -1,5 +1,6 @@
 import { DEFAULT_COMBAT_ASSUMPTIONS, runMonteCarlo } from "./combat.js";
 import { SELF_BUFF_TO_STAT, STATUS_TO_STAT } from "./combat/statuses.js";
+import { enemyFromSketch } from "./combat/steam-encounter.js";
 
 const STATUS_CHANCE_STATS = new Set([...Object.values(STATUS_TO_STAT), "exacerbateChance"]);
 const SELF_BUFF_CHANCE_STATS = new Set(Object.values(SELF_BUFF_TO_STAT));
@@ -12,11 +13,12 @@ export function createDiagnosticReport({
   simulation = {},
   report = {},
   dataMetadata = null,
+  assumptions = {},
   observedOutcome = null,
   assumptionComparisons = [],
 } = {}) {
-  const extremes = detectExtremeStats({ target });
-  const warnings = createMechanicWarnings({ target, extremes, dataMetadata });
+  const extremes = detectExtremeStats({ target, assumptions });
+  const warnings = createMechanicWarnings({ target, extremes, dataMetadata, steam: assumptions.steam });
   const why = explainResult({ simulation, report, player, target });
   const sanityChecks = createSanityChecks({ simulation, report, warnings, extremes });
   const confidence = createConfidenceBadge({ simulation, warnings, sanityChecks });
@@ -32,14 +34,16 @@ export function createDiagnosticReport({
   return diagnostics;
 }
 
-export function detectExtremeStats({ target = {} } = {}) {
+export function detectExtremeStats({ target = {}, assumptions = {} } = {}) {
   const stats = target.stats ?? target;
   const items = [];
   for (const [statName, rawValue] of Object.entries(stats ?? {})) {
     const value = Number(rawValue);
     if (!Number.isFinite(value)) continue;
     if (CHANCE_STATS.has(statName) && value > 100) {
-      const interpretedChance = isExportedTarget(target) ? value * DEFAULT_COMBAT_ASSUMPTIONS.exportedEnemyStatusChanceScale : value;
+      const scale = SELF_BUFF_CHANCE_STATS.has(statName) ? "exportedEnemyBuffChanceScale" : "exportedEnemyStatusChanceScale";
+      const factor = assumptions[scale] ?? (assumptions.steam ? 1 : DEFAULT_COMBAT_ASSUMPTIONS[scale]);
+      const interpretedChance = isExportedTarget(target) ? value * factor : value;
       items.push({
         stat: statName,
         value,
@@ -127,9 +131,9 @@ export function createModelAssumptionComparisons({
   seed = "assumptions",
   assumptions = {},
 } = {}) {
-  const enemy = enemyFromTarget(target);
+  const enemy = enemyFromSketch(target);
   const safeTrials = Math.max(1, Math.floor(Number(trials) || 200));
-  const baselineAssumptions = { ...DEFAULT_COMBAT_ASSUMPTIONS, ...assumptions };
+  const baselineAssumptions = { ...assumptions };
   const variants = [
     {
       id: "baseline",
@@ -162,7 +166,7 @@ export function createModelAssumptionComparisons({
     assumptions: baselineAssumptions,
   });
 
-  return variants.map((variant) => {
+  return variants.filter((variant) => !assumptions.steam || !variant.id.startsWith("enemy_")).map((variant) => {
     const result = variant.result ?? runMonteCarlo({
       player,
       enemy,
@@ -270,7 +274,7 @@ function createSanityChecks({ simulation = {}, report = {}, warnings = [], extre
   return checks;
 }
 
-function createMechanicWarnings({ target = {}, extremes = [], dataMetadata = null }) {
+function createMechanicWarnings({ target = {}, extremes = [], dataMetadata = null, steam }) {
   const warnings = [];
   if ((target.immunities ?? []).length > 0) {
     warnings.push({
@@ -288,7 +292,7 @@ function createMechanicWarnings({ target = {}, extremes = [], dataMetadata = nul
       detail: `Vulnerability ${target.vulnerability[0]} x${target.vulnerability[1]} can depend on the source sketch/mechanic.`,
     });
   }
-  if (extremes.some((item) => item.kind === "status_chance")) {
+  if (!steam && extremes.some((item) => item.kind === "status_chance")) {
     warnings.push({
       code: "status_scaling_model",
       severity: "high",
@@ -296,7 +300,7 @@ function createMechanicWarnings({ target = {}, extremes = [], dataMetadata = nul
       detail: "At least one enemy status chance is above 100 and is interpreted with exported enemy scaling.",
     });
   }
-  if (extremes.some((item) => item.kind === "self_buff_chance")) {
+  if (!steam && extremes.some((item) => item.kind === "self_buff_chance")) {
     warnings.push({
       code: "enemy_buff_scaling_model",
       severity: "high",
@@ -408,16 +412,6 @@ function topProblem(result = {}) {
   const timeouts = ratesFromMap(result.timeoutDiagnoses, result.trials);
   if (timeouts.length > 0) return timeouts[0].code;
   return "none";
-}
-
-function enemyFromTarget(target = {}) {
-  return {
-    id: target.id,
-    name: target.name,
-    ...(target.stats ?? {}),
-    immunities: target.immunities,
-    vulnerability: target.vulnerability,
-  };
 }
 
 function likelyMismatchMechanic(diagnostics = {}) {

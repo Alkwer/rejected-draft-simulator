@@ -3,23 +3,26 @@ import path from "node:path";
 import {
   checkGameDataFreshness,
   DEFAULT_DATA_PATH,
-  DEFAULT_GAME_URL,
+  LEGACY_DATA_PATH,
   updateGameData,
 } from "./game-data-update.js";
-import { readDataMetadata } from "./sketch-data.js";
 
 const args = parseArgs(process.argv.slice(2));
-const dataPath = path.resolve(args.data ?? DEFAULT_DATA_PATH);
-const gameUrl = args["game-url"] ?? DEFAULT_GAME_URL;
+const gameUrl = args["game-url"];
+const dataPath = path.resolve(args.data ?? (gameUrl ? LEGACY_DATA_PATH : DEFAULT_DATA_PATH));
+const steamDir = args["steam-dir"];
 const offlineFallback = args["no-offline"] !== true;
 const jsonOutput = args.json === true;
 
 try {
+  if (steamDir === true || gameUrl === true || (steamDir && gameUrl)) {
+    throw new Error("Select a Steam folder with --steam-dir <folder> or a legacy page with --game-url <url>.");
+  }
   if (args.check) {
-    const freshness = await checkGameDataFreshness({ gameUrl, localMetadata: readDataMetadata(dataPath) });
+    const freshness = await checkGameDataFreshness({ gameUrl, steamDir, dataPath });
     printResult(freshness, jsonOutput);
   } else {
-    const result = await updateGameData({ gameUrl, dataPath, offlineFallback });
+    const result = await updateGameData({ gameUrl, steamDir, dataPath, offlineFallback });
     printResult(result, jsonOutput);
   }
 } catch (error) {
@@ -40,10 +43,9 @@ function printResult(result, json) {
 
   if ("stale" in result) {
     if (result.stale) {
-      console.log("Game data is older than the current game page.");
       for (const warning of result.warnings) console.log(`- ${warning.message}`);
     } else {
-      console.log("Local game data matches the current game page assets.");
+      console.log(gameUrl ? "Local data matches the legacy web assets." : "Local data matches the installed Steam build.");
     }
     return;
   }
@@ -54,10 +56,11 @@ function printResult(result, json) {
     return;
   }
 
-  console.log(`Updated ${result.dataPath}`);
+  console.log(`${result.updated ? "Updated" : "Already current"}: ${result.dataPath}`);
+  if (result.metadata.buildId) console.log(`Steam build: ${result.metadata.buildId}`);
   console.log(`Game version: ${result.metadata.gameVersion ?? "unknown"}`);
   console.log(`Save version: ${result.metadata.saveVersion ?? "unknown"}`);
-  console.log(`Artist asset: ${result.metadata.asset}`);
+  console.log(`Sketch asset: ${result.metadata.asset}`);
   console.log(`Main asset: ${result.metadata.mainAsset}`);
 }
 

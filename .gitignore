@@ -1,4 +1,6 @@
 node_modules/
+.local/steam-fights/
+/Auto-*.json
 *.log
 tmp/
 .env

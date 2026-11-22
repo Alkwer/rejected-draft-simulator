@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { analyzeSave } from "../src/save-analysis.js";
+import { decodeSaveText } from "../src/save.js";
 
 const sketches = {
   a: { id: "a", name: "A", rarity: "rough" },
@@ -70,6 +71,46 @@ test("analyzeSave ignores stale redraw summary run stats when current run stats 
   assert.deepEqual(analysis.stats.sources.runStats, {});
 });
 
+test("Steam saves use live player stats and preserve active run progress", () => {
+  const save = {
+    ...sampleSave({
+      playerStats: {
+        maxHp: "1.5e5",
+        attack: { mantissa: 2, exponent: 3 },
+        attackSpeed: "1200",
+        immunities: ["bleedChance"],
+        vulnerability: ["burnChance", 2],
+      },
+    }),
+    version: 86,
+    meta: { profile: "steam", slot: 2 },
+  };
+  const encoded = Buffer.from(JSON.stringify(save), "utf8").toString("base64");
+
+  for (const text of [encoded, JSON.stringify(save)]) {
+    const analysis = analyzeSave({ save: decodeSaveText(text), sketches });
+    assert.equal(analysis.saveVersion, 86);
+    assert.equal(analysis.stats.recommendedSource, "playerStats");
+    assert.equal(analysis.stats.reason, "steam_player_stats");
+    assert.equal(analysis.stats.sources.playerStats.maxHp, 150000);
+    assert.equal(analysis.stats.sources.playerStats.attack, 2000);
+    assert.deepEqual(analysis.stats.sources.playerStats.immunities, ["bleedChance"]);
+    assert.deepEqual(analysis.stats.sources.playerStats.vulnerability, ["burnChance", 2]);
+    assert.equal(analysis.run.phase, "in_run");
+    assert.equal(analysis.run.rewardProgress.c.runVictories, 1);
+  }
+});
+
+test("save decoder accepts legacy companion state and rejects broken or out-of-range Steam stats", () => {
+  const { state } = sampleSave();
+  assert.deepEqual(decodeSaveText(JSON.stringify(state)).state, state);
+  assert.throws(() => decodeSaveText(" "), /empty/i);
+  assert.throws(() => decodeSaveText('{"state":[]}'), /missing game state/i);
+  assert.throws(() => decodeSaveText('{"state":{"saveProfile":"steam"}}'), /missing player stats/i);
+  const steamState = { ...state, saveProfile: "steam", playerStats: { ...state.playerStats, attack: "1e400" } };
+  assert.throws(() => decodeSaveText(JSON.stringify({ state: steamState })), /attack.*finite number/i);
+});
+
 test("analyzeSave classifies active sketches and reward progress", () => {
   const analysis = analyzeSave({ save: sampleSave(), sketches, targetId: "target" });
 
@@ -127,4 +168,9 @@ test("analyzeSave warns when sketch data metadata is older than the save", () =>
 
   assert.deepEqual(stale.warnings.map((warning) => warning.code), ["stale_sketch_data"]);
   assert.deepEqual(current.warnings, []);
+});
+
+test("analyzeSave warns when a legacy save is analyzed against Steam sketch data", () => {
+  const analysis = analyzeSave({ save: sampleSave(), sketches, dataMetadata: { platform: "steam", saveVersion: 86 } });
+  assert.deepEqual(analysis.warnings.map((warning) => warning.code), ["save_platform_mismatch"]);
 });

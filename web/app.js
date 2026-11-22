@@ -1,3 +1,5 @@
+import { parseSaveEnvelope, isSteamSave } from "./save-format.js";
+
 const els = {
   bundleStatus: document.querySelector("#bundleStatus"),
   stripQ: document.querySelector("#stripQ"),
@@ -14,6 +16,7 @@ const els = {
   analyzeButton: document.querySelector("#analyzeButton"),
   compareTargetsButton: document.querySelector("#compareTargetsButton"),
   saveInput: document.querySelector("#saveInput"),
+  steamSlotButton: document.querySelector("#steamSlotButton"),
   saveFile: document.querySelector("#saveFile"),
   saveFileLabel: document.querySelector("#saveFileLabel"),
   clearButton: document.querySelector("#clearButton"),
@@ -98,6 +101,9 @@ const state = {
   autoAnalyzeTimer: null,
   lastAnalysis: null,
   isBusy: false,
+  slotName: null,
+  platform: null,
+  targetRequest: 0,
 };
 
 init();
@@ -118,6 +124,12 @@ async function init() {
 function bindEvents() {
   els.importBundleButton.addEventListener("click", importBundle);
   els.analyzeButton.addEventListener("click", analyze);
+  els.steamSlotButton.addEventListener("click", () => analyze({ loadSlot: true }));
+  els.saveInput.addEventListener("input", () => {
+    state.slotName = null;
+    els.saveInput.placeholder = "Or paste a save export";
+    syncExportTargets();
+  });
   els.targetSelect.addEventListener("change", analyzeIfReady);
   els.compareTargetsButton.addEventListener("click", toggleFullCompare);
   els.targetFilterInput.addEventListener("input", () => {
@@ -162,6 +174,9 @@ function bindEvents() {
     if (tab) setMobileTab(tab);
   });
   els.clearButton.addEventListener("click", () => {
+    state.targetRequest += 1;
+    state.slotName = null;
+    els.saveInput.placeholder = "Or paste a save export";
     els.saveInput.value = "";
     els.saveFile.value = "";
     els.saveFileLabel.textContent = "Choose save file";
@@ -175,9 +190,12 @@ function bindEvents() {
   els.saveFile.addEventListener("change", async () => {
     const [file] = els.saveFile.files;
     if (!file) return;
+    const text = await file.text();
+    if (file !== els.saveFile.files[0]) return;
+    state.slotName = null;
     els.saveFileLabel.textContent = file.name;
-    els.saveInput.value = await file.text();
-    analyzeIfReady();
+    els.saveInput.value = text;
+    await analyze();
   });
   els.clearHistoryButton.addEventListener("click", () => {
     localStorage.removeItem("rd-sim-history");
@@ -186,18 +204,35 @@ function bindEvents() {
 }
 
 function analyzeIfReady() {
-  if (state.isBusy || !els.saveInput.value.trim() || !hasSelectedTarget()) return;
+  if (state.isBusy || !(els.saveInput.value.trim() || state.slotName) || !hasSelectedTarget()) return;
   analyze();
 }
 
 function scheduleAnalyze() {
-  if (!els.saveInput.value.trim() || !hasSelectedTarget()) return;
+  if (!(els.saveInput.value.trim() || state.slotName) || !hasSelectedTarget()) return;
   window.clearTimeout(state.autoAnalyzeTimer);
   state.autoAnalyzeTimer = window.setTimeout(analyzeIfReady, 450);
 }
 
-async function loadTargets() {
-  const data = await api("/api/targets");
+function syncExportTargets() {
+  let save;
+  try {
+    save = parseSaveEnvelope(els.saveInput.value);
+  } catch {
+    // An export can be incomplete while the user is typing.
+    state.targetRequest += 1;
+    return;
+  }
+  loadTargets(isSteamSave(save) ? "steam" : "web").catch((error) => showMessage(error.message));
+}
+
+async function loadTargets(platform = "steam", refresh = false) {
+  const request = ++state.targetRequest;
+  if (state.platform === platform && !refresh) return;
+  const data = await api(`/api/targets?edition=${encodeURIComponent(platform)}`);
+  if (request !== state.targetRequest) return;
+  if (state.platform && state.platform !== data.bundle.platform) els.targetFilterInput.value = "";
+  state.platform = data.bundle.platform;
   renderBundle(data.bundle);
   state.targetOptions = data.targets;
   renderTargetOptions();
@@ -237,35 +272,42 @@ function hasSelectedTarget() {
 }
 
 async function importBundle() {
+  let reanalyze = false;
   setBusy(true);
   try {
     const data = await api("/api/import-bundle", { method: "POST" });
-    renderBundle(data.bundle);
+    await loadTargets(state.platform ?? "steam", true);
+    reanalyze = data.update?.updated && state.platform === "steam";
     if (data.update?.offline) {
-      showMessage("No internet connection. Using the last local data bundle.", "ok");
+      showMessage("Steam installation unavailable. Using the saved Steam catalog.");
     } else {
-      showMessage("Bundle imported.", "ok");
+      showMessage(data.update?.updated ? "Steam catalog updated." : "Steam catalog is current.", "ok");
     }
   } catch (error) {
     showMessage(error.message);
   } finally {
     setBusy(false);
   }
+  if (reanalyze) analyzeIfReady();
 }
 
-async function analyze() {
-  if (!hasSelectedTarget()) {
-    showMessage("Choose a target before running the simulation.");
-    return;
-  }
+async function analyze({ loadSlot = false } = {}) {
+  if (state.isBusy) return;
   setBusy(true);
   hideMessage();
   try {
+    const exportText = els.saveInput.value;
+    const fromSlot = Boolean(loadSlot || state.slotName);
+    const edition = fromSlot || isSteamSave(parseSaveEnvelope(exportText)) ? "steam" : "web";
+    await loadTargets(edition);
+    if (els.saveInput.value !== exportText) return;
+    if (!hasSelectedTarget()) throw new Error("Choose a target before running the simulation.");
     const payload = {
-      saveText: els.saveInput.value,
+      saveSource: loadSlot || state.slotName ? "steam" : "export",
+      saveText: loadSlot || state.slotName ? undefined : els.saveInput.value,
       targetId: els.targetSelect.value,
-      assumedVictories: assumedVictoriesPayload(),
-      routeIds: state.routeIds,
+      assumedVictories: loadSlot ? [] : assumedVictoriesPayload(),
+      routeIds: loadSlot ? [] : state.routeIds,
       trials: els.trialsSelect.value,
       maxSeconds: Number(els.maxSecondsInput.value || 300),
       observedOutcome: els.observedOutcomeSelect.value,
@@ -277,8 +319,26 @@ async function analyze() {
       method: "POST",
       body: JSON.stringify(payload),
     });
+    if (els.saveInput.value !== exportText) return;
+    if (loadSlot) {
+      state.assumed.clear();
+      state.routeIds = [];
+      state.hiddenSketchIds.clear();
+      state.selectedSketchId = null;
+      els.saveInput.value = "";
+      els.saveFile.value = "";
+      els.saveFileLabel.textContent = "Choose save file";
+    }
+    if (data.slotName) {
+      state.slotName = data.slotName;
+      els.saveInput.placeholder = `Using Steam ${data.slotName}. Paste an export to switch saves.`;
+    }
+    if (data.analysis.bundle.platform && state.platform !== data.analysis.bundle.platform) {
+      await loadTargets(data.analysis.bundle.platform);
+    }
     state.lastAnalysis = data.analysis;
     renderAnalysis(data.analysis);
+    if (data.analysis.warnings.length) showMessage(data.analysis.warnings.map((item) => item.message).join(" "));
     pushHistory(data.analysis);
     renderHistory();
   } catch (error) {
@@ -312,9 +372,10 @@ function renderAnalysis(analysis) {
 function renderBundle(bundle) {
   if (!bundle) return;
   const parts = [
+    bundle.platform === "steam" ? "Steam" : "Legacy web",
     bundle.gameVersion ?? "unknown",
     `${bundle.totalSketches ?? 0} sketches`,
-    bundle.asset ?? "local data",
+    bundle.buildId ? `build ${bundle.buildId}` : bundle.asset ?? "local data",
   ];
   els.bundleStatus.textContent = `Bundle: ${parts.join(" | ")}`;
   if (els.stripBundle) {
@@ -331,7 +392,7 @@ function renderResourceStrip(analysis) {
   els.stripQDelta.textContent = q?.missing > 0 ? `missing ${formatNumber(q.missing)}` : farm?.estimatedSeconds != null ? `ETA ${seconds(farm.estimatedSeconds)}` : "ready";
   els.stripTarget.textContent = analysis.target?.name ?? "--";
   els.stripWin.textContent = percent(result.winRate);
-  els.stripWinDetail.textContent = `+/- ${percent(result.winRateCi95?.halfWidth ?? 0)}`;
+  els.stripWinDetail.textContent = `95% CI ${confidenceRange(result.winRateCi95)}`;
   els.stripTimeout.textContent = percent(result.timeoutRate ?? 0);
   els.stripTimeDetail.textContent = `p90 ${seconds(result.p90Seconds)}`;
   els.stripDecision.textContent = compactDecision(analysis.recommendation?.action ?? "--");
@@ -454,7 +515,7 @@ function renderResult(analysis) {
   const result = analysis.result;
   els.targetLabel.textContent = analysis.target.name;
   els.winRate.textContent = percent(result.winRate);
-  els.winRateCi.textContent = `+/- ${percent(result.winRateCi95?.halfWidth ?? 0)} | ${result.trials} attempts`;
+  els.winRateCi.textContent = `95% CI ${confidenceRange(result.winRateCi95)} | ${result.trials} attempts`;
   els.timeoutRate.textContent = percent(result.timeoutRate ?? 0);
   els.fightTime.textContent = `median ${seconds(result.medianSeconds)} | p90 ${seconds(result.p90Seconds)}${timeLimitNote(result)}`;
   els.decision.textContent = analysis.recommendation.action;
@@ -721,7 +782,7 @@ function renderBuildComparison(items) {
       <td>${escapeHtml(item.label)}</td>
       <td>${escapeHtml(item.targetName)}</td>
       <td>${item.winRate == null ? "--" : percent(item.winRate)}</td>
-      <td>${item.ci95HalfWidth == null ? "--" : `+/- ${percent(item.ci95HalfWidth)}`}</td>
+      <td>${confidenceRange(item.winRateCi95)}</td>
       <td>${item.p90Seconds == null ? "--" : seconds(item.p90Seconds)}</td>
       <td>${escapeHtml(item.problem ?? "none")}</td>
     `;
@@ -738,7 +799,7 @@ function renderTargetComparisons(items = []) {
       <td>${escapeHtml(item.name)}</td>
       <td>${escapeHtml(item.rarity)}</td>
       <td>${percent(item.winRate)}</td>
-      <td>+/- ${percent(item.ci95HalfWidth)}</td>
+      <td>${confidenceRange(item.winRateCi95)}</td>
       <td>${seconds(item.p90Seconds)}</td>
       <td>${escapeHtml(item.problem ?? "none")}</td>
     `;
@@ -891,6 +952,7 @@ function pushHistory(analysis) {
   const history = readHistory();
   history.unshift({
     at: new Date().toLocaleString("en-US"),
+    edition: analysis.bundle.platform === "steam" ? `Steam ${analysis.bundle.gameVersion}` : "Legacy web",
     target: analysis.target.name,
     winRate: analysis.result.winRate,
     decision: analysis.recommendation.action,
@@ -914,7 +976,7 @@ function renderHistory() {
     row.innerHTML = `
       <div>
         <strong>${escapeHtml(item.target)}</strong>
-        <span>${escapeHtml(item.at)} | ${escapeHtml(item.decision)} | kills ${item.assumedCount}</span>
+        <span>${escapeHtml(item.edition ?? "Legacy web")} | ${escapeHtml(item.at)} | ${escapeHtml(item.decision)} | kills ${item.assumedCount}</span>
       </div>
       <strong>${percent(item.winRate)}</strong>
     `;
@@ -1154,8 +1216,12 @@ async function api(url, options = {}) {
 function setBusy(isBusy) {
   state.isBusy = isBusy;
   els.analyzeButton.disabled = isBusy;
+  els.steamSlotButton.disabled = isBusy;
   els.importBundleButton.disabled = isBusy;
   els.targetSelect.disabled = isBusy;
+  els.saveInput.disabled = isBusy;
+  els.saveFile.disabled = isBusy;
+  els.clearButton.disabled = isBusy;
 }
 
 function showMessage(message, kind = "error") {
@@ -1174,6 +1240,11 @@ function percent(value) {
   const number = Number(value);
   if (!Number.isFinite(number)) return "--";
   return `${(number * 100).toFixed(1)}%`;
+}
+
+function confidenceRange(interval) {
+  if (!Number.isFinite(interval?.lower) || !Number.isFinite(interval?.upper)) return "--";
+  return percent(interval.lower) + "–" + percent(interval.upper);
 }
 
 function signedPercent(value) {

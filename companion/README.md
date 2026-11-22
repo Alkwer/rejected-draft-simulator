@@ -1,6 +1,6 @@
 # Rejected Draft Simulator Companion
 
-This is a read-only Tampermonkey bridge between the game page and the local simulator.
+This is a read-only Tampermonkey bridge for the legacy browser edition. Its endpoints use the archived web catalog. For the Steam edition, open the local simulator and select **Run → Use active Steam slot**.
 
 ## Install
 

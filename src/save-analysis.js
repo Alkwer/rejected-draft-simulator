@@ -1,13 +1,11 @@
-import { extractStats, toNumber } from "./save.js";
-
-const RUN_STATS_PATHS = [
-  ["currentRunStats"],
-];
+import { extractStats, isSteamSave, toNumber } from "./save.js";
+import { STEAM_UNIVERSES, VERIFIED_STEAM_BUILD } from "./combat/steam-universes.js";
 
 export function analyzeSave({ save, sketches = {}, targetId = null, dataMetadata = null }) {
   const state = save?.state ?? {};
   const maxVictories = toNumber(state.fundamentals?.maxVictories, 250);
-  const stats = analyzeStats(state);
+  const steamSave = isSteamSave(save);
+  const stats = analyzeStats(state, { steamSave });
   const active = analyzeActiveSketches({ state, sketches, targetId, maxVictories });
 
   return {
@@ -21,15 +19,15 @@ export function analyzeSave({ save, sketches = {}, targetId = null, dataMetadata
     },
     tools: analyzeTools(state),
     meditation: analyzeMeditation(state),
-    warnings: validateDataFreshness({ saveVersion: save?.version, dataMetadata }),
+    warnings: validateDataCompatibility({ save, steamSave, dataMetadata }),
   };
 }
 
-export function analyzeStats(state) {
+export function analyzeStats(state, { steamSave = isSteamSave({ state }) } = {}) {
   const playerStats = extractStats(state, "playerStats");
   const battleStats = extractStats(state, "battleStats");
   const runStats = extractRunStats(state);
-  const recommended = chooseStatsSource({ state, playerStats, battleStats, runStats });
+  const recommended = chooseStatsSource({ state, playerStats, battleStats, runStats, steamSave });
 
   return {
     recommendedSource: recommended.source,
@@ -44,20 +42,23 @@ export function analyzeStats(state) {
 }
 
 export function getStatsBySource(state, source) {
-  if (source === "auto") return analyzeStats(state).sources[analyzeStats(state).recommendedSource] ?? {};
+  if (source === "auto") {
+    const { sources, recommendedSource } = analyzeStats(state);
+    return sources[recommendedSource] ?? {};
+  }
   if (source === "runStats") return extractRunStats(state);
   return extractStats(state, source);
 }
 
 function extractRunStats(state) {
-  for (const path of RUN_STATS_PATHS) {
-    const raw = getPath(state, path);
-    if (raw && Object.keys(raw).length > 0) return numericObject(raw);
-  }
-  return {};
+  return extractStats(state, "currentRunStats");
 }
 
-function chooseStatsSource({ state, playerStats, battleStats, runStats }) {
+function chooseStatsSource({ state, playerStats, battleStats, runStats, steamSave }) {
+  // Steam's battleStats holds accumulated rewards, and playerStats includes all active modifiers.
+  if (steamSave) {
+    return { source: "playerStats", reason: "steam_player_stats" };
+  }
   if (hasEnoughStats(runStats) && normalizeArray(state.availableSketches).length > 0) {
     return { source: "runStats", reason: "current_run_stats_available" };
   }
@@ -78,6 +79,7 @@ function compareStats(base, current) {
   const keys = new Set([...Object.keys(base), ...Object.keys(current)]);
   const comparison = {};
   for (const key of [...keys].sort()) {
+    if (key === "immunities" || key === "vulnerability") continue;
     const baseValue = toNumber(base[key]);
     const currentValue = toNumber(current[key]);
     const delta = currentValue - baseValue;
@@ -167,29 +169,46 @@ function detectRunPhase(state, activeItems, maxVictories) {
   return "after_redraw";
 }
 
-function validateDataFreshness({ saveVersion, dataMetadata }) {
+function validateDataCompatibility({ save, steamSave, dataMetadata }) {
+  const warnings = [];
+  const saveVersion = save?.version;
+  const profile = save?.meta?.profile ?? save?.state?.saveProfile;
+  if (profile === "steam") {
+    const universe = save.state.multiverse?.currentUniverseId;
+    if (universe && !Object.hasOwn(STEAM_UNIVERSES, universe)) {
+      warnings.push({ code: "unknown_universe", message: `Unknown Steam universe ${universe}. Estimates use original-universe modifiers.` });
+    }
+    if (dataMetadata?.buildId && dataMetadata.buildId !== VERIFIED_STEAM_BUILD) {
+      warnings.push({ code: "unverified_build", message: `Catalog build ${dataMetadata.buildId} differs from the combat model's verified Steam build ${VERIFIED_STEAM_BUILD}.` });
+    }
+    const amounts = [save.state.quintessence, ...Object.values(save.state.currencies ?? {})];
+    if (amounts.some((value) => value != null && !Number.isFinite(toNumber(value, NaN)))) {
+      warnings.push({ code: "economy_numeric_range", message: "A saved currency exceeds the simulator's numeric range. Economy projections for this run are unreliable." });
+    }
+  }
+  if (dataMetadata?.platform === "steam" && profile === "steam-demo") {
+    warnings.push({ code: "steam_demo", message: "This demo slot has different balance and available sketches. The catalog and verified combat rules cover the full Steam release." });
+  } else if (dataMetadata?.platform === "steam" && !steamSave) {
+    warnings.push({
+      code: "save_platform_mismatch",
+      message: "This save uses the legacy format. Steam sketch data may have different stats and rewards.",
+    });
+  } else if (steamSave && dataMetadata?.platform === "web") {
+    warnings.push({ code: "save_platform_mismatch", message: "This Steam save is being compared with legacy web sketch data." });
+  } else if (profile === "steam" && save.meta?.gameVersion && dataMetadata?.gameVersion && save.meta.gameVersion !== dataMetadata.gameVersion) {
+    warnings.push({ code: "game_version_mismatch", message: `Save patch ${save.meta.gameVersion} differs from catalog patch ${dataMetadata.gameVersion}. Refresh Steam data or use a matching save.` });
+  }
   const dataSaveVersion = dataMetadata?.saveVersion;
-  if (dataSaveVersion == null || saveVersion == null) return [];
-  if (Number(dataSaveVersion) >= Number(saveVersion)) return [];
-  return [
-    {
+  if (dataSaveVersion != null && saveVersion != null && Number(dataSaveVersion) < Number(saveVersion)) {
+    warnings.push({
       code: "stale_sketch_data",
       message: `Sketch data metadata is for save version ${dataSaveVersion}, but save is version ${saveVersion}.`,
       dataSaveVersion: Number(dataSaveVersion),
       saveVersion: Number(saveVersion),
       gameVersion: dataMetadata?.gameVersion ?? null,
-    },
-  ];
-}
-
-function getPath(value, path) {
-  return path.reduce((current, key) => current?.[key], value);
-}
-
-function numericObject(raw = {}) {
-  const result = {};
-  for (const [key, value] of Object.entries(raw)) result[key] = toNumber(value);
-  return result;
+    });
+  }
+  return warnings;
 }
 
 function normalizeArray(value) {
