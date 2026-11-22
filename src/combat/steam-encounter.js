@@ -19,9 +19,9 @@ export function enemyFromSketch(sketch, id = sketch.id) {
 
 export function sketchForEncounter(sketch, assumptions) {
   if (!sketch || !assumptions.steam) return sketch;
-  const enemy = buildSteamEnemy(enemyFromSketch(sketch), assumptions.steam);
-  const stats = Object.fromEntries(Object.keys(sketch.stats).map((key) => [key, enemy[key]]));
-  return { ...sketch, source: enemy.source, stats, vulnerability: enemy.vulnerability };
+  const { id, name, rarity, source, immunities, vulnerability, ...stats } =
+    buildSteamEnemy(enemyFromSketch(sketch), assumptions.steam);
+  return { ...sketch, id, name, rarity, source, immunities, vulnerability, stats };
 }
 
 export function steamUniverse(universeId) {

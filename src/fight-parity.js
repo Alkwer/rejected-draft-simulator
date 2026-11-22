@@ -245,6 +245,7 @@ function normalizeCombatant(raw, fallbackId = null) {
     id: firstString(raw.id, raw.sketchId, raw.targetId, fallbackId),
     name: firstString(raw.name, raw.sketchName, raw.targetName),
     ...numericObject(statsSource),
+    ...(statsSource.isPreciseErased === true && { isPreciseErased: true }),
     immunities: Array.isArray(raw.immunities) ? raw.immunities : [],
     vulnerability: Array.isArray(raw.vulnerability) ? raw.vulnerability : null,
     vulnerabilityEffects: Array.isArray(raw.vulnerabilityEffects) ? raw.vulnerabilityEffects : [],

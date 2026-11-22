@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { combatAssumptionsFromSave } from "../src/combat-assumptions.js";
 import { simulateFight } from "../src/combat.js";
-import { buildSteamEnemy } from "../src/combat/steam-encounter.js";
+import { buildSteamEnemy, enemyFromSketch, sketchForEncounter } from "../src/combat/steam-encounter.js";
 import { normalizeFightFixture } from "../src/fight-parity.js";
 import { applySketchRewards } from "../src/rewards.js";
 import { simulateRoute } from "../src/route.js";
@@ -53,6 +53,24 @@ test("Steam enemy stack chances and Slowed attack timing use runtime units", () 
   assert.equal(attacks[0].statuses.player.Slow, 500);
   assert.equal(attacks[1].attackerSide, "player");
   assert.equal(attacks[1].time, 1.5);
+});
+
+test("Varnish restores 25% HP for an erased encounter in combat and saved fixtures", () => {
+  const sketch = { id: "sharper", stats: { maxHp: 100, attack: 1, attackSpeed: 9000, varnish: 100 } };
+  for (const erased of [false, true]) {
+    const assumptions = combatAssumptionsFromSave({ saveProfile: "steam", erasedSketchIds: erased ? [sketch.id] : [] });
+    const enemy = enemyFromSketch(sketchForEncounter(sketch, assumptions));
+    const fixtureEnemy = normalizeFightFixture({ enemy }).enemy;
+    for (const target of [enemy, fixtureEnemy]) {
+      const fight = simulateFight({
+        assumptions, enemy: target, player: { ...player, attack: 200, accuracy: 100, minDamage: 100, maxDamage: 100 },
+        rng: () => 0.5, maxSeconds: 1.5, trace: { seconds: 1.5 },
+      });
+      const trigger = fight.trace.flatMap((event) => event.mechanics ?? []).find((item) => item.type === "varnish");
+      assert.equal(trigger?.restorePercent, erased ? 25 : 50);
+      assert.equal(fight.enemyHp, erased ? 12.5 : 50);
+    }
+  }
 });
 
 test("Steam Seppuku evaluates configured rule combinations at the fight clock", () => {
