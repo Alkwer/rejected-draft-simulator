@@ -5,6 +5,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { createWebServer } from "../src/web-server.js";
+import { compareFightParityFixture } from "../src/fight-parity.js";
 
 test("active Steam slot and uploaded web save select their own catalogs", async (t) => {
   const steamSaveDir = fs.mkdtempSync(path.join(os.tmpdir(), "rd-slot-http-"));
@@ -263,6 +264,10 @@ test("web server companion endpoint captures and compares a fight fixture", asyn
     assert.equal(payload.fixtureCapture.fixture.observed.outcome, "win");
     assert.equal(payload.fixtureCapture.parity.ok, true);
     assert.equal(payload.fixtureCapture.parity.trace.seed, "companion-fixture-test");
+    // CLI defaults differ from the capture settings. The downloaded JSON must reproduce the entire trace.
+    const replay = compareFightParityFixture({ fixture: JSON.parse(JSON.stringify(payload.fixtureCapture.fixture)),
+      seed: "cli-default", maxSeconds: 300, traceSeconds: 60, includeRng: false });
+    assert.deepEqual(replay, payload.fixtureCapture.parity);
     assert.match(payload.fixtureCapture.filename, /duct_taped_banana.*\.json/);
     assert.match(payload.fixtureCapture.cliEquivalent, /--fight-fixture/);
   } finally {

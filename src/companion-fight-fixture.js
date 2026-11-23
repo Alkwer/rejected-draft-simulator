@@ -44,6 +44,10 @@ export function createCompanionFightFixture({
     targetId: resolvedTargetId,
     targetName: target.name,
     statSource,
+    seed,
+    maxSeconds,
+    traceSeconds,
+    includeRng: true,
     player,
     enemy,
     assumptions: combatAssumptions,
@@ -60,18 +64,7 @@ export function createCompanionFightFixture({
     })),
     ...observedSource.warnings,
   ];
-  const parity = observedSource.observed
-    ? compareFightParityFixture({
-      fixture,
-      player,
-      enemy,
-      targetId: resolvedTargetId,
-      seed,
-      maxSeconds,
-      traceSeconds,
-      includeRng: true,
-    })
-    : null;
+  const parity = observedSource.observed ? compareFightParityFixture({ fixture }) : null;
 
   return {
     mode: "companion-fight-fixture",
@@ -82,7 +75,7 @@ export function createCompanionFightFixture({
     gameVersion: dataMetadata?.gameVersion ?? null,
     statSource,
     filename: fixtureFilename({ targetId: resolvedTargetId, saveVersion: save.version, source: observedSource.source }),
-    cliEquivalent: `npm.cmd run simulate -- --save <save.txt> --target ${resolvedTargetId} --fight-fixture <downloaded-fixture.json> --trace-rng --trace-seconds ${Math.max(1, Math.floor(toNumber(traceSeconds, 60)))} --export markdown`,
+    cliEquivalent: `npm.cmd run simulate -- --save <save.txt> --target ${resolvedTargetId} --fight-fixture <downloaded-fixture.json> --export markdown`,
     fixture,
     parity,
     warnings,

@@ -160,12 +160,16 @@ export function simulateFight({ rng = Math.random, player, enemy, maxSeconds = 3
   const normalizedEnemy = normalizeCombatant(effectiveEnemy);
   const playerFirstAttackDelayMultiplier = flowStateFirstAttackDelayMultiplier(normalizedEnemy, normalizedAssumptions);
   const steam = Boolean(normalizedAssumptions.steam);
+  const battleSpeedupEnd = normalizedAssumptions.battleSpeedup?.remainingSeconds ?? Infinity;
+  const initialSpeed = combatSpeedAtTime(normalizedAssumptions, 0);
   const seppukuRules = normalizedAssumptions.steam?.seppukuRules ?? [];
   const seppukuTimes = seppukuRules.flatMap(({ conditions }) => (conditions ?? [])
     .filter(({ stat }) => stat === "timeInBattle")
     .map(({ threshold }) => Number(threshold)));
   let lastPlayerAttack = 0;
   let lastEnemyAttack = 0;
+  let lastRegenTick = 0;
+  let lastStatusTick = 0;
   let playerAttacked = false;
   const combat = {
     player: normalizedPlayer,
@@ -193,12 +197,12 @@ export function simulateFight({ rng = Math.random, player, enemy, maxSeconds = 3
     nextPlayerAttack: attackDelay(
       normalizedPlayer,
       {},
-      normalizedAssumptions.combatSpeedMultiplier,
+      initialSpeed,
       playerFirstAttackDelayMultiplier,
     ),
-    nextEnemyAttack: attackDelay(normalizedEnemy, {}, normalizedAssumptions.combatSpeedMultiplier),
-    nextRegenTick: combatTickDelay(REGEN_TICK_SECONDS, normalizedAssumptions),
-    nextStatusTick: combatTickDelay(STATUS_TICK_SECONDS, normalizedAssumptions),
+    nextEnemyAttack: attackDelay(normalizedEnemy, {}, initialSpeed),
+    nextRegenTick: REGEN_TICK_SECONDS / initialSpeed,
+    nextStatusTick: STATUS_TICK_SECONDS / initialSpeed,
     time: 0,
     reason: "timeout",
   };
@@ -211,22 +215,27 @@ export function simulateFight({ rng = Math.random, player, enemy, maxSeconds = 3
       return finishSeppuku(combat);
     }
     if (steam) {
+      const speed = combatSpeedAtTime(normalizedAssumptions, combat.time);
+      // Steam calculates each deadline from the last event and the current speed.
       combat.nextPlayerAttack = Math.max(combat.time, lastPlayerAttack + attackDelay(
         combat.player,
         combat.playerStatuses,
-        normalizedAssumptions.combatSpeedMultiplier,
+        speed,
         playerAttacked ? 1 : playerFirstAttackDelayMultiplier,
         true,
       ));
       combat.nextEnemyAttack = Math.max(combat.time, lastEnemyAttack + attackDelay(
-        combat.enemy, combat.enemyStatuses, normalizedAssumptions.combatSpeedMultiplier, 1, true,
+        combat.enemy, combat.enemyStatuses, speed, 1, true,
       ));
+      combat.nextRegenTick = Math.max(combat.time, lastRegenTick + REGEN_TICK_SECONDS / speed);
+      combat.nextStatusTick = Math.max(combat.time, lastStatusTick + STATUS_TICK_SECONDS / speed);
     }
     const nextPendingEffect = nextPendingEffectTime(combat);
     const nextSeppukuCheck = seppukuTimes.reduce(
       (next, time) => time > combat.time ? Math.min(next, time) : next,
       Infinity,
     );
+    const nextSpeedChange = combat.time < battleSpeedupEnd ? battleSpeedupEnd : Infinity;
     const nextTime = Math.min(
       combat.nextPlayerAttack,
       combat.nextEnemyAttack,
@@ -234,6 +243,7 @@ export function simulateFight({ rng = Math.random, player, enemy, maxSeconds = 3
       combat.nextRegenTick,
       combat.nextStatusTick,
       nextSeppukuCheck,
+      nextSpeedChange,
       maxSeconds,
     );
     combat.time = nextTime;
@@ -242,6 +252,7 @@ export function simulateFight({ rng = Math.random, player, enemy, maxSeconds = 3
     if (combat.playerHp <= 0) return finish("enemy", "player_hp_zero", combat);
     if (combat.time >= maxSeconds) break;
     if (seppukuRules.length > 0 && shouldTriggerSeppuku(combat, seppukuRules)) return finishSeppuku(combat);
+    if (combat.time === nextSpeedChange) continue;
 
     if (isDue(nextPendingEffect, combat.time)) {
       const beforeEffect = traceSnapshot(combat);
@@ -273,12 +284,14 @@ export function simulateFight({ rng = Math.random, player, enemy, maxSeconds = 3
       const beforeTick = traceSnapshot(combat);
       applyRegenerationTick(combat, fightRng);
       recordTraceDelta(combat, "tick", beforeTick, { tickType: "regen", deltaSeconds: 1 });
-      combat.nextRegenTick += combatTickDelay(REGEN_TICK_SECONDS, combat.assumptions);
+      if (steam) lastRegenTick = combat.time;
+      else combat.nextRegenTick += REGEN_TICK_SECONDS / initialSpeed;
     } else if (isDue(combat.nextStatusTick, combat.time)) {
       const beforeTick = traceSnapshot(combat);
       applyStatusTick(combat, fightRng);
       recordTraceDelta(combat, "tick", beforeTick, { tickType: "status", deltaSeconds: 1 });
-      combat.nextStatusTick += combatTickDelay(STATUS_TICK_SECONDS, combat.assumptions);
+      if (steam) lastStatusTick = combat.time;
+      else combat.nextStatusTick += STATUS_TICK_SECONDS / initialSpeed;
     } else if (nextSeppukuCheck !== combat.time) {
       break;
     }
@@ -323,6 +336,8 @@ function normalizeCombatant(input = {}) {
 
 function normalizeCombatAssumptions(input = {}) {
   const steam = input.steam ?? null;
+  const speedupMultiplier = positiveFiniteNumber(input.battleSpeedup?.multiplier, 1);
+  const remainingSeconds = positiveFiniteNumber(input.battleSpeedup?.remainingSeconds, 0);
   return {
     exportedEnemyStatusChanceScale: toFiniteNumber(
       input.exportedEnemyStatusChanceScale,
@@ -337,6 +352,7 @@ function normalizeCombatAssumptions(input = {}) {
       input.combatSpeedMultiplier,
       DEFAULT_COMBAT_ASSUMPTIONS.combatSpeedMultiplier,
     ),
+    battleSpeedup: steam && remainingSeconds > 0 ? { multiplier: speedupMultiplier, remainingSeconds } : null,
     flowStateActive: input.flowStateActive === true,
     flowStateLevel: Math.max(0, toFiniteNumber(input.flowStateLevel, DEFAULT_COMBAT_ASSUMPTIONS.flowStateLevel)),
     flowStateKnownTargetIds: normalizeStringSet(input.flowStateKnownTargetIds),
@@ -352,8 +368,10 @@ function finishSeppuku(combat) {
   return finish("enemy", "seppuku", combat);
 }
 
-function combatTickDelay(seconds, assumptions) {
-  return seconds / positiveFiniteNumber(assumptions?.combatSpeedMultiplier, 1);
+function combatSpeedAtTime({ combatSpeedMultiplier, battleSpeedup }, time) {
+  return battleSpeedup && time < battleSpeedup.remainingSeconds
+    ? positiveFiniteNumber(combatSpeedMultiplier * battleSpeedup.multiplier, combatSpeedMultiplier)
+    : combatSpeedMultiplier;
 }
 
 function flowStateFirstAttackDelayMultiplier(enemy, assumptions) {
@@ -729,6 +747,7 @@ function performAttack({ rng, combat, attackerSide, defenderSide }) {
       targetHp,
       combatantMaxHp(target),
       offenseTrace,
+      steam ? combat[`${attackerSide}Hp`] : null,
     );
     recordMechanic(combat, offenseTrace);
 
@@ -741,6 +760,7 @@ function performAttack({ rng, combat, attackerSide, defenderSide }) {
       parriedHits += 1;
       continue;
     }
+    damage = evasion.damage;
 
     const mitigationCapture = {};
     if (attackerSide === "player" && targetSide === "enemy" && offenseTrace.execute?.triggered) {
@@ -878,7 +898,8 @@ function performAttack({ rng, combat, attackerSide, defenderSide }) {
   }
 
   const lifesteal = stat(attacker, "lifesteal");
-  if (lifesteal > 0 && originalDefenderDamage > 0 && combat[`${attackerSide}Hp`] > 0) {
+  if (lifesteal > 0 && originalDefenderDamage > 0 && combat[`${attackerSide}Hp`] > 0
+    && !target.immunities.has("lifesteal")) {
     const requestedHealing = originalDefenderDamage * (lifesteal / 100);
     const healingTrace = healSide(combat, attackerSide, requestedHealing, "lifesteal");
     recordMechanic(combat, {
@@ -940,7 +961,7 @@ function baseAttackDamage(rng, attacker, attackerStatuses, trace, baseDamage = n
   return damage;
 }
 
-function applyOffensiveMultipliers(rng, damage, attacker, defender, defenderHp, defenderMaxHp, trace) {
+function applyOffensiveMultipliers(rng, damage, attacker, defender, defenderHp, defenderMaxHp, trace, steamAttackerHp) {
   let result = damage;
   const hpRatio = defenderMaxHp <= 0 ? 1 : defenderHp / defenderMaxHp;
   const execute = stat(attacker, "execute");
@@ -956,6 +977,27 @@ function applyOffensiveMultipliers(rng, damage, attacker, defender, defenderHp, 
         before: roundTraceNumber(before),
         after: roundTraceNumber(result),
       };
+    }
+  }
+
+  if (steamAttackerHp != null) {
+    const maxHp = combatantMaxHp(attacker);
+    const attackerHpRatio = maxHp <= 0 ? 1 : steamAttackerHp / maxHp;
+    const berserk = stat(attacker, "berserk");
+    if (attackerHpRatio <= 0.25 && berserk > 100 && !defender.immunities.has("berserk")) {
+      const before = result;
+      const multiplier = berserk / 100;
+      result *= multiplier;
+      if (trace) {
+        trace.berserk = {
+          triggered: true,
+          hpRatio: roundTraceNumber(attackerHpRatio),
+          threshold: 0.25,
+          multiplier: roundTraceNumber(multiplier),
+          before: roundTraceNumber(before),
+          after: roundTraceNumber(result),
+        };
+      }
     }
   }
 
@@ -1144,17 +1186,18 @@ function applyParalysisExposure(combat, side, damage) {
 }
 
 function resolveEvasion({ rng, combat, attackerSide, defenderSide, damage, isSurreal }) {
-  if (isSurreal) return { type: "hit" };
+  if (isSurreal) return { type: "hit", damage };
 
   const attacker = combat[attackerSide];
   const defender = combat[defenderSide];
+  const steam = Boolean(combat.assumptions.steam);
 
   const dodgeChance = stat(defender, "dodge");
   const dodgeSuccess = rollPercent(rng, dodgeChance, "evasion.dodge");
   if (dodgeSuccess) {
     const accuracyChance = stat(attacker, "accuracy");
     const accuracySuccess = rollPercent(rng, accuracyChance, "evasion.dodgeAccuracy");
-    if (!accuracySuccess) {
+    if (!accuracySuccess || steam) {
       recordMechanic(combat, {
         type: "evasion",
         mode: "dodge",
@@ -1165,10 +1208,12 @@ function resolveEvasion({ rng, combat, attackerSide, defenderSide, damage, isSur
         dodgeSuccess,
         accuracyChance: roundTraceNumber(accuracyChance),
         accuracySuccess,
-        outcome: "dodge",
+        outcome: accuracySuccess ? "bypassed" : "dodge",
+        ...(accuracySuccess && { outgoingDamage: roundTraceNumber(damage * 1.5) }),
       });
-      return { type: "dodge" };
     }
+    if (!accuracySuccess) return { type: "dodge" };
+    if (steam) damage *= 1.5;
   }
 
   const parryChance = stat(defender, "parry");
@@ -1176,9 +1221,11 @@ function resolveEvasion({ rng, combat, attackerSide, defenderSide, damage, isSur
   if (parrySuccess) {
     const accuracyChance = stat(attacker, "accuracy");
     const accuracySuccess = rollPercent(rng, accuracyChance, "evasion.parryAccuracy");
-    if (accuracySuccess) return { type: "hit" };
+    if (accuracySuccess && !steam) return { type: "hit", damage };
     const multiplier = vulnerabilityMultiplier(attacker, "parryDmg", "parryDamage");
-    const parryDamage = damage * (stat(defender, "parryDmg") / 100) * multiplier;
+    const parryDamage = accuracySuccess || attacker.immunities.has("parryDmg")
+      ? 0
+      : damage * (stat(defender, "parryDmg") / 100) * multiplier;
     const appliedParryDamage = applyDamageToSide(combat, attackerSide, parryDamage, rng, "parry", {
       tags: ["parry"],
     });
@@ -1193,12 +1240,13 @@ function resolveEvasion({ rng, combat, attackerSide, defenderSide, damage, isSur
       accuracyChance: roundTraceNumber(accuracyChance),
       accuracySuccess,
       parryDamage: roundTraceNumber(appliedParryDamage),
-      outcome: "parry",
+      outcome: accuracySuccess ? "bypassed" : "parry",
+      ...(accuracySuccess && { outgoingDamage: roundTraceNumber(damage * 1.5) }),
     });
-    return { type: "parry", damage: parryDamage };
+    return accuracySuccess ? { type: "hit", damage: damage * 1.5 } : { type: "parry" };
   }
 
-  return { type: "hit" };
+  return { type: "hit", damage };
 }
 
 function applyReactiveDamage({ rng, combat, attackerSide, defenderSide, isSurreal }) {
@@ -1211,7 +1259,9 @@ function applyReactiveDamage({ rng, combat, attackerSide, defenderSide, isSurrea
   const counterChance = stat(defender, "counter");
   const counterSuccess = rollPercent(rng, counterChance, "reactive.counter");
   if (counterSuccess && !attacker.immunities.has("counter")) {
-    const delaySeconds = combat.assumptions.steam ? combatTickDelay(COUNTER_DELAY_SECONDS, combat.assumptions) : COUNTER_DELAY_SECONDS;
+    const delaySeconds = combat.assumptions.steam
+      ? COUNTER_DELAY_SECONDS / combatSpeedAtTime(combat.assumptions, combat.time)
+      : COUNTER_DELAY_SECONDS;
     const scheduledTime = combat.time + delaySeconds;
     combat.pendingEffects.push({
       type: "counter",
@@ -1294,6 +1344,7 @@ function performCounterEffect({ rng, combat, effect }) {
     combat[`${defenderSide}Hp`],
     combatantMaxHp(defender),
     offenseTrace,
+    combat.assumptions.steam ? combat[`${attackerSide}Hp`] : null,
   );
   recordMechanic(combat, offenseTrace);
 
@@ -1312,6 +1363,7 @@ function performCounterEffect({ rng, combat, effect }) {
     });
     return { type: "counter", attackerSide, defenderSide, damage: 0, outcome: evasion.type };
   }
+  damage = evasion.damage;
 
   const mitigationCapture = {};
   damage = applyDefensiveMitigation(rng, damage, attacker, defender, defenderStatuses, false, {
@@ -1762,6 +1814,7 @@ function normalizeDamageTags(source, tags = [], overkillDamage = 0) {
 function directDamageTags(offenseTrace = {}, mitigationTrace = {}, directModifierTrace = {}, electrocuteTrace = null) {
   const tags = ["direct"];
   if (offenseTrace.execute?.triggered) tags.push("execute");
+  if (offenseTrace.berserk?.triggered) tags.push("berserk");
   if (offenseTrace.crit?.success && offenseTrace.crit.applied !== false) tags.push("crit");
   if (offenseTrace.goldenLuck?.success) tags.push("goldenLuck");
   if (directModifierTrace?.frailty) tags.push("frailty");

@@ -2,7 +2,7 @@ import { analyzeBuildAdvice } from "./build-advisor.js";
 import { runMonteCarlo } from "./combat.js";
 import { combatAssumptionsFromSave } from "./combat-assumptions.js";
 import { enemyFromSketch } from "./combat/steam-encounter.js";
-import { createEconomyPlan } from "./economy.js";
+import { createEconomyPlan, resolveSoftcapSeconds } from "./economy.js";
 import { applySketchRewards, steamCurrencyPerkWinsRemaining, steamSketchRewards } from "./rewards.js";
 import { currencyRewardAmount, simulateRoute } from "./route.js";
 import { normalizeStats, toNumber } from "./save.js";
@@ -125,6 +125,7 @@ export function createStrategyPlan({
   goalCurrencies = {},
   targetWinRate = null,
   softcapSeconds = null,
+  referenceTimeMs = Date.now(),
   maxSoftcapWaitSeconds = DEFAULT_MAX_SOFTCAP_WAIT_SECONDS,
   farmSeconds = DEFAULT_FARM_SECONDS,
   boosterCandidates = [],
@@ -187,7 +188,7 @@ export function createStrategyPlan({
   });
   const softcap = decideSoftcapOrRedraw({
     state,
-    softcapSeconds,
+    seconds: resolveSoftcapSeconds(state, softcapSeconds, referenceTimeMs),
     maxSoftcapWaitSeconds,
     currentRows,
     runEV,
@@ -282,6 +283,9 @@ export function createStrategyPlan({
   });
   const economy = createEconomyPlan({
     state,
+    baseStats: stats,
+    referenceTimeMs,
+    softcapSeconds,
     sketches,
     currentRows,
     targetStatWeights,
@@ -940,8 +944,7 @@ function estimateRunEV({ sketches, state, currentRows, targetStatWeights, farmSe
   };
 }
 
-function decideSoftcapOrRedraw({ state, softcapSeconds, maxSoftcapWaitSeconds, currentRows, runEV }) {
-  const seconds = softcapSeconds == null ? detectSoftcapSeconds(state) : toNumber(softcapSeconds);
+function decideSoftcapOrRedraw({ state, seconds, maxSoftcapWaitSeconds, currentRows, runEV }) {
   if (seconds == null || !Number.isFinite(seconds)) {
     return {
       decision: "unknown",
@@ -953,6 +956,9 @@ function decideSoftcapOrRedraw({ state, softcapSeconds, maxSoftcapWaitSeconds, c
   }
 
   const waitValue = estimatePassiveWaitValue({ state, seconds });
+  if (seconds === 0) {
+    return { decision: "softcap_reached", reason: "softcap_time_elapsed", secondsToSoftcap: 0, waitValue: 0, runValue: runEV.totalValue };
+  }
   const bestWinRate = Math.max(0, ...currentRows.map((row) => toNumber(row.winRate)));
   if (seconds <= maxSoftcapWaitSeconds) {
     return {
@@ -1438,16 +1444,6 @@ function quintessencePerSecond(state) {
     ?? state.pendingQuintessencePerSecond
     ?? state.conceptualSynthesis?.quintessencePerSecond,
   );
-}
-
-function detectSoftcapSeconds(state) {
-  const direct = state.secondsToSoftcap ?? state.softcapSeconds ?? state.nextSoftcapSeconds;
-  if (direct != null) return toNumber(direct);
-  const timestamp = state.nextSoftcapAt ?? state.softcapAt;
-  const parsed = timestamp == null ? NaN : Number(timestamp);
-  if (!Number.isFinite(parsed)) return null;
-  const now = Date.now();
-  return parsed > now ? (parsed - now) / 1000 : parsed;
 }
 
 function estimatePassiveWaitValue({ state, seconds }) {

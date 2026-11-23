@@ -1,5 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { estimateRedrawOdds } from "../src/redraw-planner.js";
+import { simulateRoute } from "../src/route.js";
 
 import {
   createTargetOptions,
@@ -50,6 +52,39 @@ const sketches = {
 function encodeSave(state) {
   return Buffer.from(JSON.stringify({ version: 52, state }), "utf8").toString("base64");
 }
+
+test("assumed victories credit the strategy wallet, boosters and perk wins just like a route", () => {
+  const state = { saveProfile: "steam", playerStats: { maxHp: 100, attack: 10, attackSpeed: 1000 },
+    currencies: { Graphite: 20 }, availableSketches: ["farm_a"], boostedSketchIds: ["farm_a"],
+    fundamentals: { maxVictories: 3 }, multiverse: { firstClearPerkIds: ["first-ten-wins-currency"] },
+    currentUniverseBoostedCurrencyWins: 9 };
+  const expected = simulateRoute({ sketches, state, routeIds: ["farm_a", "farm_a"] });
+  const next = simulateRoute({ sketches, state, routeIds: ["farm_a", "farm_a", "farm_a"] }).steps[2];
+  const analysis = createWebAnalysis({ save: { version: 86, state }, sketches, targetId: "duct", assumedVictories: { farm_a: 2 },
+    strategyOptions: { goalCurrency: "Graphite:100" }, trials: 1, maxSeconds: 5 });
+  assert.equal(analysis.finalStats.attack, expected.finalStats.attack);
+  const wallet = analysis.strategicPlan.approach.resources.currencies.Graphite;
+  assert.equal(wallet.current, expected.currencies.Graphite);
+  assert.equal(wallet.ready, true);
+  assert.deepEqual(analysis.activeDeltas.farm_a.currencyRewards, next.currencyRewards);
+  assert.deepEqual(analysis.activeDeltas.farm_a.statRewards, next.statRewards);
+  assert.equal(state.currencies.Graphite, 20);
+});
+
+test("wishlist uses per-sketch redraw probabilities with saved rarity chances, capacity and minimums", () => {
+  const state = { playerStats: { maxHp: 100, attack: 10, attackSpeed: 1000 }, availableSketches: ["farm_a"],
+    runTotalSketchCountsByRarity: { opus: 1 }, rarityChances: { opus: 0, masterpiece: 0 } };
+  const options = { sketches, targetId: "duct", seed: "wishlist", trials: 1, maxSeconds: 5 };
+  const share = () => createWebAnalysis({ ...options, save: { state } }).rollWishlist.items.find((item) => item.id === "farm_a").rollShare;
+  assert.equal(share(), 0);
+  state.rarityChances.opus = 45;
+  const expected = estimateRedrawOdds({ sketches, state, targetIds: ["farm_a"], seed: "wishlist:wishlist:redraw", trials: 500 });
+  assert.equal(share(), expected.targetRates.farm_a);
+  state.targetedRedrawMins = { opus: 1 };
+  assert.equal(share(), 1);
+  state.targetedRedrawMins = { opus: 2 };
+  assert.equal(share(), null);
+});
 
 test("createWebAnalysis decodes save text, applies checked route sketches and returns UI sections", () => {
   const saveText = encodeSave({

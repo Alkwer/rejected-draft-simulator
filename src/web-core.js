@@ -4,8 +4,8 @@ import { combatAssumptionsFromSave } from "./combat-assumptions.js";
 import { createDiagnosticReport, createModelAssumptionComparisons } from "./diagnostics.js";
 import { createFightTrace } from "./fight-trace.js";
 import { createCombatReport } from "./report.js";
-import { applySketchRewards, steamCurrencyPerkWinsRemaining } from "./rewards.js";
-import { simulateRoute } from "./route.js";
+import { estimateRedrawOdds, parseMinimums } from "./redraw-planner.js";
+import { projectVictories, simulateRoute } from "./route.js";
 import { parseRouteSpecs } from "./route-options.js";
 import { analyzeSave } from "./save-analysis.js";
 import { decodeSaveText, toNumber } from "./save.js";
@@ -40,6 +40,7 @@ export function createWebAnalysis({
   trials = "auto",
   maxSeconds = 300,
   seed = "web-ui",
+  referenceTimeMs,
   strategyOptions = {},
   routeIds = [],
   hiddenSketchIds = [],
@@ -79,12 +80,7 @@ export function createWebAnalysis({
     state: save.state,
   });
   const assumedRouteIds = expandAssumedVictories(assumedVictoryPlan);
-  const finalStats = applyAssumedVictories({
-    baseStats,
-    sketches,
-    state: save.state,
-    assumedVictoryIds: assumedRouteIds,
-  });
+  const { stats: finalStats, state: rewardState } = projectVictories({ baseStats, sketches, state, ids: assumedRouteIds });
   const trialsSetting = parseTrialsSetting(trials, {
     defaultTrials: 200,
     initialTrials: 200,
@@ -151,19 +147,17 @@ export function createWebAnalysis({
     seed,
     assumptions: combatAssumptions,
   });
-  const rewardState = stateAfterVictories(state, assumedRouteIds, sketches);
   const pairedOptions = {
     target, trialsSetting: auxiliaryTrialsSetting, maxSeconds: targetMaxSeconds,
     seed: `${seed}:reward-impact`, assumptions: combatAssumptions,
   };
   const rewardComparison = compareSketchRewards({ state: rewardState, stats: finalStats, sketches, pairedOptions });
   const route = normalizeIds(routeIds);
-  const routeState = route.length ? stateAfterVictories(rewardState, route, sketches) : rewardState;
+  const projectedRoute = projectVictories({ baseStats: finalStats, sketches, state: rewardState, ids: route });
   const routeComparison = route.length ? compareSketchRewards({
-    state: routeState, sketches, pairedOptions,
-    stats: applyAssumedVictories({ baseStats: finalStats, sketches, state: rewardState, assumedVictoryIds: route }),
+    state: projectedRoute.state, sketches, pairedOptions, stats: projectedRoute.stats,
   }) : rewardComparison;
-  const activeDeltas = createActiveDeltas({ sketches, activeSketches, state: routeState, ...routeComparison });
+  const activeDeltas = createActiveDeltas({ activeSketches, state: projectedRoute.state, ...routeComparison });
   const routePreview = createRoutePreview({
     sketches,
     state: save.state,
@@ -188,6 +182,7 @@ export function createWebAnalysis({
     assumptions: combatAssumptions,
   });
   const strategicPlan = createStrategyPlan({
+    referenceTimeMs,
     sketches,
     state: rewardState,
     assumptions: combatAssumptions,
@@ -462,43 +457,25 @@ function sourceRank(source) {
   return source === "key_target" ? 0 : 1;
 }
 
-function stateAfterVictories(state, ids, sketches) {
-  if (!ids.length) return state;
-  const sketchVictories = { ...state.sketchVictories };
-  const sketchRunVictories = { ...state.sketchRunVictories };
-  let wins = 0;
-  for (const id of ids) {
-    const previous = toNumber(sketchVictories[id]);
-    if (!sketches[id] || remainingSketchVictories(state, id, previous) <= 0) continue;
-    sketchVictories[id] = previous + 1;
-    sketchRunVictories[id] = toNumber(sketchRunVictories[id]) + 1;
-    wins += 1;
-  }
-  const perkWins = Math.min(wins, steamCurrencyPerkWinsRemaining(state));
-  return { ...state, sketchVictories, sketchRunVictories, ...(perkWins && {
-    currentUniverseBoostedCurrencyWins: toNumber(state.currentUniverseBoostedCurrencyWins) + perkWins,
-  }) };
-}
-
 function compareSketchRewards({ state, stats, sketches, pairedOptions }) {
   const rewardBaseline = simulateTarget({ ...pairedOptions, player: stats });
   const results = new Map();
   function simulateAfterReward(id) {
     if (!results.has(id)) {
-      const next = applyAssumedVictories({ baseStats: stats, sketches, state, assumedVictoryIds: [id] });
+      const { stats: next, lastReward } = projectVictories({ baseStats: stats, sketches, state, ids: [id] });
       const changed = sketches[id].rewards?.some(({ statName }) => next[statName] !== stats[statName]);
-      results.set(id, changed ? simulateTarget({ ...pairedOptions, player: next }) : rewardBaseline);
+      results.set(id, { simulation: changed ? simulateTarget({ ...pairedOptions, player: next }) : rewardBaseline, reward: lastReward });
     }
     return results.get(id);
   }
   return { rewardBaseline, simulateAfterReward };
 }
 
-function createActiveDeltas({ sketches, activeSketches, state, rewardBaseline, simulateAfterReward }) {
+function createActiveDeltas({ activeSketches, state, rewardBaseline, simulateAfterReward }) {
   const result = {};
   for (const item of activeSketches) {
     if (remainingSketchVictories(state, item.id) <= 0) continue;
-    const nextResult = simulateAfterReward(item.id);
+    const { simulation: nextResult, reward } = simulateAfterReward(item.id);
     result[item.id] = {
       id: item.id,
       name: item.name,
@@ -508,8 +485,8 @@ function createActiveDeltas({ sketches, activeSketches, state, rewardBaseline, s
       p90Seconds: round(nextResult.p90Seconds ?? 0),
       p90Censored: nextResult.p90Censored,
       p90Delta: nextResult.p90Censored || rewardBaseline.p90Censored ? null : round(nextResult.p90Seconds - rewardBaseline.p90Seconds),
-      statRewards: sketches[item.id].rewards ?? [],
-      currencyRewards: sketches[item.id].currencyRewards ?? [],
+      statRewards: reward.statRewards,
+      currencyRewards: reward.currencyRewards,
     };
   }
   return result;
@@ -579,7 +556,7 @@ function createRollWishlist({
 
   for (const candidate of preselected) {
     const sketch = candidate.sketch;
-    const targetResult = simulateAfterReward(sketch.id);
+    const { simulation: targetResult, reward } = simulateAfterReward(sketch.id);
     const targetDelta = round((targetResult.winRate ?? 0) - (currentResult.winRate ?? 0));
     if (targetDelta <= 0 && candidate.source !== "active_run") continue;
 
@@ -594,7 +571,6 @@ function createRollWishlist({
     const candidateWinRate = round(candidateResult.winRate ?? 0);
     const feasibility = candidateWinRate >= 0.75 ? "safe" : candidateWinRate >= 0.35 ? "uncertain" : "risky";
     const rarityPoolSize = rarityPoolSizes[sketch.rarity] ?? 0;
-    const rollShare = rarityPoolSize > 0 ? round(1 / rarityPoolSize) : 0;
     const priorityScore = round(Math.max(0, targetDelta) * (0.15 + candidateWinRate * 0.85) * (1 + Math.min(1, candidate.rewardScore / 100)));
 
     rows.push({
@@ -612,10 +588,9 @@ function createRollWishlist({
       p90Seconds: round(targetResult.p90Seconds ?? 0),
       p90Censored: targetResult.p90Censored,
       p90Delta: targetResult.p90Censored || currentResult.p90Censored ? null : round((targetResult.p90Seconds ?? 0) - (currentResult.p90Seconds ?? 0)),
-      rollShare,
       rarityPoolSize,
-      statRewards: summarizeRewardList(sketch.rewards, "statName"),
-      currencyRewards: summarizeRewardList(sketch.currencyRewards, "name"),
+      statRewards: summarizeRewardList(reward.statRewards, "statName"),
+      currencyRewards: summarizeRewardList(reward.currencyRewards, "name"),
     });
   }
 
@@ -624,12 +599,21 @@ function createRollWishlist({
     || b.candidateWinRate - a.candidateWinRate
     || a.name.localeCompare(b.name));
 
+  const items = rows.slice(0, ROLL_WISHLIST_RESULT_LIMIT);
+  if (items.length) {
+    const odds = estimateRedrawOdds({ sketches, state, minimums: parseMinimums(state.targetedRedrawMins),
+      targetIds: items.map(({ id }) => id), seed: `${seed}:wishlist:redraw`, trials: 500 });
+    const limits = odds.targetedRedraw;
+    const hasMinimums = Object.values(odds.minimums).some((value) => value > 0);
+    const feasible = odds.totalSlots > 0 && !limits.infeasibleReasons.length && (!hasMinimums || limits.validMinimumChance);
+    for (const item of items) item.rollShare = feasible ? odds.targetRates[item.id] : null;
+  }
   return {
     baselineWinRate,
     scanned: preselected.length,
     candidateCount: candidates.length,
     resultLimit: ROLL_WISHLIST_RESULT_LIMIT,
-    items: rows.slice(0, ROLL_WISHLIST_RESULT_LIMIT),
+    items,
     excluded,
   };
 }
@@ -640,41 +624,25 @@ function createRoutePreview({ sketches, state, baseStats, routeIds, targetId, tr
     return { routeIds: [], steps: [], finalStats: null, currencies: null };
   }
 
-  const trials = fixedStrategyTrials(trialsSetting);
-  const steps = [];
-  let latest = null;
-  for (let index = 0; index < ids.length; index += 1) {
-    latest = simulateRoute({
-      sketches,
-      state,
-      assumptions,
-      baseStats,
-      routeIds: ids.slice(0, index + 1),
-      targetId,
-      trials,
-      maxSeconds,
-      seed: `${seed}:route-preview`,
-    });
-    const step = latest.steps.at(-1) ?? { id: ids[index], status: "missing" };
-    const simulation = latest.target?.simulation ?? {};
-    steps.push({
-      index: index + 1,
-      id: step.id ?? ids[index],
-      name: step.name ?? sketches[ids[index]]?.name ?? ids[index],
-      status: step.status,
-      targetWinRate: round(simulation.winRate ?? 0),
-      p90Seconds: round(simulation.p90Seconds ?? 0),
-      p90Censored: simulation.p90Censored,
-      finalStats: summarizeStats(latest.finalStats),
-      currencies: summarizeCurrencies(latest.currencies),
-    });
-  }
+  const route = simulateRoute({ sketches, state, assumptions, baseStats, routeIds: ids, targetId,
+    trials: fixedStrategyTrials(trialsSetting), maxSeconds, seed: `${seed}:route-preview`, includeStepForecasts: true });
+  const steps = route.steps.map((step, index) => ({
+    index: index + 1,
+    id: step.id,
+    name: step.name ?? step.id,
+    status: step.status,
+    targetWinRate: round(step.forecast.winRate ?? 0),
+    p90Seconds: round(step.forecast.p90Seconds ?? 0),
+    p90Censored: step.forecast.p90Censored,
+    finalStats: summarizeStats(step.forecast.finalStats),
+    currencies: summarizeCurrencies(step.forecast.currencies),
+  }));
 
   return {
     routeIds: ids,
     steps,
-    finalStats: summarizeStats(latest?.finalStats ?? {}),
-    currencies: summarizeCurrencies(latest?.currencies ?? {}),
+    finalStats: steps.at(-1).finalStats,
+    currencies: steps.at(-1).currencies,
   };
 }
 
@@ -740,20 +708,6 @@ function percentLabel(value) {
 function secondsLabel(value, censored = false) {
   const number = Number(value);
   return Number.isFinite(number) ? `${censored ? "≥" : ""}${number.toFixed(1)}s` : "--";
-}
-
-function applyAssumedVictories({ baseStats, sketches, state, assumedVictoryIds }) {
-  if (assumedVictoryIds.length === 0) return baseStats;
-  return applySketchRewards({
-    state,
-    baseStats,
-    sketches,
-    defeatedIds: assumedVictoryIds,
-    boostedIds: new Set(state?.boostedSketchIds ?? []),
-    rewardDecay: toNumber(state?.fundamentals?.rewardDecay, 1),
-    rewardBoosterEffect: toNumber(state?.fundamentals?.rewardBoosterEffect, 50),
-    existingVictories: state?.sketchVictories ?? {},
-  });
 }
 
 function normalizeAssumedVictories({ assumedVictories, assumedVictoryIds, sketches, state }) {

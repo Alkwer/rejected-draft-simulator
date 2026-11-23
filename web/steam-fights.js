@@ -12,9 +12,10 @@ const watchMessages = {
   superseded: "A newer Hyena Hulk forecast was saved for this slot before a result was found.",
 };
 const numbers = new Intl.NumberFormat(undefined, { maximumFractionDigits: 2 });
+const timeNumbers = new Intl.NumberFormat(undefined, { maximumFractionDigits: 3 });
 const percentages = new Intl.NumberFormat(undefined, { style: "percent", maximumFractionDigits: 2 });
 const dateTime = new Intl.DateTimeFormat(undefined, { dateStyle: "short", timeStyle: "medium" });
-const seconds = (value) => `${numbers.format(value)} s`;
+const seconds = (value) => `${timeNumbers.format(value)} s`;
 const quantile = (value, censored) => `${censored ? "≥ " : ""}${seconds(value)}`;
 let current = null;
 let captureId = null;
@@ -75,10 +76,14 @@ function updateWatch(fight, monitorStatus) {
 }
 
 function showFight(fight, monitorStatus) {
+  const { forecast, observation } = fight;
+  const { duration, probabilities, assumptions, enemy, player } = forecast;
+  const warnings = forecast.warnings ?? [];
+  if (!duration || !probabilities || !assumptions?.steam || !enemy || !player || !Array.isArray(warnings)) {
+    throw new Error(`Could not display saved fight ${fight.id}.`);
+  }
   if (current?.id !== fight.id) byId("manualResult").open = !monitorsHyena(fight) && !fight.observation;
   current = fight;
-  const { forecast, observation } = fight;
-  const { duration, probabilities, assumptions, enemy } = forecast;
   const picker = byId("fightPicker");
   const option = pickerOption(fight);
   const previous = [...picker.options].find((item) => item.value === fight.id);
@@ -96,13 +101,13 @@ function showFight(fight, monitorStatus) {
   byId("fightTitle").textContent = forecast.target.name;
   byId("resultState").textContent = observation ? "Result recorded" : "Awaiting result";
   byId("captureInfo").textContent = `${sourceLabel(fight.source)} · ${dateTime.format(new Date(fight.capturedAt))}`;
-  const warnings = byId("forecastWarnings");
-  warnings.replaceChildren(...(forecast.warnings ?? []).map(({ message }) => {
+  const forecastWarnings = byId("forecastWarnings");
+  forecastWarnings.replaceChildren(...warnings.map(({ message }) => {
     const item = document.createElement("li");
     item.textContent = message;
     return item;
   }));
-  warnings.hidden = warnings.childElementCount === 0;
+  forecastWarnings.hidden = forecastWarnings.childElementCount === 0;
   byId("forecastOdds").textContent = `Victory ${percentages.format(probabilities.win)} · Defeat ${percentages.format(probabilities.loss)} · At limit ${percentages.format(probabilities.timeout)}`;
   byId("forecastMedian").textContent = `${quantile(duration.medianSeconds, duration.medianCensored)} median`;
   byId("forecastRange").textContent = `${quantile(duration.p10Seconds, duration.p10Censored)} – ${quantile(duration.p90Seconds, duration.p90Censored)}`;
@@ -120,13 +125,18 @@ function showFight(fight, monitorStatus) {
     byId("actualTime").textContent = `${prefix}${seconds(elapsedSeconds)}${delta}`;
     byId("actualRange").textContent = rangeLabels[rangeStatus];
   }
+  const baseSpeed = assumptions.combatSpeedMultiplier;
+  const boost = assumptions.battleSpeedup;
+  const speedLabel = boost
+    ? `${numbers.format(baseSpeed * boost.multiplier)}× for ${seconds(boost.remainingSeconds)}, then ${numbers.format(baseSpeed)}×`
+    : `${numbers.format(baseSpeed)}×`;
   const fields = [
     ["Game patch", fight.gameVersion ?? "Unknown"],
     ["Save schema", forecast.saveVersion ?? "Unknown"],
     ["Catalog patch / build", [forecast.dataMetadata?.gameVersion, forecast.dataMetadata?.buildId].filter(Boolean).join(" / ") || "Unknown"],
     ["Player HP", numbers.format(forecast.player.maxHp)],
     ["Player attack", numbers.format(forecast.player.attack)],
-    ["Combat speed", `${numbers.format(assumptions.combatSpeedMultiplier)}×`],
+    ["Combat speed", speedLabel],
     ["Universe", assumptions.steam.universeId],
   ];
   if (Number.isFinite(fight.gameSavedAt) && Number.isFinite(new Date(fight.gameSavedAt).getTime())) {
@@ -203,17 +213,26 @@ async function loadTargets() {
 
 async function loadSaved() {
   const { fights } = await api(endpoint);
+  const readable = fights.filter((fight) => !fight.unreadable);
+  const unreadable = fights.filter((fight) => fight.unreadable);
+  byId("unreadableFightIds").replaceChildren(...unreadable.map(({ id }) => {
+    const item = document.createElement("li");
+    item.textContent = id;
+    return item;
+  }));
+  byId("unreadableFights").hidden = unreadable.length === 0;
   const picker = byId("fightPicker");
-  picker.replaceChildren(...fights.map(pickerOption));
+  picker.replaceChildren(...readable.map(pickerOption));
   const linked = new URL(location.href).searchParams.get("fight");
-  const id = fights.find((fight) => fight.id === linked)?.id ?? fights[0]?.id;
+  const id = readable.find((fight) => fight.id === linked)?.id ?? readable[0]?.id;
   if (id) {
     byId("emptyFights").hidden = true;
     byId("fightPickerLabel").hidden = false;
     picker.value = id;
     await loadFight(id);
-  } else byId("emptyFights").textContent = "Saved forecasts and their results will appear here.";
-  if (linked && linked !== id) status("resultStatus", "The linked fight is unavailable.", true);
+  } else byId("emptyFights").textContent = unreadable.length
+    ? "No readable saved fights." : "Saved forecasts and their results will appear here.";
+  if (linked && !fights.some((fight) => fight.id === linked)) status("resultStatus", "The linked fight is unavailable.", true);
 }
 
 byId("logSource").addEventListener("change", () => {

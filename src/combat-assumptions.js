@@ -3,25 +3,33 @@ import { steamEncounterContext } from "./combat/steam-encounter.js";
 
 export function combatAssumptionsFromSave(save = {}) {
   const state = save?.state ?? save ?? {};
+  const steam = isFullSteamSave(save);
+  const battleSpeedup = steam && battleSpeedupFromState(state);
   return {
-    combatSpeedMultiplier: combatSpeedMultiplierFromState(state),
+    combatSpeedMultiplier: steam ? baseCombatSpeedMultiplier(state) : combatSpeedMultiplierFromState(state),
+    ...(battleSpeedup && { battleSpeedup }),
     flowStateActive: flowStateActiveFromState(state),
     flowStateLevel: positiveFiniteOrDefault(state.fundamentals?.flowStateLevel, 0),
     flowStateKnownTargetIds: normalizeStringList(state.glossaryUnlocks),
-    ...(isFullSteamSave(save) && { steam: steamEncounterContext(state) }),
+    ...(steam && { steam: steamEncounterContext(state) }),
   };
 }
 
 export function combatSpeedMultiplierFromState(state = {}) {
+  const baseSpeed = baseCombatSpeedMultiplier(state);
+  return positiveFiniteOrDefault(baseSpeed * (battleSpeedupFromState(state)?.multiplier ?? 1), 1);
+}
+
+function baseCombatSpeedMultiplier(state) {
   const baseSpeed = positiveFiniteOrDefault(state.fundamentals?.timeAcceleration, 1);
-  const trainingState = state.trainingState ?? {};
-  const isTraining = trainingState.isActive === true;
-  const fastForward = trainingState.fastForward === true;
-  const battleSpeedupActive = !isTraining && toNumber(state.activeBattleSpeedupRemainingSeconds, 0) > 0;
-  const combatSpeedMultiplier = baseSpeed
-    * (isTraining && fastForward ? 10 : 1)
-    * (battleSpeedupActive ? positiveFiniteOrDefault(state.fundamentals?.battleSpeedupRate, 2) : 1);
-  return positiveFiniteOrDefault(combatSpeedMultiplier, 1);
+  const training = state.trainingState;
+  return positiveFiniteOrDefault(baseSpeed * (training?.isActive === true && training.fastForward === true ? 10 : 1), 1);
+}
+
+function battleSpeedupFromState(state) {
+  const remainingSeconds = positiveFiniteOrDefault(state.activeBattleSpeedupRemainingSeconds, 0);
+  if (state.trainingState?.isActive === true || remainingSeconds <= 0) return null;
+  return { multiplier: positiveFiniteOrDefault(state.fundamentals?.battleSpeedupRate, 2), remainingSeconds };
 }
 
 export function flowStateActiveFromState(state = {}) {
