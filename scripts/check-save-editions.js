@@ -123,6 +123,9 @@ try {
   await page.locator("#economyForecastList").getByText(/full route \(battle only\)/).waitFor();
   for (const width of [1440, 768, 390]) {
     await page.setViewportSize({ width, height: 900 });
+    const planner = page.getByRole("button", { name: "Planner", exact: true });
+    if (await planner.isVisible()) await planner.click();
+    assert.ok(await page.locator("#economyForecastList").isVisible());
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth), width, `Strategy overflows at ${width}px`);
   }
   await page.setViewportSize({ width: 1440, height: 900 });

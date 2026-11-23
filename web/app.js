@@ -959,9 +959,10 @@ function renderEconomyPlan(economy, runEV) {
       const ev = runEV.currencies[item.currency];
       const fullRoute = ev?.passiveExpectedPerRun === null ? "full route (battle only)" : "full route";
       const window = runEV.windowTimingIncomplete ? "timed rewards in" : "in";
+      const goal = item.goal == null ? "" : ` | goal ${formatNumber(item.goal)} | runs ${nullableNumber(item.runsToGoal)}`;
       return {
         title: item.currency,
-        detail: `${formatNumber(ev?.expected ?? 0)} ${window} ${seconds(runEV.windowSeconds)} | ${formatNumber(item.expectedPerRun)} ${fullRoute} | goal ${formatNumber(item.goal)} | ${formatNumber(item.perSecond)}/s | runs ${nullableNumber(item.runsToGoal)}`,
+        detail: `${formatNumber(ev?.expected ?? 0)} ${window} ${seconds(runEV.windowSeconds)} | ${formatNumber(item.expectedPerRun)} ${fullRoute} | ${formatNumber(item.perSecond)}/s${goal}`,
       };
     }),
   );
