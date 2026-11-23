@@ -3,6 +3,10 @@ import { STEAM_DECAY_IMMUNE_STATS } from "./combat/steam-universes.js";
 import { isFullSteamSave, toNumber } from "./save.js";
 import { remainingSketchVictories } from "./victory-limit.js";
 
+// Final effective player-stat floor in Steam build 26823208.
+const STEAM_MIN_ATTACK_INTERVAL_MS = 500;
+export class RewardProjectionError extends RangeError {}
+
 export function applySketchRewards({
   baseStats,
   sketches,
@@ -43,8 +47,13 @@ export function applySketchRewards({
 
 export function applyStatReward(statName, currentValue, amount, steam = false) {
   const nextValue = currentValue + amount;
+  if (!Number.isFinite(nextValue)) throw new RewardProjectionError(`Projected ${statName} exceeds the numeric range.`);
   if (statName !== "attackSpeed") return Math.max(0, nextValue);
-  return steam && currentValue <= 0 ? Math.min(0, nextValue) : nextValue;
+  if (!steam) return nextValue;
+  // Accumulated battle rewards are non-positive offsets. Effective player stats are intervals.
+  if (currentValue <= 0) return Math.min(0, nextValue);
+  // Preserve faster imported intervals when modeling a beneficial or zero reward.
+  return Math.max(Math.min(currentValue, STEAM_MIN_ATTACK_INTERVAL_MS), nextValue);
 }
 
 export function steamSketchRewards({

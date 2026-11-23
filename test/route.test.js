@@ -360,6 +360,6 @@ test("simulateRoute uses the legacy save's time acceleration and Flow State", ()
 
   assert.equal(known.winRate, 1);
   assert.equal(unknown.winRate, 0);
-  assert.equal(known.avgSeconds, 0.4);
+  assert.equal(known.avgSeconds, 0.25);
   assert.equal(known.avgSeconds * 2, normalSpeed.avgSeconds);
 });

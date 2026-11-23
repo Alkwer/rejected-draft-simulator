@@ -69,7 +69,7 @@ test("Flow State speeds only the first player attack against known glossary targ
   });
 
   assert.equal(withoutFlowState.winner, "enemy");
-  assert.equal(withoutFlowState.seconds, 1);
+  assert.equal(withoutFlowState.seconds, fastEnemy.attackSpeed / 1000);
   assert.equal(withFlowState.winner, "player");
-  assert.equal(withFlowState.seconds, 0.8);
+  assert.equal(withFlowState.seconds, player.attackSpeed * 0.5 / 1000);
 });

@@ -122,7 +122,8 @@ test("farming currency or an irrelevant stat does not cross a nearby target thre
 
   assert.equal(plan.stopFarming.decision, "redraw");
   assert.ok(plan.profileModes.greedyFarm.candidates.some((row) => row.id === "opus_currency" && row.currencyValue > 0));
-  assert.ok(plan.runEV.currencies.Graphite.battlePerSecond > 0);
+  assert.equal(plan.runEV.currencies.Graphite.battlePerSecond, null);
+  assert.ok(plan.runEV.currencies.Graphite.battleExpectedPerRun > 0);
   assert.deepEqual(plan.stopFarming.curve.map(({ projectedWinRate, gain, reachesTarget }) => (
     { projectedWinRate, gain, reachesTarget }
   )), [
@@ -292,13 +293,95 @@ test("strategy candidates and run EV retain the uncertainty of input fight times
   assert.equal(estimates.opus_hp.secondsCensored, true);
 });
 
+test("a farm window earns a battle payout only once the fight fits in the window", () => {
+  const input = {
+    sketches: {
+      ...sketches,
+      opus_currency: {
+        ...sketches.opus_currency,
+        currencyRewards: [{ name: "Photon", amount: 100 }],
+      },
+    },
+    state: state({ currencies: {}, currencyGeneratorRates: { Graphite: 2 } }),
+    targetId: "target",
+    targetSimulation: { winRate: 0.5 },
+    currentRun: { targets: [{ id: "opus_currency", winRate: 1, p90Seconds: 120 }] },
+    strategyProfile: "farm-photon",
+    goalCurrencies: { Photon: 100 },
+  };
+  for (const [farmSeconds, expected] of [[5, 0], [119.5, 0], [120, 100], [240, 100]]) {
+    const plan = createStrategyPlan({ ...input, farmSeconds });
+    const { runEV, economy } = plan;
+    assert.equal(runEV.routeSeconds, 120);
+    assert.equal(runEV.windowTimingIncomplete, false);
+    assert.equal(runEV.currencies.Photon.expected, expected);
+    assert.equal(runEV.currencies.Photon.battleWindowExpected, expected);
+    assert.equal(runEV.currencies.Photon.expectedPerRun, 100);
+    assert.equal(runEV.currencies.Graphite.expected, farmSeconds * 2);
+    assert.equal(runEV.currencies.Graphite.expectedPerRun, 240);
+    assert.equal(runEV.quintessence.expected, farmSeconds * 2);
+    assert.equal(runEV.quintessence.expectedPerRun, 240);
+    assert.equal(plan.profileProgress.expectedPerRun, 100);
+    assert.equal(economy.specialCurrencies.Photon.expectedPerRun, 100);
+    assert.equal(economy.specialCurrencies.Photon.runsToGoal, 1);
+    assert.equal(economy.currencyForecasts.find(({ currency }) => currency === "Photon").expectedPerRun, 100);
+    assert.equal(economy.specialCurrencies.Photon.secondsToGoal, plan.farmPlan.goal.estimatedSeconds);
+    assert.ok(Math.abs(economy.specialCurrencies.Photon.secondsToGoal - 120) < 0.001);
+    assert.equal(plan.softcap.runValue, runEV.totalValuePerRun);
+    assert.equal(economy.softcapEV.runValue, runEV.totalValuePerRun);
+  }
+});
+
+test("unknown and censored fight times preserve the timed prefix without crediting later fights", () => {
+  const input = {
+    sketches: {
+      ...sketches,
+      opus_currency: { ...sketches.opus_currency, currencyRewards: [{ name: "Graphite", amount: 100 }] },
+      opus_attack: { ...sketches.opus_attack, currencyRewards: [{ name: "Photon", amount: 200 }] },
+      target: { ...sketches.target, currencyRewards: [{ name: "Graphite", amount: 300 }] },
+    },
+    state: state({ currencies: {}, currencyGeneratorRates: { Graphite: 2 } }),
+    targetId: "target",
+    targetSimulation: { winRate: 0.5 },
+    goalCurrencies: { Graphite: 500, Photon: 100 },
+    farmSeconds: 30,
+  };
+  for (const [timing, windowTimingIncomplete] of [
+    [{}, true],
+    [{ p90Seconds: 15, p90Censored: true }, true],
+    [{ p90Seconds: 40, p90Censored: true }, false],
+  ]) {
+    const plan = createStrategyPlan({ ...input, currentRun: { targets: [
+      { id: "opus_currency", winRate: 1, medianSeconds: 10 },
+      { id: "opus_attack", winRate: 0.5, ...timing },
+      { id: "target", winRate: 1, p90Seconds: 5 },
+    ] } });
+    const { runEV, economy } = plan;
+    assert.equal(runEV.routeSeconds, null);
+    assert.equal(runEV.windowTimingIncomplete, windowTimingIncomplete);
+    assert.equal(runEV.sketches.find(({ id }) => id === "opus_attack").seconds, timing.p90Seconds ?? null);
+    assert.equal(runEV.currencies.Graphite.expected, 160);
+    assert.equal(runEV.currencies.Graphite.expectedPerRun, 400);
+    assert.equal(runEV.currencies.Graphite.passiveExpectedPerRun, null);
+    assert.equal(runEV.currencies.Graphite.battlePerSecond, null);
+    assert.equal(runEV.currencies.Graphite.perSecond, 2);
+    assert.equal(runEV.currencies.Photon.expected, 0);
+    assert.equal(runEV.currencies.Photon.expectedPerRun, 100);
+    assert.equal(runEV.statValue, 0);
+    assert.ok(runEV.statValuePerRun > 0);
+    assert.equal(economy.specialCurrencies.Photon.runPerSecond, null);
+    assert.equal(economy.specialCurrencies.Photon.secondsToGoal, null);
+    assert.equal(economy.currencyForecasts.find(({ currency }) => currency === "Graphite").secondsToGoal, 250);
+  }
+});
+
 test("strategy currency forecasts divide battle rewards by time spent on all eligible fights", () => {
   const farming = {
     opus_currency: { ...sketches.opus_currency, currencyRewards: [{ name: "Graphite", amount: 100 }] },
     opus_attack: { ...sketches.opus_attack, currencyRewards: [{ name: "Photon", amount: 100 }] },
     target: { ...sketches.target, currencyRewards: [{ name: "Graphite", amount: 900 }] },
   };
-  const plan = createStrategyPlan({
+  const input = {
     sketches: farming,
     state: state({
       currencies: {},
@@ -308,14 +391,18 @@ test("strategy currency forecasts divide battle rewards by time spent on all eli
     targetId: "target",
     currentRun: { targets: currentRun.targets.map((row) => ({ ...row, winRate: 1, p90Seconds: 10 })) },
     goalCurrencies: { Graphite: 100, Photon: 100 },
-    farmSeconds: 20,
-  });
+  };
+  const plan = createStrategyPlan({ ...input, farmSeconds: 20 });
+  const short = createStrategyPlan({ ...input, farmSeconds: 10 });
 
   assert.deepEqual(plan.runEV.sketches.map(({ id }) => id), ["opus_attack", "opus_currency"]);
   assert.equal(plan.runEV.currencies.Graphite.battlePerSecond, 5);
   assert.equal(plan.runEV.currencies.Photon.battlePerSecond, 5);
   assert.equal(plan.economy.currencyForecasts.find(({ currency }) => currency === "Graphite").secondsToGoal, 20);
   assert.equal(plan.economy.specialCurrencies.Photon.secondsToGoal, 20);
+  assert.equal(short.runEV.currencies.Graphite.expected, 100);
+  assert.equal(short.runEV.currencies.Photon.expected, 0);
+  assert.equal(short.runEV.currencies.Photon.expectedPerRun, 100);
 });
 
 test("rankOpusStrategicValue prioritizes currency Opus when a currency goal is missing", () => {

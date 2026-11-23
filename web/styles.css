@@ -892,6 +892,10 @@ h3 {
   background: rgba(255, 255, 255, .035);
 }
 
+#economyForecastList .breakdown-item strong {
+  display: block;
+}
+
 .breakdown-item::before,
 .threshold-item::before,
 .history-item::before,

@@ -9,6 +9,7 @@
     "test:browser": "node scripts/check-save-editions.js",
     "lint": "node src/lint.js",
     "benchmark": "node src/benchmark.js",
+    "benchmark:dashboard": "node scripts/benchmark-dashboard.js",
     "simulate": "node src/cli.js",
     "update-data": "node src/update-data.js",
     "combat-reference": "node src/extract-combat-reference.js",

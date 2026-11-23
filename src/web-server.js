@@ -96,6 +96,7 @@ export function createWebServer({
           identifyInputs: true,
           expectedSaveHash: body.expectedSaveHash,
           expectedCatalogHash: body.expectedCatalogHash,
+          expectedModelVersion: body.expectedModelVersion,
           save,
           targetId: body.targetId,
           assumedVictoryIds: body.assumedVictoryIds,

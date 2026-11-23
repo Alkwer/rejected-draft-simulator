@@ -228,6 +228,15 @@ test("createRunRecommendation returns a concrete finish or redraw decision", () 
   assert.ok(redraw.hideCandidates.some((item) => item.id === "bad"));
 });
 
+test("recommendations distinguish one win, supported odds and a borderline estimate", () => {
+  const recommendation = (wins, trials) => createRunRecommendation({ targetId: "boss",
+    currentRun: { targets: [{ id: "boss", winRate: wins / trials, trials }] } });
+  assert.equal(recommendation(1, 1).confidence, "low");
+  assert.equal(recommendation(1000, 1000).confidence, "high");
+  assert.equal(recommendation(51, 100).action, "increase_trials");
+  assert.equal(recommendation(600, 1000).action, "fight_target");
+});
+
 test("formatNiceNumber formats large stats compactly", () => {
   assert.equal(formatNiceNumber(123456789), "123.46M");
   assert.equal(formatNiceNumber(1.16e228), "1.16e228");

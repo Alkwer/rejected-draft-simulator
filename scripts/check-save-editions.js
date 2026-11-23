@@ -82,7 +82,7 @@ try {
   assert.deepEqual(repeated.analysis, steam.analysis);
   await page.waitForFunction(() => document.querySelector("#trialsSelect").value === "100");
   const history = await page.evaluate(() => JSON.parse(localStorage.getItem("rd-sim-history")));
-  assert.ok(history.every((row) => row.replay.saveHash && row.replay.catalogHash &&
+  assert.ok(history.every((row) => row.replay.saveHash && row.replay.catalogHash && row.replay.modelVersion &&
     Number.isSafeInteger(row.replay.settings.referenceTimeMs) && !("saveText" in row.replay.settings)));
   await page.setViewportSize({ width: 390, height: 844 });
   await page.getByRole("button", { name: "Planner", exact: true }).click();
@@ -103,7 +103,8 @@ try {
   assert.equal(await page.locator("#fullCompareTable tr").count(), 0);
 
   const timingSave = { version: 86, meta: { profile: "steam", gameVersion: "qa-mismatch" },
-    state: { availableSketches: ["little_stapler"], playerStats: { maxHp: 1e20, attack: 0, attackSpeed: 1000 } } };
+    state: { availableSketches: ["little_stapler"], currencyGeneratorRates: { Graphite: 2 },
+      playerStats: { maxHp: 1e20, attack: 0, attackSpeed: 1000 } } };
   await page.locator("#targetSelect").selectOption("little_stapler");
   await page.locator("#saveFile").setInputFiles({ name: "timing.json", mimeType: "application/json",
     buffer: Buffer.from(JSON.stringify(timingSave)) });
@@ -116,6 +117,16 @@ try {
   for (const width of [1440, 768, 390]) {
     await page.setViewportSize({ width, height: 900 });
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth), width, `Diagnostics overflow at ${width}px`);
+  }
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.getByRole("tab", { name: "Strategy", exact: true }).click();
+  await page.locator("#economyForecastList").getByText(/full route \(battle only\)/).waitFor();
+  for (const width of [1440, 768, 390]) {
+    await page.setViewportSize({ width, height: 900 });
+    const planner = page.getByRole("button", { name: "Planner", exact: true });
+    if (await planner.isVisible()) await planner.click();
+    assert.ok(await page.locator("#economyForecastList").isVisible());
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth), width, `Strategy overflows at ${width}px`);
   }
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.getByRole("tab", { name: "Run", exact: true }).click();

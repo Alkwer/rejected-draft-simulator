@@ -302,6 +302,7 @@ export function createCalibrationReport({
   const normalizedExternalLogs = normalizeLogCollection(externalLogs, "external");
   const allLogs = [...saveLogs, ...normalizedExternalLogs];
   const filteredLogs = targetId ? allLogs.filter((log) => log.targetId === targetId) : allLogs;
+  const gameDataVersion = firstString(dataMetadata?.gameVersion);
   const warnings = [];
 
   if (save?.state?.combatLoggingEnabled === false) {
@@ -322,26 +323,54 @@ export function createCalibrationReport({
     });
   }
 
-  const comparisons = filteredLogs.map((log, index) => compareLogToSimulation({
-    log,
-    sketches,
-    fallbackPlayer: player,
-    assumptions: combatAssumptionsFromSave(save),
-    trials,
-    maxSeconds,
-    seed: `${seed}:${index}:${log.targetId ?? "unknown"}`,
-  }));
+  const assumptions = combatAssumptionsFromSave(save);
+  let tuningIndex = 0;
+  const comparisons = filteredLogs.map((log, index) => {
+    const patchExclusion = patchTuningExclusion(log.patchVersion, gameDataVersion);
+    // Diagnostic-only fights cannot change the RNG sequence used for tuning.
+    const simulationIndex = patchExclusion ? index : tuningIndex++;
+    const comparison = compareLogToSimulation({
+      log,
+      sketches,
+      fallbackPlayer: player,
+      assumptions,
+      trials,
+      maxSeconds,
+      seed: `${seed}:${simulationIndex}:${log.targetId ?? "unknown"}`,
+    });
+    return {
+      ...comparison,
+      patchVersion: log.patchVersion,
+      tuningExclusion: patchExclusion ?? (comparison.simulated ? null : "missing_stats"),
+    };
+  });
   const deviations = comparisons.flatMap((comparison) => comparison.deviations);
+  const patchWarnings = {
+    calibration_catalog_patch_missing: "the sketch catalog has no game patch metadata",
+    calibration_log_patch_missing: "the logs specify no game patch",
+    calibration_log_patch_mismatch: `the logs specify a different game patch than the catalog (${gameDataVersion})`,
+  };
+  for (const [code, reason] of Object.entries(patchWarnings)) {
+    const count = comparisons.filter((comparison) => comparison.tuningExclusion === code).length;
+    if (count > 0) {
+      warnings.push({
+        code,
+        count,
+        message: `Excluded ${count} combat log(s) from tuning because ${reason}. Diagnostic comparisons remain available.`,
+      });
+    }
+  }
 
   return {
     mode: "calibration",
-    gameDataVersion: dataMetadata?.gameVersion ?? latestGameDataVersion(),
+    gameDataVersion,
     saveVersion: save?.version ?? null,
     logs: {
       total: allLogs.length,
       fromSave: saveLogs.length,
       external: normalizedExternalLogs.length,
       used: filteredLogs.length,
+      tuningEligible: comparisons.filter((comparison) => comparison.tuningExclusion === null).length,
       targetFilter: targetId,
       combatLoggingEnabled: save?.state?.combatLoggingEnabled ?? null,
     },
@@ -360,6 +389,7 @@ export function suggestCalibrationTuning(comparisons = []) {
   const durationRatios = [];
 
   for (const comparison of comparisons) {
+    if (comparison.tuningExclusion) continue;
     const actualBreakdown = comparison.actual?.damageBreakdown;
     const simulatedBreakdown = comparison.simulated?.fight?.damageBreakdown;
 
@@ -385,6 +415,12 @@ export function suggestCalibrationTuning(comparisons = []) {
     thornsCounterMultiplier: summarizeRatios(reflectRatios, "thorns_counter_multiplier"),
     durationMultiplier: summarizeRatios(durationRatios, "duration_multiplier"),
   };
+}
+
+function patchTuningExclusion(logPatch, catalogPatch) {
+  if (!catalogPatch) return "calibration_catalog_patch_missing";
+  if (!logPatch) return "calibration_log_patch_missing";
+  return logPatch === catalogPatch ? null : "calibration_log_patch_mismatch";
 }
 
 export function checkPatchSanity({
@@ -516,6 +552,7 @@ function compareLogToSimulation({
     return {
       logIndex: log.index,
       targetId: log.targetId,
+      sourceKey: log.sourceKey,
       actual: actualSummary(log),
       predicted: { outcome: "unknown", winRate: null },
       simulated: null,
@@ -617,18 +654,19 @@ function compareLogToSimulation({
 }
 
 function normalizeLogCollection(value, sourceKey) {
-  const entries = unwrapLogCollection(value);
+  const wrappedEntries = [value?.logs, value?.entries, value?.history].find(Array.isArray);
+  const entries = wrappedEntries ?? unwrapLogCollection(value);
+  const collectionPatch = wrappedEntries
+    ? firstString(value.patchVersion, value.gameVersion, value.metadata?.gameVersion, value.version)
+    : null;
   return entries
-    .map((entry, index) => normalizeLogEntry(entry, sourceKey, index))
+    .map((entry, index) => normalizeLogEntry(entry, sourceKey, index, collectionPatch))
     .filter(Boolean);
 }
 
 function unwrapLogCollection(value) {
   if (!value) return [];
   if (Array.isArray(value)) return value;
-  if (Array.isArray(value.logs)) return value.logs;
-  if (Array.isArray(value.entries)) return value.entries;
-  if (Array.isArray(value.history)) return value.history;
   if (typeof value === "object") {
     const objectValues = Object.values(value);
     if (objectValues.every((item) => item && typeof item === "object")) return objectValues;
@@ -637,7 +675,7 @@ function unwrapLogCollection(value) {
   return [];
 }
 
-function normalizeLogEntry(raw, sourceKey, index) {
+function normalizeLogEntry(raw, sourceKey, index, collectionPatch) {
   if (!raw || typeof raw !== "object") return null;
   const target = raw.target ?? raw.sketch ?? raw.enemy ?? {};
   const targetId = firstString(
@@ -669,7 +707,7 @@ function normalizeLogEntry(raw, sourceKey, index) {
     playerStats,
     targetStats,
     damageBreakdown,
-    patchVersion: firstString(raw.patchVersion, raw.gameVersion, raw.version),
+    patchVersion: firstString(raw.patchVersion, raw.gameVersion, raw.version) ?? collectionPatch,
     raw,
   };
 }

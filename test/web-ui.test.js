@@ -115,7 +115,7 @@ test("web UI exposes strategy planner controls and output panel", () => {
   assert.match(app, /strategyOptions:\s*strategyOptionsPayload\(\)/);
   assert.match(app, /function renderStrategyPlan/);
   assert.match(app, /function renderEconomyPlan/);
-  assert.match(app, /renderEconomyPlan\(plan\.economy\)/);
+  assert.match(app, /renderEconomyPlan\(plan\.economy, plan\.runEV\)/);
   assert.match(app, /strategyProfile:\s*els\.strategyProfileSelect/);
   assert.match(app, /strategyMode:\s*els\.strategyModeSelect/);
 });

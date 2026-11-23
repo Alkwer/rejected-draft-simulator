@@ -53,6 +53,63 @@ function encodeSave(state) {
   return Buffer.from(JSON.stringify({ version: 52, state }), "utf8").toString("base64");
 }
 
+test("replay fingerprints retain array order and the catalog order used for redraw odds", () => {
+  const state = { playerStats: { maxHp: 100, attack: 100, attackSpeed: 1000 },
+    availableSketches: ["farm_a", "duct_taped_banana"] };
+  const options = { save: { state }, sketches, trials: 1, maxSeconds: 5, identifyInputs: true };
+  const identity = createWebAnalysis(options).replayIdentity;
+  const replay = { ...options, expectedModelVersion: identity.modelVersion,
+    expectedSaveHash: identity.saveHash, expectedCatalogHash: identity.catalogHash };
+  assert.throws(() => createWebAnalysis({ ...replay, sketches: Object.fromEntries(Object.entries(sketches).reverse()) }),
+    /catalog has changed/);
+  assert.throws(() => createWebAnalysis({ ...replay, save: { state: { ...state,
+    availableSketches: [...state.availableSketches].reverse() } } }), /save has changed/);
+  assert.throws(() => createWebAnalysis({ ...replay, expectedModelVersion: undefined }), /unknown model version/);
+});
+
+test("Steam reward forecasts preserve a fast imported player and the verified effective speed floor", () => {
+  const speedReward = { ...sketches.farm_a, rewards: [{ statName: "attackSpeed", amount: -40 }] };
+  for (const [before, expected] of [[40, 40], [510, 500], [600, 560]]) {
+    const state = { saveProfile: "steam", availableSketches: ["farm_a"],
+      playerStats: { attackSpeed: before, maxHp: 100, attack: 20 } };
+    const analysis = createWebAnalysis({ sketches: { ...sketches, farm_a: speedReward }, save: { state },
+      routeIds: ["farm_a"], targetId: "duct", trials: 2, maxSeconds: 5 });
+    assert.equal(analysis.finalStats.attackSpeed, before);
+    assert.equal(analysis.routePreview.finalStats.attackSpeed, expected);
+    const nextSpeed = analysis.activeDeltas.farm_a.statRewards.find(({ statName }) => statName === "attackSpeed");
+    assert.equal(nextSpeed.amount, nextSpeed.finalValue - expected);
+    assert.equal(analysis.result.trials, 2);
+  }
+});
+
+test("an unrepresentable optional reward preserves the primary fight and the other reward forecasts", () => {
+  const state = { saveProfile: "steam", availableSketches: ["farm_a", "giant"],
+    playerStats: { attackSpeed: 1000, maxHp: 100, attack: 1e308 } };
+  const giant = { ...sketches.farm_a, id: "giant", rewards: [{ statName: "attack", amount: 1e308 }] };
+  const result = createWebAnalysis({ save: { state }, sketches: { ...sketches, giant },
+    targetId: "duct", trials: 1, maxSeconds: 5 });
+  assert.equal(result.result.winRate, 1);
+  assert.ok(result.activeDeltas.farm_a);
+  assert.equal(result.activeDeltas.giant, undefined);
+  assert.ok(result.warnings.some((warning) => warning.message.includes("giant")));
+});
+
+test("route preview and compared Opuses use the selected hypothetical build", () => {
+  const rest = { ...sketches.farm_a, id: "rest", rewards: [] };
+  const rival = { ...sketches.duct_taped_banana, id: "rival", rarity: "opus" };
+  const state = { saveProfile: "steam", availableSketches: ["farm_a", "rest", "rival", "duct_taped_banana"],
+    playerStats: { maxHp: 100, attack: 1, attackSpeed: 1000, minDamage: 100, maxDamage: 100 } };
+  const options = { save: { state }, sketches: { ...sketches, rest, rival }, assumedVictories: { farm_a: 1 },
+    routeIds: ["rest"], trials: 4, maxSeconds: 5, seed: "projected" };
+  for (const targetId of ["rival", "duct_taped_banana"]) {
+    const analysis = createWebAnalysis({ ...options, targetId });
+    assert.equal(analysis.routePreview.finalStats.attack, analysis.finalStats.attack);
+    assert.equal(analysis.routePreview.steps[0].targetWinRate, 1);
+    assert.equal(analysis.targetComparisons.find((row) => row.id === "rival").winRate, 1);
+    assert.equal(analysis.activeDeltas.rest.winRate, 1);
+  }
+});
+
 test("assumed victories credit the strategy wallet, boosters and perk wins just like a route", () => {
   const state = { saveProfile: "steam", playerStats: { maxHp: 100, attack: 10, attackSpeed: 1000 },
     currencies: { Graphite: 20 }, availableSketches: ["farm_a"], boostedSketchIds: ["farm_a"],
