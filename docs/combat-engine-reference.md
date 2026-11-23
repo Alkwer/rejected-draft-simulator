@@ -1,9 +1,10 @@
 # Combat Engine Reference
 
-This document is generated from the current minified Rejected Draft game bundle. It is a source-reference aid for Priority 26, not a claim that the simulator is already fully combat-parity accurate.
+Extracted mechanics for the edition and asset versions listed below. Use observed fights from the same edition to verify timing and outcomes.
 
 ## Version
 
+- Edition: web
 - Game version: main-B8xwsW5G.js
 - Save version: 52
 - Main asset: main-B8xwsW5G.js

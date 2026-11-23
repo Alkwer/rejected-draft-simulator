@@ -1,9 +1,11 @@
 # Combat Engine Parity Map
 
-Generated comparison between the current game combat reference and the local simulator combat engine. This is a Priority 26 working document: matched items are evidence-based, while gaps are implementation targets.
+Static checks against the reference assets listed below. Each match covers its named code path for that edition.
 
 ## Version
 
+- Edition: web
+- Save version: 52
 - Main asset: main-B8xwsW5G.js
 - Store asset: game-store-fxPIKm8H.js
 - Captured: 2026-05-23

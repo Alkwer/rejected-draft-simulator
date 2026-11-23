@@ -289,3 +289,62 @@ test("monte carlo summary includes confidence interval, percentiles and outcome 
   assert.ok(Object.keys(summary.victoryCauses).length > 0);
   assert.deepEqual(summary.defeatCauses, {});
 });
+
+test("victory causes follow the damage that landed against a resistant target", () => {
+  const player = {
+    maxHp: 1000, attack: 1, attackSpeed: 1000, minDamage: 100, maxDamage: 100,
+    execute: 200, bleedChance: 10000, burnChance: 100, burnDamage: 1000,
+    freezeChance: 10000, poisonChance: 10000,
+  };
+  const enemy = {
+    maxHp: 100, attack: 50, attackSpeed: 1000, minDamage: 100, maxDamage: 100,
+  };
+  const cases = [
+    [["execute", "bleedChance", "burnChance", "freezeChance"], "status_damage"],
+    [["execute", "bleedChance", "freezeChance", "poisonChance"], "burn"],
+    [["execute", "burnChance", "freezeChance", "poisonChance"], "bleed"],
+    [["execute", "bleedChance", "burnChance", "poisonChance"], "freeze_chain"],
+  ];
+
+  for (const [immunities, cause] of cases) {
+    const summary = runMonteCarlo({ player, enemy: { ...enemy, immunities }, trials: 3, maxSeconds: 10 });
+    assert.deepEqual(summary.victoryCauses, { [cause]: 3 });
+  }
+});
+
+test("execute is credited only if it contributes applied damage", () => {
+  const player = { maxHp: 100, attack: 24, attackSpeed: 1000, minDamage: 100, maxDamage: 100, execute: 200 };
+  const enemy = { maxHp: 100, attack: 0, attackSpeed: 10000 };
+  const run = (player, enemy) => runMonteCarlo({ player, enemy, trials: 2, maxSeconds: 10 }).victoryCauses;
+
+  assert.deepEqual(run(player, enemy), { execute: 2 });
+  assert.deepEqual(run(player, { ...enemy, immunities: ["execute"] }), { raw_damage: 2 });
+  assert.deepEqual(run({ ...player, attack: 25 }, enemy), { raw_damage: 2 });
+  assert.deepEqual(run({ ...player, attack: 100 }, enemy), { raw_damage: 2 });
+});
+
+test("freeze that prevents real regeneration can enable a direct-damage victory", () => {
+  const player = { maxHp: 100, attack: 20, attackSpeed: 1000, minDamage: 100, maxDamage: 100, freezeChance: 10000 };
+  const enemy = { maxHp: 100, attack: 0, attackSpeed: 10000, regen: 30 };
+  const run = (enemy) => runMonteCarlo({ player, enemy, trials: 2, maxSeconds: 10 });
+
+  assert.deepEqual(run(enemy).victoryCauses, { freeze_chain: 2 });
+  assert.equal(run({ ...enemy, immunities: ["freezeChance"] }).timeouts, 2);
+  assert.deepEqual(run({ ...enemy, regen: 0, immunities: ["freezeChance"] }).victoryCauses, { raw_damage: 2 });
+});
+
+test("nearest-rank duration bounds retain censoring at the selected trial", () => {
+  const player = { maxHp: 100, attack: 10, attackSpeed: 999.9999, critChance: 50, minDamage: 100, maxDamage: 100 };
+  const enemy = { maxHp: 15, attack: 0, attackSpeed: 8000 };
+  const summary = runMonteCarlo({ player, enemy, trials: 2, seed: "0", maxSeconds: 1 });
+
+  assert.equal(summary.wins, 1);
+  assert.equal(summary.timeouts, 1);
+  assert.equal(summary.p10Seconds, summary.medianSeconds);
+  assert.equal(summary.p90Seconds, 1);
+  assert.equal(summary.medianSeconds, summary.p90Seconds);
+  assert.equal(summary.p10Censored, false);
+  assert.equal(summary.medianCensored, false);
+  assert.equal(summary.p90Censored, true);
+  assert.equal(summary.avgCensored, true);
+});

@@ -4,7 +4,7 @@ import { combatAssumptionsFromSave } from "./combat-assumptions.js";
 import { createDiagnosticReport, createModelAssumptionComparisons } from "./diagnostics.js";
 import { createFightTrace } from "./fight-trace.js";
 import { createCombatReport } from "./report.js";
-import { applySketchRewards } from "./rewards.js";
+import { applySketchRewards, steamCurrencyPerkWinsRemaining } from "./rewards.js";
 import { simulateRoute } from "./route.js";
 import { parseRouteSpecs } from "./route-options.js";
 import { analyzeSave } from "./save-analysis.js";
@@ -67,7 +67,9 @@ export function createWebAnalysis({
   const target = sketchForEncounter(sketches[resolvedTargetId], combatAssumptions);
   if (!target) throw new Error(`Unknown target sketch: ${resolvedTargetId}`);
 
-  const analysis = analyzeSave({ save, sketches, targetId: resolvedTargetId, dataMetadata });
+  const hidden = new Set([...normalizeIds(save.state.hiddenSketches), ...normalizeIds(hiddenSketchIds)]);
+  const state = { ...save.state, hiddenSketches: [...hidden] };
+  const analysis = analyzeSave({ save: { ...save, state }, sketches, targetId: resolvedTargetId, dataMetadata });
   const statSource = analysis.stats.recommendedSource;
   const baseStats = analysis.stats.sources[statSource] ?? {};
   const assumedVictoryPlan = normalizeAssumedVictories({
@@ -105,7 +107,6 @@ export function createWebAnalysis({
   const assumptionComparisons = createModelAssumptionComparisons({
     target,
     player: finalStats,
-    baseline: result,
     trials: auxiliaryTrials,
     maxSeconds: targetMaxSeconds,
     seed: `${seed}:assumptions`,
@@ -118,6 +119,7 @@ export function createWebAnalysis({
     simulation: result,
     report,
     dataMetadata,
+    compatibilityWarnings: analysis.warnings,
     observedOutcome,
     assumptionComparisons,
   });
@@ -136,7 +138,7 @@ export function createWebAnalysis({
   });
   const recommendation = createRunRecommendation({
     targetId: resolvedTargetId,
-    currentRun: { targets: activeSketches.filter((row) => !hiddenSketchIds.includes(row.id)) },
+    currentRun: { targets: activeSketches },
   });
   const targetComparisons = createTargetComparisons({
     analyzedId: resolvedTargetId,
@@ -149,7 +151,7 @@ export function createWebAnalysis({
     seed,
     assumptions: combatAssumptions,
   });
-  const rewardState = stateAfterVictories(save.state, assumedRouteIds, sketches);
+  const rewardState = stateAfterVictories(state, assumedRouteIds, sketches);
   const pairedOptions = {
     target, trialsSetting: auxiliaryTrialsSetting, maxSeconds: targetMaxSeconds,
     seed: `${seed}:reward-impact`, assumptions: combatAssumptions,
@@ -187,7 +189,8 @@ export function createWebAnalysis({
   });
   const strategicPlan = createStrategyPlan({
     sketches,
-    state: save.state,
+    state: rewardState,
+    assumptions: combatAssumptions,
     targetId: resolvedTargetId,
     baseStats: finalStats,
     targetSimulation: result,
@@ -266,6 +269,7 @@ export function createCompanionAnalysis({
       winRate: analysis.result.winRate,
       timeoutRate: analysis.result.timeoutRate ?? 0,
       p90Seconds: analysis.result.p90Seconds ?? 0,
+      p90Censored: analysis.result.p90Censored,
       trials: analysis.result.trials,
       decision: analysis.recommendation?.action ?? "unknown",
       nextAction: analysis.nextAction,
@@ -278,6 +282,7 @@ export function createCompanionAnalysis({
       winRate: item.winRate,
       timeoutRate: item.timeoutRate,
       p90Seconds: item.p90Seconds,
+      p90Censored: item.p90Censored,
       problem: item.topFailure ?? item.topVictory ?? "none",
     })),
     warnings: [
@@ -355,7 +360,9 @@ function createActiveSketchRows({ analysis, sketches, baseStats, trialsSetting, 
       trials: result.trials,
       timeoutRate: round(result.timeoutRate ?? 0),
       medianSeconds: round(result.medianSeconds ?? 0),
+      medianCensored: result.medianCensored,
       p90Seconds: round(result.p90Seconds ?? 0),
+      p90Censored: result.p90Censored,
       topFailure: topKey(result.defeatCauses) ?? topKey(result.timeoutDiagnoses),
       topVictory: topKey(result.victoryCauses),
     });
@@ -376,6 +383,7 @@ function createBuildComparison({ targetComparisons, activeSketches }) {
     ci95HalfWidth: farmTarget?.ci95HalfWidth ?? null,
     trials: farmTarget?.trials ?? null,
     p90Seconds: farmTarget?.p90Seconds ?? null,
+    p90Censored: farmTarget?.p90Censored ?? false,
     problem: farmTarget?.topFailure ?? farmTarget?.topVictory ?? "none",
   });
 
@@ -425,6 +433,7 @@ function createTargetComparisons({ sketches, activeSketches, finalStats, trialsS
       ci95HalfWidth: item.ci95HalfWidth,
       trials: item.trials,
       p90Seconds: item.p90Seconds,
+      p90Censored: item.p90Censored,
       problem: item.topFailure ?? item.topVictory ?? "none",
     });
     seen.add(item.id);
@@ -444,6 +453,7 @@ function comparisonRow({ target, result, source }) {
     ci95HalfWidth: round(result.winRateCi95?.halfWidth ?? 0),
     trials: result.trials,
     p90Seconds: round(result.p90Seconds ?? 0),
+    p90Censored: result.p90Censored,
     problem: topKey(result.defeatCauses) ?? topKey(result.timeoutDiagnoses) ?? topKey(result.victoryCauses) ?? "none",
   };
 }
@@ -455,11 +465,19 @@ function sourceRank(source) {
 function stateAfterVictories(state, ids, sketches) {
   if (!ids.length) return state;
   const sketchVictories = { ...state.sketchVictories };
+  const sketchRunVictories = { ...state.sketchRunVictories };
+  let wins = 0;
   for (const id of ids) {
     const previous = toNumber(sketchVictories[id]);
-    if (sketches[id] && remainingSketchVictories(state, id, previous) > 0) sketchVictories[id] = previous + 1;
+    if (!sketches[id] || remainingSketchVictories(state, id, previous) <= 0) continue;
+    sketchVictories[id] = previous + 1;
+    sketchRunVictories[id] = toNumber(sketchRunVictories[id]) + 1;
+    wins += 1;
   }
-  return { ...state, sketchVictories };
+  const perkWins = Math.min(wins, steamCurrencyPerkWinsRemaining(state));
+  return { ...state, sketchVictories, sketchRunVictories, ...(perkWins && {
+    currentUniverseBoostedCurrencyWins: toNumber(state.currentUniverseBoostedCurrencyWins) + perkWins,
+  }) };
 }
 
 function compareSketchRewards({ state, stats, sketches, pairedOptions }) {
@@ -488,7 +506,8 @@ function createActiveDeltas({ sketches, activeSketches, state, rewardBaseline, s
       winRateDelta: round(nextResult.winRate - rewardBaseline.winRate),
       trials: nextResult.trials,
       p90Seconds: round(nextResult.p90Seconds ?? 0),
-      p90Delta: round(nextResult.p90Seconds - rewardBaseline.p90Seconds),
+      p90Censored: nextResult.p90Censored,
+      p90Delta: nextResult.p90Censored || rewardBaseline.p90Censored ? null : round(nextResult.p90Seconds - rewardBaseline.p90Seconds),
       statRewards: sketches[item.id].rewards ?? [],
       currencyRewards: sketches[item.id].currencyRewards ?? [],
     };
@@ -589,8 +608,10 @@ function createRollWishlist({
       targetWinRateDelta: targetDelta,
       candidateWinRate,
       candidateP90Seconds: round(candidateResult.p90Seconds ?? 0),
+      candidateP90Censored: candidateResult.p90Censored,
       p90Seconds: round(targetResult.p90Seconds ?? 0),
-      p90Delta: round((targetResult.p90Seconds ?? 0) - (currentResult.p90Seconds ?? 0)),
+      p90Censored: targetResult.p90Censored,
+      p90Delta: targetResult.p90Censored || currentResult.p90Censored ? null : round((targetResult.p90Seconds ?? 0) - (currentResult.p90Seconds ?? 0)),
       rollShare,
       rarityPoolSize,
       statRewards: summarizeRewardList(sketch.rewards, "statName"),
@@ -643,6 +664,7 @@ function createRoutePreview({ sketches, state, baseStats, routeIds, targetId, tr
       status: step.status,
       targetWinRate: round(simulation.winRate ?? 0),
       p90Seconds: round(simulation.p90Seconds ?? 0),
+      p90Censored: simulation.p90Censored,
       finalStats: summarizeStats(latest.finalStats),
       currencies: summarizeCurrencies(latest.currencies),
     });
@@ -698,7 +720,7 @@ function describeNextAction(recommendation, activeSketches, softcap) {
     return {
       type: target ? "target" : "farm",
       title: `${target ? "Fight" : "Farm"} ${row.name}`,
-      detail: `Win chance ${percentLabel(row.winRate)} · p90 ${secondsLabel(row.p90Seconds)}.`,
+      detail: `Win chance ${percentLabel(row.winRate)} · p90 ${secondsLabel(row.p90Seconds, row.p90Censored)}.`,
     };
   }
   if (softcap?.decision === "wait_softcap") {
@@ -715,9 +737,9 @@ function percentLabel(value) {
   return Number.isFinite(number) ? `${(number * 100).toFixed(1)}%` : "--";
 }
 
-function secondsLabel(value) {
+function secondsLabel(value, censored = false) {
   const number = Number(value);
-  return Number.isFinite(number) ? `${number.toFixed(1)}s` : "--";
+  return Number.isFinite(number) ? `${censored ? "≥" : ""}${number.toFixed(1)}s` : "--";
 }
 
 function applyAssumedVictories({ baseStats, sketches, state, assumedVictoryIds }) {
@@ -853,7 +875,9 @@ function summarizeTimeLimitResult(result = {}) {
     winRate: round(toNumber(result.winRate)),
     timeoutRate: round(toNumber(result.timeoutRate)),
     medianSeconds: round(toNumber(result.medianSeconds)),
+    medianCensored: result.medianCensored,
     p90Seconds: round(toNumber(result.p90Seconds)),
+    p90Censored: result.p90Censored,
   };
 }
 
@@ -873,7 +897,7 @@ function appendTimeLimitDiagnostics(diagnostics, result) {
     {
       code: "long_fight",
       title: "Long fight",
-      detail: `This target can look impossible if the simulation window is too short. Current p90 is ${secondsLabel(result.p90Seconds)} after extending the window.`,
+      detail: `This target can look impossible if the simulation window is too short. Current p90 is ${secondsLabel(result.p90Seconds, result.p90Censored)} after extending the window.`,
       severity: 0.95,
     },
     ...(diagnostics.why ?? []),
@@ -986,6 +1010,8 @@ function summarizeRewardList(rewards = [], key) {
 function normalizeIds(value) {
   if (!value) return [];
   if (Array.isArray(value)) return value.map(String).filter(Boolean);
+  if (value instanceof Set) return [...value].map(String).filter(Boolean);
+  if (typeof value === "object") return Object.values(value).map(String).filter(Boolean);
   return String(value).split(",").map((item) => item.trim()).filter(Boolean);
 }
 

@@ -1,6 +1,7 @@
 import { DEFAULT_COMBAT_ASSUMPTIONS, runMonteCarlo } from "./combat.js";
 import { SELF_BUFF_TO_STAT, STATUS_TO_STAT } from "./combat/statuses.js";
 import { enemyFromSketch } from "./combat/steam-encounter.js";
+import { VERIFIED_STEAM_BUILD } from "./combat/steam-universes.js";
 
 const STATUS_CHANCE_STATS = new Set([...Object.values(STATUS_TO_STAT), "exacerbateChance"]);
 const SELF_BUFF_CHANCE_STATS = new Set(Object.values(SELF_BUFF_TO_STAT));
@@ -13,6 +14,7 @@ export function createDiagnosticReport({
   simulation = {},
   report = {},
   dataMetadata = null,
+  compatibilityWarnings = [],
   assumptions = {},
   observedOutcome = null,
   assumptionComparisons = [],
@@ -21,9 +23,12 @@ export function createDiagnosticReport({
   const warnings = createMechanicWarnings({ target, extremes, dataMetadata, steam: assumptions.steam });
   const why = explainResult({ simulation, report, player, target });
   const sanityChecks = createSanityChecks({ simulation, report, warnings, extremes });
-  const confidence = createConfidenceBadge({ simulation, warnings, sanityChecks });
+  const modelBuild = describeModelBuild(dataMetadata, compatibilityWarnings);
+  const confidence = createConfidenceBadge({ simulation, warnings, sanityChecks, modelBuild });
   const diagnostics = {
     confidence,
+    modelBuild,
+    sample: { trials: simulation.trials ?? 0, ci95: simulation.winRateCi95 ?? null },
     why,
     sanityChecks,
     warnings,
@@ -32,6 +37,19 @@ export function createDiagnosticReport({
   };
   diagnostics.observation = compareObservedOutcome({ observedOutcome, simulation, diagnostics });
   return diagnostics;
+}
+
+function describeModelBuild(metadata, warnings) {
+  const mismatch = warnings.find(({ code }) => [
+    "steam_demo", "save_platform_mismatch", "game_version_mismatch", "stale_sketch_data", "unknown_universe",
+  ].includes(code));
+  if (mismatch) return { status: "mismatch", label: mismatch.message };
+  if (metadata?.platform === "web") return { status: "legacy", label: "Archived web edition" };
+  if (metadata?.platform !== "steam" || !metadata.buildId) return { status: "unknown", label: "Build unknown" };
+  if (metadata.buildId === VERIFIED_STEAM_BUILD) {
+    return { status: "verified", label: `Steam build ${metadata.buildId} matches the model reference` };
+  }
+  return { status: "unverified", label: `Steam build ${metadata.buildId} is unverified (reference ${VERIFIED_STEAM_BUILD})` };
 }
 
 export function detectExtremeStats({ target = {}, assumptions = {} } = {}) {
@@ -125,7 +143,6 @@ export function compareObservedOutcome({ observedOutcome = null, simulation = {}
 export function createModelAssumptionComparisons({
   target = {},
   player = {},
-  baseline = null,
   trials = 200,
   maxSeconds = 300,
   seed = "assumptions",
@@ -139,7 +156,6 @@ export function createModelAssumptionComparisons({
       id: "baseline",
       label: "Baseline",
       assumptions: baselineAssumptions,
-      result: baseline,
     },
     {
       id: "enemy_status_x1",
@@ -157,32 +173,34 @@ export function createModelAssumptionComparisons({
       assumptions: { ...baselineAssumptions, exportedEnemyBuffChanceScale: 1 },
     },
   ];
-  const baselineResult = baseline ?? runMonteCarlo({
+  const baselineResult = runMonteCarlo({
     player,
     enemy,
     trials: safeTrials,
     maxSeconds,
-    seed: `${seed}:baseline`,
+    seed,
     assumptions: baselineAssumptions,
   });
 
   return variants.filter((variant) => !assumptions.steam || !variant.id.startsWith("enemy_")).map((variant) => {
-    const result = variant.result ?? runMonteCarlo({
+    const result = variant.id === "baseline" ? baselineResult : runMonteCarlo({
       player,
       enemy,
       trials: safeTrials,
       maxSeconds,
-      seed: `${seed}:${variant.id}`,
+      seed,
       assumptions: variant.assumptions,
     });
     return {
       id: variant.id,
       label: variant.label,
+      trials: result.trials,
       assumptions: variant.assumptions,
       winRate: result.winRate ?? 0,
       deltaWinRate: (result.winRate ?? 0) - (baselineResult.winRate ?? 0),
       timeoutRate: result.timeoutRate ?? 0,
       p90Seconds: result.p90Seconds ?? 0,
+      p90Censored: result.p90Censored,
       problem: topProblem(result),
     };
   });
@@ -201,6 +219,7 @@ function explainResult({ simulation = {}, report = {}, player = {}, target = {} 
     }
   }
   const thresholds = [...(report.thresholds ?? [])]
+    .filter((threshold) => threshold.current < threshold.target)
     .sort((a, b) => severityFromThreshold(b) - severityFromThreshold(a))
     .slice(0, 3);
   for (const threshold of thresholds) {
@@ -327,7 +346,7 @@ function createMechanicWarnings({ target = {}, extremes = [], dataMetadata = nul
   return warnings;
 }
 
-function createConfidenceBadge({ simulation = {}, warnings = [], sanityChecks = [] }) {
+function createConfidenceBadge({ simulation = {}, warnings = [], sanityChecks = [], modelBuild }) {
   let score = 1;
   const reasons = [];
   const trials = Number(simulation.trials ?? 0);
@@ -359,6 +378,10 @@ function createConfidenceBadge({ simulation = {}, warnings = [], sanityChecks = 
   if (sanityChecks.some((item) => item.status === "suspicious")) {
     score -= 0.35;
     reasons.push("suspicious_extreme_rate");
+  }
+  if (["mismatch", "unverified", "unknown"].includes(modelBuild.status)) {
+    score = Math.min(score, 0.45);
+    reasons.push(`model_build_${modelBuild.status}`);
   }
   const level = score >= 0.75 ? "high" : score >= 0.45 ? "medium" : "low";
   return {

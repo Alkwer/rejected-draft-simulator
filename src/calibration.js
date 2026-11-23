@@ -556,7 +556,7 @@ function compareLogToSimulation({
     winRate: summary.winRate,
     timeoutRate: summary.timeoutRate,
     medianSeconds: summary.medianSeconds,
-    medianCensored: summary.timeouts >= Math.ceil(summary.trials / 2),
+    medianCensored: summary.medianCensored,
     topVictoryCause: topKey(summary.victoryCauses),
     topDefeatCause: topKey(summary.defeatCauses),
   };

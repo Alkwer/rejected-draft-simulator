@@ -540,7 +540,7 @@
         const metric = document.createElement("em");
         row.append(document.createTextNode(String(item.name || "")));
         row.append(document.createTextNode(" "));
-        metric.textContent = formatPercent(item.winRate) + " | p90 " + formatSeconds(item.p90Seconds);
+        metric.textContent = formatPercent(item.winRate) + " | p90 " + formatSeconds(item.p90Seconds, item.p90Censored);
         row.append(metric);
         list.append(row);
       });
@@ -702,8 +702,8 @@
     return Number.isFinite(number) ? (number * 100).toFixed(1) + "%" : "--";
   }
 
-  function formatSeconds(value) {
+  function formatSeconds(value, censored) {
     const number = Number(value);
-    return Number.isFinite(number) ? number.toFixed(1) + "s" : "--";
+    return Number.isFinite(number) ? (censored ? "≥" : "") + number.toFixed(1) + "s" : "--";
   }
 }());

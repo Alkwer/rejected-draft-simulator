@@ -1,14 +1,19 @@
 import { analyzeBuildAdvice } from "./build-advisor.js";
+import { runMonteCarlo } from "./combat.js";
+import { combatAssumptionsFromSave } from "./combat-assumptions.js";
+import { enemyFromSketch } from "./combat/steam-encounter.js";
 import { createEconomyPlan } from "./economy.js";
-import { steamCurrencyPerkWinsRemaining, steamSketchRewards } from "./rewards.js";
+import { applySketchRewards, steamCurrencyPerkWinsRemaining, steamSketchRewards } from "./rewards.js";
 import { currencyRewardAmount, simulateRoute } from "./route.js";
-import { toNumber } from "./save.js";
+import { normalizeStats, toNumber } from "./save.js";
 import { remainingSketchVictories } from "./victory-limit.js";
 
 const DEFAULT_TARGET_WIN_RATE = 0.5;
 const DEFAULT_FARM_SECONDS = 3600;
 const DEFAULT_MAX_SOFTCAP_WAIT_SECONDS = 30 * 60;
 const DEFAULT_COMPARE_PROFILE_IDS = ["farm-q", "3-masterpiece", "transcendent-paragon"];
+const MAX_FARM_STEPS = 8;
+const MAX_FARM_TRIALS = 200;
 
 const DEFAULT_REWARD_WEIGHTS = {
   quintessence: 1,
@@ -111,6 +116,7 @@ const MODE_BY_ID = Object.fromEntries(STRATEGY_MODES.map((mode) => [mode.id, mod
 export function createStrategyPlan({
   sketches = {},
   state = {},
+  assumptions = combatAssumptionsFromSave(state),
   targetId,
   baseStats = null,
   targetSimulation = null,
@@ -133,7 +139,7 @@ export function createStrategyPlan({
   maxSeconds = 300,
   seed = "strategy-plan",
 } = {}) {
-  const stats = numericObject(baseStats ?? state.currentRunStats ?? state.battleStats ?? state.playerStats ?? {});
+  const stats = normalizeStats(baseStats ?? state.currentRunStats ?? state.battleStats ?? state.playerStats);
   const target = sketches[targetId] ?? { id: targetId, name: targetId, stats: {} };
   const currentRows = normalizeCurrentRows({ currentRun, state, sketches });
   const profileConfig = resolveStrategyProfile(profile ?? strategyProfile, { targetId });
@@ -168,8 +174,10 @@ export function createStrategyPlan({
     targetStatWeights,
     goalCurrencies: normalizedGoalCurrencies,
     rewardWeights,
-    currentRows,
+    currentRows: currentRun?.targets ?? currentRows,
   });
+  const visibleIds = new Set(currentRows.map((row) => row.id));
+  const visibleOpusValues = opusValues.filter((item) => visibleIds.has(item.id));
   const runEV = estimateRunEV({
     sketches,
     state,
@@ -187,7 +195,7 @@ export function createStrategyPlan({
   const farmPlan = createFarmPlan({
     approach,
     runEV,
-    opusValues,
+    opusValues: visibleOpusValues,
     state,
     farmSeconds,
   });
@@ -219,6 +227,7 @@ export function createStrategyPlan({
   const boosters = compareBoosterChoices({
     sketches,
     state,
+    assumptions,
     baseStats: stats,
     targetId,
     candidates: boosterCandidates,
@@ -230,14 +239,13 @@ export function createStrategyPlan({
   const masterpieceRoll = decideMasterpieceRoll({
     currentRows,
     targetId,
-    target,
     masterpieceTargetIds,
-    opusValues,
+    opusValues: visibleOpusValues,
     targetWinRate: effectiveTargetWinRate,
   });
   const runCompletion = decideRunCompletion({
     currentRows,
-    opusValues,
+    opusValues: visibleOpusValues,
     targetId,
   });
   const profileRecommendations = createProfileRecommendations({
@@ -248,12 +256,18 @@ export function createStrategyPlan({
     rewardWeights,
   });
   const stopFarming = decideStopFarming({
+    sketches,
+    state,
+    assumptions,
+    stats,
     targetSimulation,
     currentRows,
     runEV,
     targetId,
     targetWinRate: effectiveTargetWinRate,
-    activeMode: profileModes[toCamelModeId(modeConfig.id)],
+    trials,
+    maxSeconds,
+    seed,
   });
   const profileComparison = createProfileComparison({
     requestedProfileIds: normalizeList(compareProfiles).length > 0 ? compareProfiles : profileIds,
@@ -325,10 +339,14 @@ export function rankOpusStrategicValue({
   rewardWeights = DEFAULT_REWARD_WEIGHTS,
   currentRows = [],
 } = {}) {
+  const hiddenIds = new Set(normalizeList(state.hiddenSketches));
+  for (const row of currentRows ?? []) {
+    if (row.hidden) hiddenIds.add(row.id);
+  }
   const rowsById = new Map(normalizeCurrentRows({ currentRun: { targets: currentRows }, state, sketches })
     .map((row) => [row.id, row]));
   return Object.values(sketches)
-    .filter((sketch) => sketch?.rarity === "opus" && remainingSketchVictories(state, sketch.id) > 0)
+    .filter((sketch) => sketch?.rarity === "opus" && !hiddenIds.has(sketch.id) && remainingSketchVictories(state, sketch.id) > 0)
     .map((sketch) => {
       const steamRewards = estimateSteamPayout({ sketch, state });
       const statRewards = steamRewards?.statRewards ?? sketch.rewards;
@@ -627,6 +645,7 @@ function rankModeCandidates({ mode, currentRows, runEV, opusValues, targetId, re
         rarity: row.rarity,
         winRate: roundNumber(toNumber(row.winRate)),
         p90Seconds: roundNumber(toNumber(row.p90Seconds)),
+        p90Censored: row.p90Censored,
         score: roundNumber(score),
         currencyValue: roundNumber(currencyValue),
         statValue: roundNumber(statValue),
@@ -667,27 +686,32 @@ function rankToolAdvice(items = [], { currentRows, rewardWeights, tool }) {
     .slice(0, 8);
 }
 
-function decideStopFarming({ targetSimulation, currentRows, runEV, targetId, targetWinRate, activeMode }) {
-  const current = roundNumber(toNumber(
+function decideStopFarming({
+  sketches, state, assumptions, stats, targetSimulation, currentRows, runEV,
+  targetId, targetWinRate, trials, maxSeconds, seed,
+}) {
+  const current = clamp01(toNumber(
     targetSimulation?.winRate,
     currentRows.find((row) => row.id === targetId)?.winRate ?? 0,
   ));
-  const curve = createWinRateCurve({ current, runEV, currentRows, targetWinRate });
   if (current >= targetWinRate) {
     return {
       decision: "attempt_target",
       reason: "target_win_rate_reached",
-      currentWinRate: current,
+      currentWinRate: roundNumber(current),
       targetWinRate,
-      curve,
+      curve: [],
     };
   }
-  const crossing = curve.find((step) => step.projectedWinRate >= targetWinRate);
+  const { curve, improvesTarget, hasUnverifiedCandidates } = createWinRateCurve({
+    sketches, state, assumptions, stats, current, runEV, targetId, targetWinRate, trials, maxSeconds, seed,
+  });
+  const crossing = curve.find((step) => step.reachesTarget);
   if (crossing) {
     return {
       decision: "farm_until_step",
       reason: "visible_rewards_project_target_ready",
-      currentWinRate: current,
+      currentWinRate: roundNumber(current),
       targetWinRate,
       targetStep: crossing.step,
       targetSketchId: crossing.id,
@@ -695,9 +719,10 @@ function decideStopFarming({ targetSimulation, currentRows, runEV, targetId, tar
     };
   }
   return {
-    decision: activeMode?.recommendation ? "farm_more" : "redraw",
-    reason: activeMode?.recommendation ? "visible_rewards_help_but_do_not_cross_target" : "no_visible_progress_path",
-    currentWinRate: current,
+    decision: improvesTarget || hasUnverifiedCandidates ? "farm_more" : "redraw",
+    reason: improvesTarget ? "no_projected_step_reaches_target"
+      : hasUnverifiedCandidates ? "visible_rewards_need_target_verification" : "no_visible_progress_path",
+    currentWinRate: roundNumber(current),
     targetWinRate,
     curve,
   };
@@ -889,6 +914,7 @@ function estimateRunEV({ sketches, state, currentRows, targetStatWeights, farmSe
       rarity: row.rarity ?? sketch.rarity ?? "unknown",
       winRate: roundNumber(winRate),
       seconds,
+      secondsCensored: row.p90Censored,
       expectedCurrencies: Object.fromEntries(Object.entries(expectedCurrencies).map(([name, amount]) => [name, roundNumber(amount)])),
       expectedStatScore: roundNumber(expectedStatScore),
     });
@@ -1002,6 +1028,7 @@ function createFarmPlan({ approach, runEV, opusValues, state, farmSeconds }) {
 function compareBoosterChoices({
   sketches,
   state,
+  assumptions,
   baseStats,
   targetId,
   candidates,
@@ -1010,10 +1037,14 @@ function compareBoosterChoices({
   maxSeconds,
   seed,
 }) {
-  const choices = normalizeCandidates(candidates).map((candidate) => {
+  const hiddenIds = new Set(normalizeList(state.hiddenSketches));
+  const eligibleCandidates = normalizeCandidates(candidates)
+    .filter((candidate) => candidate.ids.every((id) => !hiddenIds.has(id)));
+  const choices = eligibleCandidates.map((candidate) => {
     const route = simulateRoute({
       sketches,
       state,
+      assumptions,
       baseStats,
       targetId,
       routeIds: candidate.ids,
@@ -1046,7 +1077,7 @@ function compareBoosterChoices({
   };
 }
 
-function decideMasterpieceRoll({ currentRows, targetId, target, masterpieceTargetIds, opusValues, targetWinRate }) {
+function decideMasterpieceRoll({ currentRows, targetId, masterpieceTargetIds, opusValues, targetWinRate }) {
   const wanted = new Set([targetId, ...normalizeList(masterpieceTargetIds)].filter(Boolean));
   const visibleMasterpieces = currentRows.filter((row) => row.rarity === "masterpiece");
   const wantedVisible = visibleMasterpieces.find((row) => wanted.has(row.id));
@@ -1075,7 +1106,7 @@ function decideMasterpieceRoll({ currentRows, targetId, target, masterpieceTarge
     return {
       decision: "keep_farm",
       reason: "strong_opus_farm_value",
-      targetId: bestVisible?.id ?? target.id,
+      targetId: bestVisible?.id ?? bestOpus.id,
       bestOpus,
       visibleMasterpieces,
     };
@@ -1184,26 +1215,59 @@ function estimateUsefulRunRate(currentRows) {
   return roundNumber(rates.reduce((sum, rate) => sum + rate, 0) / rates.length);
 }
 
-function createWinRateCurve({ current, runEV, currentRows, targetWinRate }) {
-  const rowById = new Map(currentRows.map((row) => [row.id, row]));
-  let projected = clamp01(toNumber(current));
-  return [...runEV.sketches ?? []]
-    .sort((a, b) => toNumber(b.expectedStatScore) - toNumber(a.expectedStatScore))
-    .slice(0, 8)
-    .map((item, index) => {
-      const row = rowById.get(item.id);
-      const gain = Math.min(0.15, Math.max(0.003, toNumber(item.expectedStatScore) * 0.02))
-        * Math.max(0.25, clamp01(toNumber(row?.winRate, item.winRate)));
-      projected = clamp01(projected + gain);
-      return {
-        step: index + 1,
-        id: item.id,
-        name: item.name,
-        projectedWinRate: roundNumber(projected),
-        gain: roundNumber(gain),
-        reachesTarget: projected >= targetWinRate,
-      };
+function createWinRateCurve({ sketches, state, assumptions, stats, current, runEV, targetId, targetWinRate, trials, maxSeconds, seed }) {
+  const candidates = [...new Map(runEV.sketches
+    .filter((item) => item.id !== targetId && item.winRate > 0)
+    .map((item) => [item.id, item])).values()];
+  const curve = [];
+  if (!sketches[targetId]?.stats) {
+    return { curve, improvesTarget: false, hasUnverifiedCandidates: candidates.some((item) => item.expectedStatScore > 0) };
+  }
+  const enemy = enemyFromSketch(sketches[targetId], targetId);
+  const sampleTrials = Math.max(1, Math.min(MAX_FARM_TRIALS, Math.floor(toNumber(trials, MAX_FARM_TRIALS))));
+  const simulate = (player) => runMonteCarlo({
+    player, enemy, assumptions, trials: sampleTrials, maxSeconds, seed: `${seed}:farm-curve`,
+  }).winRate;
+  const rewardOptions = {
+    sketches,
+    state,
+    boostedIds: new Set(normalizeList(state.boostedSketchIds)),
+    rewardDecay: toNumber(state.fundamentals?.rewardDecay, 1),
+    rewardBoosterEffect: toNumber(state.fundamentals?.rewardBoosterEffect, 50),
+  };
+  let player = stats;
+  let baseline;
+  let winRate;
+  let projected = current;
+  let improvesTarget = false;
+
+  // Each point assumes one victory on every preceding step and on this step.
+  for (const item of candidates.slice(0, MAX_FARM_STEPS)) {
+    const rewards = sketches[item.id].rewards ?? [];
+    if (rewards.some((reward) => toNumber(reward.amount) !== 0)) {
+      const nextPlayer = applySketchRewards({ ...rewardOptions, baseStats: player, defeatedIds: [item.id] });
+      if (rewards.some(({ statName }) => nextPlayer[statName] !== player[statName])) {
+        baseline ??= simulate(stats);
+        winRate = simulate(nextPlayer);
+        player = nextPlayer;
+      }
+    }
+
+    // Pair the target trials and anchor their measured difference to the reported win rate.
+    const nextProjected = baseline == null ? current : clamp01(current + (winRate - baseline));
+    improvesTarget ||= nextProjected > current;
+    curve.push({
+      step: curve.length + 1,
+      id: item.id,
+      name: item.name,
+      projectedWinRate: roundNumber(nextProjected),
+      gain: roundNumber(nextProjected - projected),
+      reachesTarget: nextProjected >= targetWinRate && winRate >= targetWinRate && winRate > baseline,
     });
+    projected = nextProjected;
+  }
+  const hasUnverifiedCandidates = candidates.slice(MAX_FARM_STEPS).some((item) => item.expectedStatScore > 0);
+  return { curve, improvesTarget, hasUnverifiedCandidates };
 }
 
 function rarityProfileScore(rarity) {
@@ -1262,21 +1326,13 @@ function bestStatRewards(rewards = [], targetStatWeights = {}) {
 }
 
 function normalizeCurrentRows({ currentRun, state, sketches }) {
-  let rows = currentRun?.targets ?? [];
-  if (rows.length === 0) {
-    const hidden = new Set(normalizeList(state.hiddenSketches));
-    rows = normalizeList(state.availableSketches)
-      .map((id) => sketches[id])
-      .filter(Boolean)
-      .map((sketch) => ({
-        id: sketch.id,
-        name: sketch.name,
-        rarity: sketch.rarity,
-        hidden: hidden.has(sketch.id),
-      }));
-  }
-
+  const hidden = new Set(normalizeList(state.hiddenSketches));
+  const rows = currentRun?.targets ?? normalizeList(state.availableSketches)
+    .map((id) => sketches[id])
+    .filter(Boolean)
+    .map(({ id, name, rarity }) => ({ id, name, rarity }));
   return rows
+    .filter((row) => !row.hidden && !hidden.has(row.id))
     .map((row) => normalizeCurrentRow(row, state))
     .filter((row) => row.remainingToMax > 0);
 }
@@ -1290,6 +1346,7 @@ function normalizeCurrentRow(row, state) {
     hidden: Boolean(row.hidden),
     winRate: toNumber(row.winRate),
     p90Seconds: toNumber(row.p90Seconds, row.medianSeconds ?? 60),
+    p90Censored: row.p90Seconds == null ? Boolean(row.medianCensored) : Boolean(row.p90Censored),
     medianSeconds: toNumber(row.medianSeconds),
     remainingToMax: Math.min(toNumber(row.remainingToMax, remaining), remaining),
   };

@@ -223,7 +223,6 @@ function problem(code, stat, current, target, message) {
 }
 
 function getActiveRunItems({ sketches, state, targetId, profile }) {
-  const hidden = new Set(normalizeList(state.hiddenSketches));
   const availableIds = normalizeList(state.availableSketches);
   const ids = availableIds.length > 0
     ? availableIds
@@ -232,7 +231,6 @@ function getActiveRunItems({ sketches, state, targetId, profile }) {
   return rankSketches({
     sketches: Object.fromEntries(ids
       .filter((id) => id !== targetId)
-      .filter((id) => !hidden.has(id))
       .filter((id) => remainingSketchVictories(state, id) > 0)
       .map((id) => [id, sketches[id]])
       .filter(([, sketch]) => Boolean(sketch))),
@@ -242,8 +240,9 @@ function getActiveRunItems({ sketches, state, targetId, profile }) {
 }
 
 function rankSketches({ sketches, profile, state }) {
+  const hidden = new Set(normalizeList(state.hiddenSketches));
   return Object.values(sketches)
-    .filter(Boolean)
+    .filter((sketch) => sketch && !hidden.has(sketch.id))
     .map((sketch) => scoreSketch({ sketch, profile, state }))
     .sort((a, b) => {
       if (b.score !== a.score) return b.score - a.score;

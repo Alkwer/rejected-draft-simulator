@@ -49,6 +49,7 @@ export function runBenchmark({
     winRate: summary.winRate,
     timeoutRate: summary.timeoutRate,
     medianSeconds: summary.medianSeconds,
+    medianCensored: summary.medianCensored,
   };
 }
 

@@ -106,7 +106,7 @@ function showFight(fight, monitorStatus) {
   byId("forecastOdds").textContent = `Victory ${percentages.format(probabilities.win)} · Defeat ${percentages.format(probabilities.loss)} · At limit ${percentages.format(probabilities.timeout)}`;
   byId("forecastMedian").textContent = `${quantile(duration.medianSeconds, duration.medianCensored)} median`;
   byId("forecastRange").textContent = `${quantile(duration.p10Seconds, duration.p10Censored)} – ${quantile(duration.p90Seconds, duration.p90Censored)}`;
-  byId("forecastInfo").textContent = `${numbers.format(forecast.trials)} simulated fights · ${seconds(forecast.maxSeconds)} limit · ${numbers.format(enemy.maxHp)} enemy HP${enemy.isPreciseErased ? " after Precise Eraser" : ""}.`;
+  byId("forecastInfo").textContent = `${forecast.dataMetadata?.buildId ? `Steam build ${forecast.dataMetadata.buildId} · ` : ""}${numbers.format(forecast.trials)} simulated fights · ${seconds(forecast.maxSeconds)} limit · ${numbers.format(enemy.maxHp)} enemy HP${enemy.isPreciseErased ? " after Precise Eraser" : ""}.`;
   byId("actualOutcome").textContent = "—";
   byId("actualTime").textContent = "—";
   byId("actualRange").textContent = "—";

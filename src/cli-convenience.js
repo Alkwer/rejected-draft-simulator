@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { runMonteCarlo } from "./combat.js";
+import { createMonteCarloAccumulator, runMonteCarlo } from "./combat.js";
 import { findActiveSteamSave, toNumber } from "./save.js";
 import { enemyFromSketch } from "./combat/steam-encounter.js";
 import { maxSketchVictories, remainingSketchVictories } from "./victory-limit.js";
@@ -101,25 +101,19 @@ export function runCombatSimulation({
   }
 
   const targetHalfWidth = setting.targetHalfWidth ?? 0.02;
-  let trials = Math.max(1, Math.floor(setting.initialTrials ?? 400));
-  const maxTrials = Math.max(trials, Math.floor(setting.maxTrials ?? 8000));
+  const initial = Number(setting.initialTrials ?? 400);
+  const limit = Number(setting.maxTrials ?? 8000);
+  let trials = Math.max(1, Math.floor(Number.isFinite(initial) ? initial : 400));
+  const maxTrials = Math.max(trials, Math.floor(Number.isFinite(limit) ? limit : 8000));
   let runs = 0;
-  let result = null;
+  const simulation = createMonteCarloAccumulator({ player, enemy, maxSeconds, seed, assumptions });
 
-  while (trials <= maxTrials) {
+  while (true) {
     runs += 1;
-    result = runMonteCarlo({
-      player,
-      enemy,
-      trials,
-      maxSeconds,
-      seed: `${seed}:auto:${trials}`,
-      assumptions,
-    });
-    const halfWidth = result.winRateCi95?.halfWidth ?? 1;
+    const { halfWidth } = simulation.advanceTo(trials);
     if (halfWidth <= targetHalfWidth || trials >= maxTrials) {
       return {
-        ...result,
+        ...simulation.finish(),
         autoTrials: {
           mode: "auto",
           stable: halfWidth <= targetHalfWidth,
@@ -129,19 +123,8 @@ export function runCombatSimulation({
         },
       };
     }
-    trials = Math.min(maxTrials, Math.max(trials + 1, trials * 2));
+    trials = Math.min(maxTrials, trials * 2);
   }
-
-  return {
-    ...result,
-    autoTrials: {
-      mode: "auto",
-      stable: false,
-      targetHalfWidth,
-      runs,
-      maxTrials,
-    },
-  };
 }
 
 export function createCurrentRunReport({
@@ -204,7 +187,9 @@ export function createCurrentRunReport({
       ci95HalfWidth: round(simulation.winRateCi95?.halfWidth ?? 0),
       timeoutRate: round(simulation.timeoutRate ?? 0),
       medianSeconds: round(simulation.medianSeconds ?? 0),
+      medianCensored: simulation.medianCensored,
       p90Seconds: round(simulation.p90Seconds ?? 0),
+      p90Censored: simulation.p90Censored,
       topFailure: topKey(simulation.defeatCauses) ?? topKey(simulation.timeoutDiagnoses),
       topVictory: topKey(simulation.victoryCauses),
       autoTrials: simulation.autoTrials,
