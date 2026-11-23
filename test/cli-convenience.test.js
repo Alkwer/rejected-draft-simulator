@@ -87,6 +87,36 @@ test("runCombatSimulation supports trials auto and records stability metadata", 
   assert.equal(result.wins, result.trials);
 });
 
+test("auto trials reuse the fixed seed sequence without repeating fights", () => {
+  let reads = 0;
+  const fighter = { maxHp: 100, attack: 10, attackSpeed: 1000, dodge: 20, critChance: 15 };
+  const options = {
+    player: { ...fighter, get maxHp() { reads += 1; return fighter.maxHp; } },
+    enemy: fighter,
+    maxSeconds: 20,
+    seed: "balanced-auto-trials",
+  };
+  const { autoTrials, ...auto } = runCombatSimulation({ ...options, trialsSetting: parseTrialsSetting("auto", {
+    initialTrials: 16,
+    maxTrials: 96,
+    targetHalfWidth: 0.01,
+  }) });
+  const autoReads = reads;
+  reads = 0;
+  const { autoTrials: fixedTrials, ...fixed } = runCombatSimulation({
+    ...options,
+    trialsSetting: parseTrialsSetting(auto.trials),
+  });
+
+  assert.equal(autoTrials.runs, 4);
+  assert.equal(autoTrials.stable, false);
+  assert.equal(auto.trials, 96);
+  assert.equal(fixedTrials.mode, "fixed");
+  assert.ok(auto.wins > 0 && auto.losses > 0);
+  assert.equal(autoReads, reads);
+  assert.deepEqual(auto, fixed);
+});
+
 test("parseTrialsSetting defaults to auto when omitted", () => {
   const setting = parseTrialsSetting();
 
@@ -165,7 +195,11 @@ test("createCurrentRunReport applies Steam universe scaling to catalog sketches 
   });
 
   assert.equal(report.targets.find(({ id }) => id === "exhibition").winRate, 1);
-  assert.equal(report.targets.find(({ id }) => id === "study").timeoutRate, 1);
+  assert.equal(report.targets.find(({ id }) => id === "exhibition").medianCensored, false);
+  const study = report.targets.find(({ id }) => id === "study");
+  assert.equal(study.timeoutRate, 1);
+  assert.equal(study.medianCensored, true);
+  assert.equal(study.p90Censored, true);
 });
 
 test("createRunRecommendation returns a concrete finish or redraw decision", () => {

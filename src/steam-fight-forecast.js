@@ -52,9 +52,7 @@ export function createSteamFightForecast(input) {
   const result = runMonteCarlo({
     player, enemy, assumptions, trials, seed, maxSeconds,
   });
-  const { winRate: win, losses, timeoutRate: timeout, medianSeconds, p10Seconds } = result;
-  // The engine's rounded-down percentile index can be below its median index with two trials.
-  const p90Seconds = Math.max(medianSeconds, result.p90Seconds);
+  const { winRate: win, losses, timeoutRate: timeout } = result;
 
   return freezeSnapshot(JSON.parse(JSON.stringify({
     target,
@@ -69,12 +67,12 @@ export function createSteamFightForecast(input) {
     maxSeconds,
     probabilities: { win, loss: losses / trials, timeout },
     duration: {
-      medianSeconds,
-      p10Seconds,
-      p90Seconds,
-      medianCensored: medianSeconds >= maxSeconds,
-      p10Censored: p10Seconds >= maxSeconds,
-      p90Censored: p90Seconds >= maxSeconds,
+      medianSeconds: result.medianSeconds,
+      p10Seconds: result.p10Seconds,
+      p90Seconds: result.p90Seconds,
+      medianCensored: result.medianCensored,
+      p10Censored: result.p10Censored,
+      p90Censored: result.p90Censored,
     },
   })));
 }

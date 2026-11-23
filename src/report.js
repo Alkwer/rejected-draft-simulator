@@ -58,9 +58,13 @@ export function createCombatReport({
     },
     time: {
       averageSeconds: round(toNumber(simulation?.avgSeconds)),
+      avgCensored: simulation?.avgCensored ?? false,
       medianSeconds: round(toNumber(simulation?.medianSeconds)),
+      medianCensored: simulation?.medianCensored ?? false,
       p10Seconds: round(toNumber(simulation?.p10Seconds)),
+      p10Censored: simulation?.p10Censored ?? false,
       p90Seconds: round(toNumber(simulation?.p90Seconds)),
+      p90Censored: simulation?.p90Censored ?? false,
       timeoutRate: round(simulation?.timeoutRate ?? safeRate(simulation?.timeouts, trials)),
     },
     breakdowns: {
@@ -148,8 +152,8 @@ export function exportMarkdownReport(report) {
   const interval = { lower: report.winRate.ci95Lower, upper: report.winRate.ci95Upper };
   lines.push(`- Win rate: ${formatPercent(report.winRate.value)} (95% CI ${formatConfidenceInterval(interval)})`);
   lines.push(`- Wins / losses / timeouts: ${report.outcomes.wins} / ${report.outcomes.losses} / ${report.outcomes.timeouts}`);
-  lines.push(`- Average / median fight: ${formatSeconds(report.time.averageSeconds)} / ${formatSeconds(report.time.medianSeconds)}`);
-  lines.push(`- p10 / p90: ${formatSeconds(report.time.p10Seconds)} / ${formatSeconds(report.time.p90Seconds)}`);
+  lines.push(`- Average / median fight: ${formatSeconds(report.time.averageSeconds, report.time.avgCensored)} / ${formatSeconds(report.time.medianSeconds, report.time.medianCensored)}`);
+  lines.push(`- p10 / p90: ${formatSeconds(report.time.p10Seconds, report.time.p10Censored)} / ${formatSeconds(report.time.p90Seconds, report.time.p90Censored)}`);
   lines.push(`- Timeout rate: ${formatPercent(report.time.timeoutRate)}`);
   lines.push("");
   lines.push("## Victory Breakdown");
@@ -292,8 +296,8 @@ function formatPercent(value) {
   return `${(toNumber(value) * 100).toFixed(2)}%`;
 }
 
-function formatSeconds(value) {
-  return `${toNumber(value).toFixed(2)}s`;
+export function formatSeconds(value, censored = false, digits = 2) {
+  return `${censored ? "≥" : ""}${toNumber(value).toFixed(digits)}s`;
 }
 
 function formatNumber(value) {

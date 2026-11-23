@@ -75,9 +75,11 @@ test("exportMarkdownReport renders report sections", () => {
       timeouts: 5,
       winRate: 0.5,
       avgSeconds: 8,
+      avgCensored: true,
       medianSeconds: 7,
       p10Seconds: 3,
       p90Seconds: 15,
+      p90Censored: true,
       timeoutRate: 0.25,
       victoryCauses: { raw_damage: 10 },
       defeatCauses: { raw_attack: 5, stall: 5 },
@@ -89,6 +91,8 @@ test("exportMarkdownReport renders report sections", () => {
   assert.match(markdown, /# Combat Report: Duct-Taped Banana/);
   assert.match(markdown, /Win rate/);
   assert.match(markdown, /p10 \/ p90/);
+  assert.match(markdown, /≥8\.00s \/ 7\.00s/);
+  assert.match(markdown, /3\.00s \/ ≥15\.00s/);
   assert.match(markdown, /Failure Breakdown/);
   assert.match(markdown, /Stat Thresholds/);
 });

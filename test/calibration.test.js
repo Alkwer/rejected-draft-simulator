@@ -145,6 +145,23 @@ test("calibration excludes censored simulated medians and observed timeouts from
     simulated: { summary: { medianSeconds: 2 } } }]).durationMultiplier.value, null);
 });
 
+test("calibration keeps a completed median even when half the trials timed out at the same time", () => {
+  const report = createCalibrationReport({
+    save: { state: { combatLog: [{ targetId: "wall", outcome: "win", seconds: 5 }] } },
+    sketches: { wall: { stats: { maxHp: 15, attack: 0, attackSpeed: 8000 } } },
+    player: { maxHp: 100, attack: 10, attackSpeed: 999.9999, critChance: 50, minDamage: 100, maxDamage: 100 },
+    trials: 2,
+    maxSeconds: 1,
+    seed: "0",
+  });
+
+  const { predicted } = report.comparisons[0];
+  assert.equal(predicted.timeoutRate, 0.5);
+  assert.equal(predicted.medianSeconds, 1);
+  assert.equal(predicted.medianCensored, false);
+  assert.equal(report.tuning.durationMultiplier.sampleCount, 1);
+});
+
 test("suggestCalibrationTuning derives status, reflect and duration multipliers", () => {
   const tuning = suggestCalibrationTuning([
     {

@@ -86,8 +86,7 @@ export function confidenceInterval95(rate, trials) {
   };
 }
 
-export function percentile(sortedValues, probability) {
-  if (sortedValues.length === 0) return 0;
-  const index = Math.min(sortedValues.length - 1, Math.max(0, Math.floor(probability * (sortedValues.length - 1))));
-  return sortedValues[index] ?? 0;
+export function percentile(sortedValues, probability, fallback = 0) {
+  const index = clamp(Math.ceil(probability * sortedValues.length) - 1, 0, sortedValues.length - 1);
+  return sortedValues[index] ?? fallback;
 }

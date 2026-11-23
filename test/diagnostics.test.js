@@ -58,6 +58,7 @@ test("createDiagnosticReport explains low win rate, sanity, warnings and confide
     thresholds: [
       { stat: "damagePerSecond", current: 1000, target: 1e9, reason: "Beat HP and regen before timeout." },
       { stat: "armorPen", current: 0, target: 1e9, reason: "Avoid direct damage collapsing into armor." },
+      { stat: "maxHp", current: 10000, target: 900 },
     ],
     breakdowns: {
       failures: [
@@ -79,6 +80,7 @@ test("createDiagnosticReport explains low win rate, sanity, warnings and confide
   assert.equal(diagnostics.confidence.level, "low");
   assert.ok(diagnostics.why.some((item) => item.code === "regen_wall"));
   assert.ok(diagnostics.why.some((item) => item.code === "armor_wall"));
+  assert.ok(diagnostics.why.every((item) => item.code !== "threshold_maxHp"));
   assert.ok(diagnostics.sanityChecks.some((item) => item.code === "zero_win_rate" && item.status === "hard_wall"));
   assert.ok(diagnostics.warnings.some((item) => item.code === "special_immunities"));
   assert.ok(diagnostics.warnings.some((item) => item.code === "vulnerability_model"));
@@ -155,14 +157,13 @@ test("createModelAssumptionComparisons compares status, DoT and enemy buff assum
   const target = {
     id: "assumption_target",
     name: "Assumption Target",
-    stats: { maxHp: 2000, attack: 10, attackSpeed: 1000, burnChance: 3000, thornsChance: 3000 },
+    stats: { maxHp: 2500, attack: 10, attackSpeed: 500, burnChance: 2500, burnDamage: 1000 },
     immunities: [],
     vulnerability: null,
   };
   const comparisons = createModelAssumptionComparisons({
     target,
     player,
-    baseline: { winRate: 0.5, timeoutRate: 0.1, p90Seconds: 10 },
     trials: 40,
     maxSeconds: 20,
     seed: "assumption-comparison",
@@ -175,7 +176,21 @@ test("createModelAssumptionComparisons compares status, DoT and enemy buff assum
     "enemy_buff_x1",
   ]);
   assert.ok(comparisons.every((item) => Number.isFinite(item.winRate)));
-  assert.ok(comparisons.some((item) => item.deltaWinRate !== 0));
+  assert.ok(comparisons.find((item) => item.id === "enemy_status_x1").deltaWinRate < 0);
+  assert.ok(comparisons.find((item) => item.id === "dot_half").deltaWinRate > 0);
+  assert.equal(comparisons.find((item) => item.id === "enemy_buff_x1").deltaWinRate, 0);
+});
+
+test("irrelevant mechanic variants give exactly the paired baseline even for a close fight", () => {
+  const stats = { maxHp: 100, attack: 100, attackSpeed: 1000, minDamage: 75, maxDamage: 125 };
+  const rows = createModelAssumptionComparisons({ player: stats,
+    target: { id: "plain", stats: { ...stats, attackSpeed: 1100 } }, trials: 100, maxSeconds: 5, seed: "audit" });
+  assert.ok(rows[0].winRate > 0 && rows[0].winRate < 1);
+  for (const row of rows) {
+    assert.equal(row.trials, 100);
+    assert.equal(row.deltaWinRate, 0);
+    assert.equal(row.p90Seconds, rows[0].p90Seconds);
+  }
 });
 
 test("regression diagnostics cover Kahlo/Joan false zero, Duct false full and Vinchy false high cases", () => {

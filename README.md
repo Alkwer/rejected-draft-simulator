@@ -57,6 +57,8 @@ The Steam slot contains recent victory and defeat notifications. Each linked not
 
 The monitor accepts the first matching fight it sees that started after the capture and finished before the next Hyena Hulk capture for that slot. Steam retains up to ten notifications in docked mode and five in basic mode. If the saved history has rolled over or lacks timing, the entry explains how to proceed. **Enter or correct a result manually** also works with exports and other opponents.
 
+Each Steam forecast records its catalog build, simulation seed, trial count and time limit. Keep separate groups of attempts for each build, universe and setup when checking predicted win rates.
+
 The comparison shows how often the observed outcome occurred in the simulations, the difference from their median duration and whether the time fell between the 10th and 90th percentiles. If you stop timing a fight that is still running, select **Still fighting at cutoff**. A **≥** marks a lower bound wherever the time limit prevents an exact duration.
 
 Reopen the entry under **Saved fights** to review it, correct the observed result or download the original pre-fight save. The local archive lives in `.local/steam-fights/` and survives server restarts and slot changes. Capturing another fight creates a separate entry.
@@ -280,6 +282,10 @@ Known approximations:
 - Route mode simulates a declared plan. It does not yet choose the optimal route automatically.
 - Redraw planning is a Monte Carlo estimate. Exact game redraw weights are still inferred from observed mechanics and local bundle parsing.
 - Build advisor is heuristic. Use route simulation or combat simulation to verify close calls.
+
+The median, p10 and p90 use empirical nearest ranks. A ≥ before a time marks a lower bound caused by the simulation cutoff. Diagnostics show the win-rate interval and model build status separately. Model-assumption comparisons use the same trial seeds for each variant. Auto trials extend the existing sample until the interval is narrow enough or the trial limit is reached.
+
+The target-readiness planner checks up to eight successive sketch victories using up to 200 paired target fights per build. Each step assumes the preceding rewards were collected. A step can trigger the target attempt when its measured gain brings the projection to the goal and its paired win rate reaches that goal.
 
 For build comparison, run the same target with the same save and different stat source or edited save snapshots.
 

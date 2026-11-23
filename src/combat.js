@@ -60,26 +60,24 @@ export const DEFAULT_COMBAT_ASSUMPTIONS = {
   flowStateKnownTargetIds: [],
 };
 
-export function runMonteCarlo({
+export function runMonteCarlo({ trials = 1000, ...options }) {
+  const simulation = createMonteCarloAccumulator(options);
+  simulation.advanceTo(trials);
+  return simulation.finish();
+}
+
+export function createMonteCarloAccumulator({
   player,
   enemy,
-  trials = 1000,
   seed = "default",
   maxSeconds = 300,
   assumptions = {},
 }) {
   const summary = {
-    trials,
+    trials: 0,
     wins: 0,
     losses: 0,
     timeouts: 0,
-    winRate: 0,
-    avgSeconds: 0,
-    medianSeconds: 0,
-    p10Seconds: 0,
-    p90Seconds: 0,
-    timeoutRate: 0,
-    winRateCi95: { lower: 0, upper: 0, halfWidth: 0 },
     reasons: {},
     deathCauses: {},
     timeoutDiagnoses: {},
@@ -90,45 +88,67 @@ export function runMonteCarlo({
   let totalSeconds = 0;
   const effectiveEnemy = buildSteamEnemy(enemy, assumptions.steam);
 
-  for (let i = 0; i < trials; i += 1) {
-    const result = simulateFight({
-      rng: createRng(`${seed}:${i}`),
-      player,
-      enemy: effectiveEnemy,
-      maxSeconds,
-      assumptions,
-    });
-    if (result.winner === "player") summary.wins += 1;
-    else if (result.winner === "enemy") summary.losses += 1;
-    else summary.timeouts += 1;
-    summary.reasons[result.reason] = (summary.reasons[result.reason] ?? 0) + 1;
-    if (result.deathCause) {
-      summary.deathCauses[result.deathCause] = (summary.deathCauses[result.deathCause] ?? 0) + 1;
+  function advanceTo(trials) {
+    while (summary.trials < trials) {
+      const result = simulateFight({
+        rng: createRng(`${seed}:${summary.trials}`),
+        player,
+        enemy: effectiveEnemy,
+        maxSeconds,
+        assumptions,
+      });
+      summary.trials += 1;
+      if (result.winner === "player") summary.wins += 1;
+      else if (result.winner === "enemy") summary.losses += 1;
+      else summary.timeouts += 1;
+      summary.reasons[result.reason] = (summary.reasons[result.reason] ?? 0) + 1;
+      if (result.deathCause) {
+        summary.deathCauses[result.deathCause] = (summary.deathCauses[result.deathCause] ?? 0) + 1;
+      }
+      if (result.timeoutDiagnosis) {
+        summary.timeoutDiagnoses[result.timeoutDiagnosis] = (summary.timeoutDiagnoses[result.timeoutDiagnosis] ?? 0) + 1;
+      }
+      if (result.winner === "player") {
+        const cause = result.victoryCause;
+        summary.victoryCauses[cause] = (summary.victoryCauses[cause] ?? 0) + 1;
+      } else {
+        const cause = classifyDefeatCause({ result, player, enemy: effectiveEnemy });
+        summary.defeatCauses[cause] = (summary.defeatCauses[cause] ?? 0) + 1;
+      }
+      totalSeconds += result.seconds;
+      durations.push({ seconds: result.seconds, censored: result.winner === "timeout" });
     }
-    if (result.timeoutDiagnosis) {
-      summary.timeoutDiagnoses[result.timeoutDiagnosis] = (summary.timeoutDiagnoses[result.timeoutDiagnosis] ?? 0) + 1;
-    }
-    if (result.winner === "player") {
-      const cause = classifyVictoryCause({ result, player });
-      summary.victoryCauses[cause] = (summary.victoryCauses[cause] ?? 0) + 1;
-    } else {
-      const cause = classifyDefeatCause({ result, player, enemy: effectiveEnemy });
-      summary.defeatCauses[cause] = (summary.defeatCauses[cause] ?? 0) + 1;
-    }
-    totalSeconds += result.seconds;
-    durations.push(result.seconds);
+    return winRateCi95();
   }
 
-  durations.sort((a, b) => a - b);
-  const safeTrials = Math.max(1, trials);
-  summary.winRate = summary.wins / safeTrials;
-  summary.timeoutRate = summary.timeouts / safeTrials;
-  summary.winRateCi95 = confidenceInterval95(summary.winRate, safeTrials);
-  summary.avgSeconds = totalSeconds / safeTrials;
-  summary.medianSeconds = durations[Math.floor(durations.length / 2)] ?? 0;
-  summary.p10Seconds = percentile(durations, 0.1);
-  summary.p90Seconds = percentile(durations, 0.9);
-  return summary;
+  function winRateCi95() {
+    return confidenceInterval95(summary.wins / Math.max(1, summary.trials), summary.trials);
+  }
+
+  function finish() {
+    // A completion at the same recorded time precedes the lower bound of a censored trial.
+    durations.sort((a, b) => a.seconds - b.seconds || Number(a.censored) - Number(b.censored));
+    const p10 = percentile(durations, 0.1, null);
+    const median = percentile(durations, 0.5, null);
+    const p90 = percentile(durations, 0.9, null);
+    const safeTrials = Math.max(1, summary.trials);
+    return {
+      ...summary,
+      winRate: summary.wins / safeTrials,
+      timeoutRate: summary.timeouts / safeTrials,
+      winRateCi95: winRateCi95(),
+      avgSeconds: totalSeconds / safeTrials,
+      avgCensored: summary.timeouts > 0,
+      p10Seconds: p10?.seconds ?? 0,
+      p10Censored: p10?.censored ?? false,
+      medianSeconds: median?.seconds ?? 0,
+      medianCensored: median?.censored ?? false,
+      p90Seconds: p90?.seconds ?? 0,
+      p90Censored: p90?.censored ?? false,
+    };
+  }
+
+  return { advanceTo, finish };
 }
 
 export function simulateFight({ rng = Math.random, player, enemy, maxSeconds = 300, assumptions = {}, trace = null }) {
@@ -164,6 +184,9 @@ export function simulateFight({ rng = Math.random, player, enemy, maxSeconds = 3
       player: createHealingBreakdown(),
       enemy: createHealingBreakdown(),
     },
+    enemyStatusDamage: {},
+    enemyHealingPreventedByFreeze: 0,
+    executeContributedDamage: false,
     mechanicEvents: [],
     damageEvents: [],
     pendingEffects: [],
@@ -370,6 +393,7 @@ function finish(winner, reason, combat, extra = {}) {
     deathCause,
     ...extra,
   };
+  if (winner === "player") result.victoryCause = classifyVictoryCause(combat);
   if (combat.trace) {
     recordTrace(combat, "finish", { winner, reason, deathCause });
     result.trace = combat.trace.events;
@@ -404,7 +428,11 @@ function applyRegenerationWithFreeze(combat, side, healing, deltaSeconds, rng) {
   const freeze = statuses.Freeze ?? 0;
 
   if (healing > 0) {
+    const healingWithoutFreeze = side === "enemy" && freeze > 0
+      ? clamp(combatantMaxHp(combat.enemy) - combat.enemyHp, 0, healing)
+      : 0;
     if (freeze > 100) {
+      combat.enemyHealingPreventedByFreeze += healingWithoutFreeze;
       const beforeHp = combat[`${side}Hp`];
       const convertedDamage = healing * (freeze / 100 - 1);
       const dealtDamage = applyDamageToSide(combat, side, convertedDamage, rng, "status", {
@@ -426,6 +454,7 @@ function applyRegenerationWithFreeze(combat, side, healing, deltaSeconds, rng) {
       return;
     }
     const healingTrace = healSide(combat, side, healing * Math.max(0, 1 - freeze / 100), "regen");
+    combat.enemyHealingPreventedByFreeze += Math.max(0, healingWithoutFreeze - healingTrace.appliedHealing);
     if (healingTrace.appliedHealing > 0) {
       recordMechanic(combat, {
         type: "regen",
@@ -714,12 +743,16 @@ function performAttack({ rng, combat, attackerSide, defenderSide }) {
     }
 
     const mitigationCapture = {};
+    if (attackerSide === "player" && targetSide === "enemy" && offenseTrace.execute?.triggered) {
+      mitigationCapture.damageWithoutExecute = damage / (stat(attacker, "execute") / 100);
+    }
     damage = applyDefensiveMitigation(rng, damage, attacker, target, targetStatuses, isSurreal, {
       combat,
       attackerSide,
       defenderSide: targetSide,
       capture: mitigationCapture,
     });
+    const paralysisMultiplier = combat.assumptions.steam && targetStatuses.ParalysisExposed > 0 ? 2 : 1;
     damage = applyParalysisExposure(combat, targetSide, damage);
 
     let electrocuteTrace = null;
@@ -756,6 +789,15 @@ function performAttack({ rng, combat, attackerSide, defenderSide }) {
       defenderSide: targetSide,
       tags: directDamageTags(offenseTrace, mitigationCapture.trace, directModifierCapture.trace, electrocuteTrace),
     });
+    if (mitigationCapture.damageWithoutExecute != null && appliedDamage > 0) {
+      const baseline = mitigationCapture.damageWithoutExecute * paralysisMultiplier;
+      const baselineElectrocute = electrocuteTrace ? baseline * (electrocute / 100) * electrocuteTrace.roll : 0;
+      const baselineDirect = applyDirectStatusDamageModifiers(baseline, targetStatuses);
+      const baselineDamage = Math.min(targetHpBeforeHit, baselineDirect + baselineElectrocute);
+      if (appliedDamage - baselineDamage > Number.EPSILON * appliedDamage * 8) {
+        combat.executeContributedDamage = true;
+      }
+    }
     totalDamage += appliedDamage;
     if (targetSide === defenderSide) originalDefenderDamage += appliedDamage;
 
@@ -980,6 +1022,7 @@ function applyOffensiveMultipliers(rng, damage, attacker, defender, defenderHp, 
 
 function applyDefensiveMitigation(rng, damage, attacker, defender, defenderStatuses, isSurreal, options = {}) {
   let result = damage;
+  let damageWithoutExecute = options.capture?.damageWithoutExecute;
   const trace = {
     type: "mitigation",
     attackerSide: options.attackerSide,
@@ -995,7 +1038,10 @@ function applyDefensiveMitigation(rng, damage, attacker, defender, defenderStatu
     if (blockSuccess || blockChance > 0) {
       const before = result;
       const blockAmount = blockSuccess ? stat(defender, "blockAmount") : 0;
-      if (blockSuccess) result = Math.max(0, result - blockAmount);
+      if (blockSuccess) {
+        result = Math.max(0, result - blockAmount);
+        if (damageWithoutExecute != null) damageWithoutExecute = Math.max(0, damageWithoutExecute - blockAmount);
+      }
       trace.block = {
         chance: roundTraceNumber(blockChance),
         success: blockSuccess,
@@ -1011,6 +1057,7 @@ function applyDefensiveMitigation(rng, damage, attacker, defender, defenderStatu
     const effectiveArmor = Math.max(0, stat(defender, "armor") - stat(attacker, "armorPen"));
     const beforeArmor = result;
     result = Math.max(0, result - effectiveArmor);
+    if (damageWithoutExecute != null) damageWithoutExecute = Math.max(0, damageWithoutExecute - effectiveArmor);
     if (effectiveArmor > 0) {
       trace.armor = {
         amount: roundTraceNumber(effectiveArmor),
@@ -1024,6 +1071,7 @@ function applyDefensiveMitigation(rng, damage, attacker, defender, defenderStatu
     const absorb = absorbPercent / 100;
     const beforeAbsorb = result;
     result *= 1 - absorb;
+    if (damageWithoutExecute != null) damageWithoutExecute *= 1 - absorb;
     if (absorbPercent > 0) {
       trace.absorb = {
         percent: roundTraceNumber(absorbPercent),
@@ -1035,6 +1083,7 @@ function applyDefensiveMitigation(rng, damage, attacker, defender, defenderStatu
   }
 
   result = Math.max(0, result);
+  if (damageWithoutExecute != null) options.capture.damageWithoutExecute = Math.max(0, damageWithoutExecute);
   if (changed) {
     trace.finalDamage = roundTraceNumber(result);
     if (options.capture) options.capture.trace = trace;
@@ -1665,6 +1714,11 @@ function applyDamageToSide(combat, side, damage, rng, source = "direct", detail 
 
   const applied = Math.max(0, before - Math.max(0, combat[hpKey]));
   addBreakdown(combat.damageBreakdown[side], source, applied);
+  if (side === "enemy" && source === "status" && applied > 0) {
+    const status = detail.tags?.find((tag) => HARMFUL_STATUSES.has(tag)) ?? "other";
+    const breakdown = combat.enemyStatusDamage;
+    breakdown[status] = (breakdown[status] ?? 0) + applied;
+  }
   recordDamageEvent(combat, {
     side,
     source,
@@ -1736,18 +1790,16 @@ function healSide(combat, side, healing, source = "other") {
   };
 }
 
-function classifyVictoryCause({ result, player }) {
-  const breakdown = result.damageBreakdown?.enemy;
-  const dominant = dominantDamageSource(breakdown);
+function classifyVictoryCause(combat) {
+  const dominant = dominantDamageSource(combat.damageBreakdown.enemy);
   if (dominant === "status") {
-    if (statRaw(player, "bleedChance") > 0) return "bleed";
-    if (statRaw(player, "burnChance") > 0 || statRaw(player, "burnDamage") > 0) return "burn";
-    return "status_damage";
+    const status = dominantDamageSource(combat.enemyStatusDamage);
+    return { Bleed: "bleed", Burn: "burn", Freeze: "freeze_chain" }[status] ?? "status_damage";
   }
   if (dominant === "reflect" || dominant === "parry") return "thorns_counter";
   if (dominant === "energyWave") return "energy_wave";
-  if (statRaw(player, "execute") > 100) return "execute";
-  if (statRaw(player, "freezeChance") > 0 && result.seconds > 2) return "freeze_chain";
+  if (combat.executeContributedDamage) return "execute";
+  if (combat.enemyHealingPreventedByFreeze > 0) return "freeze_chain";
   return "raw_damage";
 }
 

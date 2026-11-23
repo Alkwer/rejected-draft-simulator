@@ -53,6 +53,8 @@ const els = {
   failureBreakdown: document.querySelector("#failureBreakdown"),
   thresholds: document.querySelector("#thresholds"),
   confidenceBadge: document.querySelector("#confidenceBadge"),
+  diagnosticSample: document.querySelector("#diagnosticSample"),
+  modelBuildStatus: document.querySelector("#modelBuildStatus"),
   whyResultList: document.querySelector("#whyResultList"),
   sanityChecksList: document.querySelector("#sanityChecksList"),
   mechanicWarningsList: document.querySelector("#mechanicWarningsList"),
@@ -441,7 +443,7 @@ function renderResourceStrip(analysis) {
   els.stripWin.textContent = percent(result.winRate);
   els.stripWinDetail.textContent = `95% CI ${confidenceRange(result.winRateCi95)}`;
   els.stripTimeout.textContent = percent(result.timeoutRate ?? 0);
-  els.stripTimeDetail.textContent = `p90 ${seconds(result.p90Seconds)}`;
+  els.stripTimeDetail.textContent = `p90 ${seconds(result.p90Seconds, result.p90Censored)}`;
   els.stripDecision.textContent = compactDecision(analysis.recommendation?.action ?? "--");
 }
 
@@ -564,7 +566,7 @@ function renderResult(analysis) {
   els.winRate.textContent = percent(result.winRate);
   els.winRateCi.textContent = `95% CI ${confidenceRange(result.winRateCi95)} | ${result.trials} attempts`;
   els.timeoutRate.textContent = percent(result.timeoutRate ?? 0);
-  els.fightTime.textContent = `median ${seconds(result.medianSeconds)} | p90 ${seconds(result.p90Seconds)}${timeLimitNote(result)}`;
+  els.fightTime.textContent = `median ${seconds(result.medianSeconds, result.medianCensored)} | p90 ${seconds(result.p90Seconds, result.p90Censored)}${timeLimitNote(result)}`;
   els.decision.textContent = analysis.recommendation.action;
   els.decisionReason.textContent = analysis.recommendation.targetId ?? analysis.recommendation.reason;
 
@@ -610,6 +612,10 @@ function renderThresholds(items) {
 }
 
 function renderDiagnostics(diagnostics) {
+  els.diagnosticSample.parentElement.hidden = !diagnostics;
+  els.diagnosticSample.textContent = diagnostics
+    ? `Win rate 95% CI ${confidenceRange(diagnostics.sample.ci95)} · ${diagnostics.sample.trials} attempts` : "";
+  els.modelBuildStatus.textContent = diagnostics?.modelBuild.label ?? "";
   if (!diagnostics) {
     els.confidenceBadge.textContent = "none";
     renderSimpleList(els.whyResultList, []);
@@ -621,7 +627,7 @@ function renderDiagnostics(diagnostics) {
   }
 
   const confidence = diagnostics.confidence ?? {};
-  els.confidenceBadge.textContent = `confidence: ${confidence.label ?? confidence.level ?? "none"}`;
+  els.confidenceBadge.textContent = `Estimate confidence: ${confidence.label ?? confidence.level ?? "none"}`;
   els.confidenceBadge.className = `counter confidence-badge ${confidence.level ?? "unknown"}`;
   renderSimpleList(els.whyResultList, (diagnostics.why ?? []).slice(0, 6).map((item) => ({
     title: item.title ?? item.code,
@@ -648,6 +654,9 @@ function renderDiagnostics(diagnostics) {
 }
 
 function renderAssumptionComparisons(items = []) {
+  const sample = document.getElementById("assumptionSample");
+  sample.hidden = items.length === 0;
+  sample.textContent = items.length ? `${items[0].trials} paired trials` : "";
   els.assumptionComparisonTable.innerHTML = "";
   for (const item of items) {
     const row = document.createElement("tr");
@@ -656,7 +665,7 @@ function renderAssumptionComparisons(items = []) {
       <td>${percent(item.winRate)}</td>
       <td>${signedPercent(item.deltaWinRate)}</td>
       <td>${percent(item.timeoutRate)}</td>
-      <td>${seconds(item.p90Seconds)}</td>
+      <td>${seconds(item.p90Seconds, item.p90Censored)}</td>
       <td>${escapeHtml(item.problem ?? "none")}</td>
     `;
     els.assumptionComparisonTable.append(row);
@@ -713,7 +722,7 @@ function renderSketchDelta(analysis) {
   renderSimpleList(els.sketchDeltaBody, [
     {
       title: "Target win rate",
-      detail: `${percent(delta.winRate)} (${signedPercent(delta.winRateDelta)}) | p90 ${seconds(delta.p90Seconds)} (${signedSeconds(delta.p90Delta)})`,
+      detail: `${percent(delta.winRate)} (${signedPercent(delta.winRateDelta)}) | p90 ${seconds(delta.p90Seconds, delta.p90Censored)} (${delta.p90Delta == null ? "change unknown" : signedSeconds(delta.p90Delta)})`,
     },
     {
       title: "Stat rewards",
@@ -742,7 +751,7 @@ function renderRollWishlist(wishlist) {
       `${item.feasibility}`,
       `target ${percent(item.targetWinRate)} (${signedPercent(item.targetWinRateDelta)})`,
       `kill ${percent(item.candidateWinRate)}`,
-      `p90 ${seconds(item.p90Seconds)}`,
+      `p90 ${seconds(item.p90Seconds, item.p90Censored)}`,
       `roll share ${percent(item.rollShare)}`,
       rewardSummary(item),
     ].filter(Boolean).join(" | "),
@@ -794,7 +803,7 @@ function renderRoutePreview(preview) {
   }
   renderSimpleList(els.routePreviewList, steps.map((step) => ({
     title: `${step.index}. ${step.name}`,
-    detail: `target win ${percent(step.targetWinRate)} | p90 ${seconds(step.p90Seconds)} | atk ${formatNumber(step.finalStats?.attack)} | hp ${formatNumber(step.finalStats?.maxHp)}`,
+    detail: `target win ${percent(step.targetWinRate)} | p90 ${seconds(step.p90Seconds, step.p90Censored)} | atk ${formatNumber(step.finalStats?.attack)} | hp ${formatNumber(step.finalStats?.maxHp)}`,
   })));
 }
 
@@ -807,7 +816,7 @@ function renderBuildComparison(items) {
       <td>${escapeHtml(item.targetName)}</td>
       <td>${item.winRate == null ? "--" : percent(item.winRate)}</td>
       <td>${confidenceRange(item.winRateCi95)}</td>
-      <td>${item.p90Seconds == null ? "--" : seconds(item.p90Seconds)}</td>
+      <td>${item.p90Seconds == null ? "--" : seconds(item.p90Seconds, item.p90Censored)}</td>
       <td>${escapeHtml(item.problem ?? "none")}</td>
     `;
     els.buildComparison.append(row);
@@ -824,7 +833,7 @@ function renderTargetComparisons(items = []) {
       <td>${escapeHtml(item.rarity)}</td>
       <td>${percent(item.winRate)}</td>
       <td>${confidenceRange(item.winRateCi95)}</td>
-      <td>${seconds(item.p90Seconds)}</td>
+      <td>${seconds(item.p90Seconds, item.p90Censored)}</td>
       <td>${escapeHtml(item.problem ?? "none")}</td>
     `;
     row.addEventListener("click", () => {
@@ -1296,10 +1305,10 @@ function signedPercent(value) {
   return `${number >= 0 ? "+" : ""}${(number * 100).toFixed(1)}%`;
 }
 
-function seconds(value) {
+function seconds(value, censored = false) {
   const number = Number(value);
   if (!Number.isFinite(number)) return "--";
-  return `${number.toFixed(1)}s`;
+  return `${censored ? "≥" : ""}${number.toFixed(1)}s`;
 }
 
 function signedSeconds(value) {

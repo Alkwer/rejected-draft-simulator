@@ -282,7 +282,11 @@
           <section id="diagnosticWhyPanel" class="panel" data-function-panel="diagnostics">
             <div class="section-head">
               <h2>Why this result?</h2>
-              <span id="confidenceBadge" class="counter" data-tooltip="Model confidence based on trials, CI and risky mechanics">none</span>
+              <span id="confidenceBadge" class="counter" data-tooltip="Estimate quality considers the sample, combat mechanics and build compatibility">none</span>
+            </div>
+            <div class="diagnostic-metadata" hidden>
+              <p id="diagnosticSample"></p>
+              <p id="modelBuildStatus"></p>
             </div>
             <div class="split">
               <div>
@@ -402,7 +406,7 @@
           <section class="panel" data-function-panel="diagnostics" data-mobile-panel="planner">
             <div class="section-head">
               <h2>Model assumptions</h2>
-              <span class="counter">status / DoT / buff</span>
+              <span id="assumptionSample" class="counter" hidden></span>
             </div>
             <div class="table-wrap">
               <table>

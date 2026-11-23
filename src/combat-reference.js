@@ -123,6 +123,7 @@ export function extractCombatReference({
 
   return {
     version: {
+      edition: metadata.platform ?? null,
       gameVersion: metadata.gameVersion ?? null,
       saveVersion: metadata.saveVersion ?? null,
       mainAsset: metadata.mainAsset ?? null,
@@ -140,10 +141,11 @@ export function renderCombatReferenceMarkdown(reference) {
   const lines = [];
   lines.push("# Combat Engine Reference");
   lines.push("");
-  lines.push("This document is generated from the current minified Rejected Draft game bundle. It is a source-reference aid for Priority 26, not a claim that the simulator is already fully combat-parity accurate.");
+  lines.push("Extracted mechanics for the edition and asset versions listed below. Use observed fights from the same edition to verify timing and outcomes.");
   lines.push("");
   lines.push("## Version");
   lines.push("");
+  lines.push(`- Edition: ${formatValue(reference.version?.edition)}`);
   lines.push(`- Game version: ${formatValue(reference.version?.gameVersion)}`);
   lines.push(`- Save version: ${formatValue(reference.version?.saveVersion)}`);
   lines.push(`- Main asset: ${formatValue(reference.version?.mainAsset)}`);

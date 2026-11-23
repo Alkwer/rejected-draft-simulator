@@ -8,6 +8,7 @@ import {
   statusDotDamage,
 } from "../src/combat/damage.js";
 import { clamp, rollMultistrikeHitCount, rollPercent, rollStacks } from "../src/combat/math.js";
+import { stat, statRaw } from "../src/combat/stats.js";
 import { attackDelay, effectiveLeap } from "../src/combat/timing.js";
 import {
   HARMFUL_STATUSES,
@@ -20,6 +21,16 @@ import {
   statusStatNames,
   applyRemedy,
 } from "../src/combat/statuses.js";
+
+test("combat stat accessors preserve explicit numeric and string zero", () => {
+  for (const read of [stat, statRaw]) {
+    assert.equal(read({ attack: 0 }, "attack", 25), 0);
+    assert.equal(read({ attack: 50, stats: { attack: "0" } }, "attack", 25), 0);
+    assert.equal(read({ attack: 50, stats: { attack: null } }, "attack", 25), 50);
+    assert.equal(read({ attack: "invalid" }, "attack", 25), 25);
+    assert.equal(read({}, "attack", 25), 25);
+  }
+});
 
 test("status module exposes harmful and self-buff stat mappings", () => {
   assert.equal(STATUS_TO_STAT.Burn, "burnChance");

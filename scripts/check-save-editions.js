@@ -98,6 +98,29 @@ try {
   assert.equal(await page.locator("#stripDecision").textContent(), "--");
   assert.equal(await page.locator("#fightTraceList").textContent(), "No trace");
   assert.equal(await page.locator("#fullCompareTable tr").count(), 0);
+
+  const timingSave = { version: 86, meta: { profile: "steam", gameVersion: "qa-mismatch" },
+    state: { availableSketches: ["little_stapler"], playerStats: { maxHp: 1e20, attack: 0, attackSpeed: 1000 } } };
+  await page.locator("#targetSelect").selectOption("little_stapler");
+  await page.locator("#saveFile").setInputFiles({ name: "timing.json", mimeType: "application/json",
+    buffer: Buffer.from(JSON.stringify(timingSave)) });
+  await page.getByRole("tab", { name: "Battle", exact: true }).click();
+  await page.waitForFunction(() => document.querySelector("#fightTime").textContent.includes("p90 ≥5.0s"));
+  await page.getByRole("tab", { name: "Diagnostics", exact: true }).click();
+  await page.locator("#modelBuildStatus").getByText(/qa-mismatch/).waitFor();
+  assert.match(await page.locator("#diagnosticSample").textContent(), /95% CI.*100 attempts/);
+  assert.match(await page.locator("#assumptionSample").textContent(), /100 paired trials/);
+  for (const width of [1440, 768, 390]) {
+    await page.setViewportSize({ width, height: 900 });
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth), width, `Diagnostics overflow at ${width}px`);
+  }
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.getByRole("tab", { name: "Run", exact: true }).click();
+  const hiddenResponse = page.waitForResponse((r) => r.url().endsWith("/api/analyze"));
+  await page.getByRole("button", { name: "Hide", exact: true }).click();
+  assert.deepEqual((await (await hiddenResponse).json()).analysis.strategicPlan.runEV.sketches, []);
+  await page.getByRole("tab", { name: "Compare", exact: true }).click();
+  await page.getByRole("cell", { name: "No active farm target" }).waitFor();
   await page.goto(`http://127.0.0.1:${server.address().port}/steam-fights.html`);
   await page.locator("#logSource").selectOption("export");
   await page.locator("#logFile").setInputFiles({ name: "test-slot.json", mimeType: "application/json",
@@ -107,7 +130,7 @@ try {
   await page.locator("#captureForm button[type=submit]").click();
   await page.getByText(/but save is version 999/).waitFor();
   assert.deepEqual(errors, []);
-  console.log("Passed save imports, Battle layout, queued changes, history replay, save mismatch, clearing results and Steam forecast warnings.");
+  console.log("Passed save imports, responsive layout, queued changes, history replay, censored times, build diagnostics, hidden targets and Steam forecast warnings.");
 } finally {
   await browser.close();
   if (server.listening) await new Promise((resolve) => server.close(resolve));

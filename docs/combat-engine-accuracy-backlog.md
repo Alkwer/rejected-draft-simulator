@@ -2,7 +2,11 @@
 
 Priority 26 is a parity backlog for moving the simulator closer to the current game combat engine. The current slice starts with observability, because every later mechanic fix needs a way to compare one simulated fight against the game step by step.
 
-## Current Game Data
+## Full Steam edition
+
+The catalog shipped here covers build 26823208, game v0.9771 and save schema 86. The next verification task is to capture observed Hyena Hulk fights using the [Steam fight log](../README.md#compare-a-steam-fight). Each completed entry pairs a pre-fight save with its target, catalog metadata, universe, seed, trial count, horizon and observed result. Compare repeated attempts within a single build and setup. Keep exports and local observations private unless deliberately prepared for sharing.
+
+## Archived web reference
 
 - Source: https://kuzzigames.com/rejected_draft/
 - Captured: 2026-05-23
@@ -112,7 +116,7 @@ Markdown traces include `Damage Events`, `Mechanics` and `RNG` columns, limited 
 - Mechanic traces do not yet cover every system. Remaining trace gaps should be found from current bundle extraction and real fight comparisons.
 - Damage events expose source tags and overkill, but they do not yet allocate exact numeric contribution per modifier when several multipliers stack in one direct hit.
 
-## Next Tasks
+## Legacy web verification tasks
 
 1. Capture real observed fight fixtures through the companion with `Combat Logging` enabled for Duct, Rose, Mobius, Abe Linkin, Vinchy, Joan of Art, Kahlo and Transcendent Paragon.
 2. Compare fixed tick timestamps, simultaneous attacks and delayed Counter actions against those real fixtures.

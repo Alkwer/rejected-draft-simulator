@@ -62,10 +62,12 @@ export function renderCombatParityMapMarkdown(map) {
   const lines = [];
   lines.push("# Combat Engine Parity Map");
   lines.push("");
-  lines.push("Generated comparison between the current game combat reference and the local simulator combat engine. This is a Priority 26 working document: matched items are evidence-based, while gaps are implementation targets.");
+  lines.push("Static checks against the reference assets listed below. Each match covers its named code path for that edition.");
   lines.push("");
   lines.push("## Version");
   lines.push("");
+  lines.push(`- Edition: ${formatValue(map.version?.edition)}`);
+  lines.push(`- Save version: ${formatValue(map.version?.saveVersion)}`);
   lines.push(`- Main asset: ${formatValue(map.version?.mainAsset)}`);
   lines.push(`- Store asset: ${formatValue(map.version?.storeAsset)}`);
   lines.push(`- Captured: ${formatValue(map.version?.captured)}`);
@@ -495,6 +497,8 @@ function findMatchingBrace(source, openIndex) {
 
 function parseReferenceVersion(markdown) {
   return {
+    edition: parseBullet(markdown, "Edition"),
+    saveVersion: parseBullet(markdown, "Save version"),
     mainAsset: parseBullet(markdown, "Main asset"),
     storeAsset: parseBullet(markdown, "Store asset"),
     captured: parseBullet(markdown, "Captured"),

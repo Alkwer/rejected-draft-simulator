@@ -44,6 +44,7 @@ import { DEFAULT_DATA_PATH, LEGACY_DATA_PATH } from "./game-data-update.js";
 import {
   createCombatReport,
   formatConfidenceInterval,
+  formatSeconds,
   explainTarget,
   exportMarkdownReport,
 } from "./report.js";
@@ -223,6 +224,7 @@ if (args["strategy-plan"] || args.strategy) {
   const strategicPlan = createStrategyPlan({
     sketches,
     state: save.state,
+    assumptions: combatAssumptions,
     targetId,
     baseStats: player,
     targetSimulation: strategyTargetSimulation,
@@ -417,7 +419,6 @@ const report = createCombatReport({ target, player, simulation: result, maxSecon
 const assumptionComparisons = createModelAssumptionComparisons({
   target,
   player,
-  baseline: result,
   trials: Math.min(trials, 1000),
   maxSeconds,
   seed: `${seed}:assumptions`,
@@ -430,6 +431,7 @@ const diagnostics = createDiagnosticReport({
   simulation: result,
   report,
   dataMetadata,
+  compatibilityWarnings: analysis.warnings,
   observedOutcome: args["observed-outcome"],
   assumptionComparisons,
 });
@@ -572,9 +574,9 @@ function printResult({
     console.log(`Confidence: ${diagnostics.confidence.label} (${diagnostics.confidence.reasons.join(", ") || "stable"})`);
   }
   console.log(`Wins / losses / timeouts: ${result.wins} / ${result.losses} / ${result.timeouts}`);
-  console.log(`Average fight: ${result.avgSeconds.toFixed(2)}s`);
-  console.log(`Median fight: ${result.medianSeconds.toFixed(2)}s`);
-  console.log(`p10 / p90 fight: ${(result.p10Seconds ?? 0).toFixed(2)}s / ${(result.p90Seconds ?? 0).toFixed(2)}s`);
+  console.log(`Average fight: ${formatSeconds(result.avgSeconds, result.avgCensored)}`);
+  console.log(`Median fight: ${formatSeconds(result.medianSeconds, result.medianCensored)}`);
+  console.log(`p10 / p90 fight: ${formatSeconds(result.p10Seconds, result.p10Censored)} / ${formatSeconds(result.p90Seconds, result.p90Censored)}`);
   console.log(`Timeout rate: ${((result.timeoutRate ?? 0) * 100).toFixed(2)}%`);
   console.log("");
   printReportBreakdown("Victory breakdown", report?.breakdowns?.victories);
@@ -605,7 +607,7 @@ function printResult({
 
 function printDiagnostics(diagnostics) {
   console.log("Diagnostics:");
-  console.log(`  Confidence: ${diagnostics.confidence?.label ?? "unknown"}`);
+  console.log(`  Estimate confidence: ${diagnostics.confidence.label}. ${diagnostics.modelBuild.label}.`);
   for (const item of (diagnostics.why ?? []).slice(0, 5)) {
     console.log(`  Why ${item.code}: ${item.detail}`);
   }
@@ -909,9 +911,9 @@ function printRouteResult({
   if (simulation) {
     console.log(`Win rate: ${(simulation.winRate * 100).toFixed(2)}% (95% CI ${formatConfidenceInterval(simulation.winRateCi95)})`);
     console.log(`Wins / losses / timeouts: ${simulation.wins} / ${simulation.losses} / ${simulation.timeouts}`);
-    console.log(`Average fight: ${simulation.avgSeconds.toFixed(2)}s`);
-    console.log(`Median fight: ${simulation.medianSeconds.toFixed(2)}s`);
-    console.log(`p10 / p90 fight: ${(simulation.p10Seconds ?? 0).toFixed(2)}s / ${(simulation.p90Seconds ?? 0).toFixed(2)}s`);
+    console.log(`Average fight: ${formatSeconds(simulation.avgSeconds, simulation.avgCensored)}`);
+    console.log(`Median fight: ${formatSeconds(simulation.medianSeconds, simulation.medianCensored)}`);
+    console.log(`p10 / p90 fight: ${formatSeconds(simulation.p10Seconds, simulation.p10Censored)} / ${formatSeconds(simulation.p90Seconds, simulation.p90Censored)}`);
     console.log(`Timeout rate: ${((simulation.timeoutRate ?? 0) * 100).toFixed(2)}%`);
   } else {
     console.log("No target simulation was run.");
@@ -931,7 +933,7 @@ function printRouteComparison({ target, statSource, comparison }) {
       route.name.padEnd(22)
       + `${(route.winRate * 100).toFixed(2)}% (${formatConfidenceInterval(route.winRateCi95)})`.padEnd(32)
       + `${(route.timeoutRate * 100).toFixed(1)}%`.padEnd(10)
-      + `${route.p90Seconds.toFixed(2)}s`.padEnd(10)
+      + formatSeconds(route.p90Seconds, route.p90Censored).padEnd(10)
       + formatNumber(route.finalStats.attack).padEnd(14)
       + formatNumber(route.finalStats.maxHp),
     );
@@ -1088,7 +1090,7 @@ function printRemainingTargetsTable(targets) {
       + item.rarity.padEnd(13)
       + `${(item.winRate * 100).toFixed(1)}%`.padEnd(11)
       + formatConfidenceInterval(item.winRateCi95).padEnd(18)
-      + `${item.p90Seconds.toFixed(1)}s`.padEnd(10)
+      + formatSeconds(item.p90Seconds, item.p90Censored, 1).padEnd(10)
       + String(item.remainingToMax).padEnd(8)
       + (item.topFailure ?? item.topVictory ?? "none"),
     );

@@ -1,6 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
+import { runMonteCarlo } from "../src/combat.js";
+import { combatAssumptionsFromSave } from "../src/combat-assumptions.js";
+import { enemyFromSketch } from "../src/combat/steam-encounter.js";
 import { simulateRoute } from "../src/route.js";
 import {
   createStrategyPlan,
@@ -101,6 +104,174 @@ test("createStrategyPlan estimates resource gaps, softcap choice, farm plan and 
   assert.equal(plan.farmPlan.goal.type, "quintessence");
   assert.equal(plan.runEV.windowSeconds, 60);
   assert.ok(plan.runEV.currencies.Graphite.expected > 0);
+});
+
+test("farming currency or an irrelevant stat does not cross a nearby target threshold", () => {
+  const plan = createStrategyPlan({
+    sketches,
+    state: state(),
+    baseStats: { maxHp: 1000, attack: 40, attackSpeed: 1000, accuracy: 50, minDamage: 100, maxDamage: 100 },
+    targetId: "target",
+    targetSimulation: { winRate: 0.499 },
+    currentRun: { targets: [{ id: "opus_currency", winRate: 1 }, { id: "opus_hp", winRate: 1 }] },
+    targetWinRate: 0.5,
+    trials: 24,
+    maxSeconds: 7,
+  });
+
+  assert.equal(plan.stopFarming.decision, "redraw");
+  assert.ok(plan.profileModes.greedyFarm.candidates.some((row) => row.id === "opus_currency" && row.currencyValue > 0));
+  assert.ok(plan.runEV.currencies.Graphite.battlePerSecond > 0);
+  assert.deepEqual(plan.stopFarming.curve.map(({ projectedWinRate, gain, reachesTarget }) => (
+    { projectedWinRate, gain, reachesTarget }
+  )), [
+    { projectedWinRate: 0.499, gain: 0, reachesTarget: false },
+    { projectedWinRate: 0.499, gain: 0, reachesTarget: false },
+  ]);
+});
+
+test("farming projects detrimental rewards using the same target samples", () => {
+  const plan = createStrategyPlan({
+    sketches: {
+      ...sketches,
+      target: { ...sketches.target, stats: { ...sketches.target.stats, dodge: 50 } },
+      opus_attack: { ...sketches.opus_attack, rewards: [{ statName: "attack", amount: -5 }] },
+    },
+    state: state(),
+    baseStats: { maxHp: 1000, attack: 40, attackSpeed: 1000, accuracy: 50, minDamage: 100, maxDamage: 100 },
+    targetId: "target",
+    targetSimulation: { winRate: 0.499 },
+    currentRun: { targets: [{ id: "opus_attack", winRate: 1 }] },
+    targetWinRate: 0.5,
+    trials: 120,
+    maxSeconds: 7,
+    seed: "pair",
+  });
+
+  assert.equal(plan.stopFarming.decision, "redraw");
+  assert.ok(plan.stopFarming.curve[0].gain < 0);
+  assert.equal(plan.stopFarming.curve[0].reachesTarget, false);
+});
+
+test("farming verifies cumulative victories, decay and boosters against paired target trials", () => {
+  const pairedSketches = {
+    ...sketches,
+    target: { ...sketches.target, stats: { ...sketches.target.stats, dodge: 50 } },
+    opus_attack: { ...sketches.opus_attack, rewards: [{ statName: "attack", amount: 20 }] },
+    opus_hp: { ...sketches.opus_hp, rewards: [{ statName: "attack", amount: 5 }] },
+  };
+  const saveState = state({
+    sketchVictories: { opus_attack: 1, opus_currency: 2 },
+    boostedSketchIds: ["opus_attack"],
+    fundamentals: { maxVictories: 2, rewardDecay: 3, rewardBoosterEffect: 100 },
+  });
+  const baseStats = { maxHp: 1000, attack: 35, attackSpeed: 1000, accuracy: 50, minDamage: 100, maxDamage: 100 };
+  const sample = { trials: 120, maxSeconds: 7, seed: "pair:farm-curve", enemy: enemyFromSketch(pairedSketches.target) };
+  const winsWithAttack = (attack) => runMonteCarlo({ ...sample, player: { ...baseStats, attack } }).winRate;
+  const current = winsWithAttack(35);
+  const targetWinRate = 0.7;
+  const options = {
+    sketches: pairedSketches,
+    state: saveState,
+    baseStats,
+    targetId: "target",
+    targetSimulation: { winRate: current },
+    currentRun: { targets: [
+      { id: "opus_attack", winRate: 1 }, { id: "opus_hp", winRate: 1 },
+      { id: "opus_currency", winRate: 1 }, { id: "target", winRate: current },
+    ] },
+    targetWinRate,
+    trials: sample.trials,
+    maxSeconds: sample.maxSeconds,
+    seed: "pair",
+  };
+  const plan = createStrategyPlan(options);
+
+  assert.equal(plan.stopFarming.decision, "farm_until_step");
+  assert.equal(plan.stopFarming.targetStep, 2);
+  assert.equal(plan.stopFarming.targetSketchId, "opus_hp");
+  assert.deepEqual(plan.stopFarming.curve.map(({ id }) => id), ["opus_attack", "opus_hp"]);
+  assert.equal(plan.stopFarming.curve[0].projectedWinRate, winsWithAttack(45));
+  assert.equal(plan.stopFarming.curve[0].reachesTarget, false);
+  assert.ok(Math.abs(plan.stopFarming.curve[1].projectedWinRate - winsWithAttack(50)) < 1e-6);
+
+  const mismatchedBaseline = createStrategyPlan({
+    ...options,
+    targetSimulation: { winRate: 0.49 },
+    currentRun: { targets: [{ id: "opus_attack", winRate: 1 }] },
+  });
+  assert.ok(mismatchedBaseline.stopFarming.curve[0].projectedWinRate > targetWinRate);
+  assert.equal(mismatchedBaseline.stopFarming.curve[0].reachesTarget, false);
+  assert.equal(mismatchedBaseline.stopFarming.decision, "farm_more");
+});
+
+test("farming uses the Steam universe for both the target and the next reward", () => {
+  const steamSketches = {
+    ...sketches,
+    target: { ...sketches.target, stats: { ...sketches.target.stats, dodge: 50 } },
+    opus_attack: { ...sketches.opus_attack, rewards: [{ statName: "attack", amount: 32 }] },
+  };
+  const saveState = state({ saveProfile: "steam", multiverse: { currentUniverseId: "mv-medium-2" } });
+  const assumptions = combatAssumptionsFromSave(saveState);
+  const baseStats = { maxHp: 1000, attack: 75, attackSpeed: 1000, accuracy: 50, minDamage: 100, maxDamage: 100 };
+  const sample = { trials: 120, maxSeconds: 7, seed: "pair:farm-curve", enemy: enemyFromSketch(steamSketches.target), assumptions };
+  const current = runMonteCarlo({ ...sample, player: baseStats }).winRate;
+  const plan = createStrategyPlan({
+    sketches: steamSketches,
+    state: saveState,
+    assumptions,
+    baseStats,
+    targetId: "target",
+    targetSimulation: { winRate: current },
+    currentRun: { targets: [{ id: "opus_attack", winRate: 1 }] },
+    targetWinRate: 0.7,
+    trials: sample.trials,
+    maxSeconds: sample.maxSeconds,
+    seed: "pair",
+  });
+  const nextWinRate = runMonteCarlo({ ...sample, player: { ...baseStats, attack: 99 } }).winRate;
+
+  assert.ok(nextWinRate > current);
+  assert.equal(plan.stopFarming.curve[0].projectedWinRate, nextWinRate);
+  assert.equal(plan.stopFarming.decision, "farm_more");
+});
+
+test("an explicitly empty current run does not fall back to available sketches", () => {
+  const saveState = state({ hiddenSketches: ["opus_currency"] });
+  const options = { sketches, state: saveState, targetId: "target", goalCurrencies: { Graphite: 1000 } };
+  const empty = createStrategyPlan({ ...options, currentRun: { targets: [] } });
+  const fallback = createStrategyPlan(options);
+
+  assert.deepEqual(empty.runEV.sketches, []);
+  assert.deepEqual(empty.farmPlan.bestOpusTargets, []);
+  assert.equal(empty.masterpieceRoll.decision, "redraw");
+  assert.equal(empty.runCompletion.decision, "redraw");
+  assert.equal(empty.stopFarming.decision, "redraw");
+  assert.ok(empty.opusValues.every(({ id }) => id !== "opus_currency"));
+  assert.ok(fallback.runEV.sketches.some(({ id }) => id === "opus_attack"));
+  assert.ok(fallback.runEV.sketches.every(({ id }) => id !== "opus_currency"));
+});
+
+test("strategy candidates and run EV retain the uncertainty of input fight times", () => {
+  const plan = createStrategyPlan({
+    sketches,
+    state: state(),
+    targetId: "target",
+    targetSimulation: { winRate: 0.5 },
+    currentRun: { targets: [
+      { id: "opus_currency", winRate: 0.8, p90Seconds: 45, p90Censored: true },
+      { id: "opus_hp", winRate: 0.6, medianSeconds: 30, medianCensored: true },
+    ] },
+  });
+
+  const candidates = Object.fromEntries(plan.profileModes.greedyFarm.candidates.map((row) => [row.id, row]));
+  const estimates = Object.fromEntries(plan.runEV.sketches.map((row) => [row.id, row]));
+  assert.equal(candidates.opus_currency.p90Seconds, 45);
+  assert.equal(candidates.opus_currency.p90Censored, true);
+  assert.equal(estimates.opus_currency.seconds, 45);
+  assert.equal(estimates.opus_currency.secondsCensored, true);
+  assert.equal(estimates.opus_hp.seconds, 30);
+  assert.equal(estimates.opus_hp.secondsCensored, true);
 });
 
 test("strategy currency forecasts divide battle rewards by time spent on all eligible fights", () => {
@@ -241,6 +412,23 @@ test("createStrategyPlan ranks booster choices with route simulation", () => {
   assert.equal(plan.boosters.recommendation.name, "attack_boost");
   assert.ok(plan.boosters.choices[0].winRate > plan.boosters.choices[1].winRate);
   assert.equal(plan.boosters.choices[0].simulated, true);
+});
+
+test("booster comparisons omit configurations containing a hidden sketch", () => {
+  const plan = createStrategyPlan({
+    sketches,
+    state: state({ hiddenSketches: ["opus_currency"] }),
+    targetId: "target",
+    boosterCandidates: [
+      { name: "mixed", ids: ["opus_attack", "opus_currency"] },
+      { name: "visible", ids: ["opus_attack"] },
+    ],
+    trials: 4,
+    maxSeconds: 5,
+  });
+
+  assert.equal(plan.boosters.recommendation.name, "visible");
+  assert.deepEqual(plan.boosters.choices.map(({ name }) => name), ["visible"]);
 });
 
 test("createStrategyPlan uses the same fight samples after renaming a booster choice", () => {

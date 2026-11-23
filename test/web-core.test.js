@@ -231,6 +231,9 @@ test("rejected long-fight probes preserve the configured timeout and quantiles",
   assert.equal(analysis.result.timeLimit.effectiveMaxSeconds, 60);
   assert.equal(analysis.result.medianSeconds, 60);
   assert.equal(analysis.result.p90Seconds, 60);
+  assert.equal(analysis.report.time.medianCensored, true);
+  assert.equal(analysis.result.timeLimit.probe.p90Censored, true);
+  assert.equal(analysis.targetComparisons[0].p90Censored, true);
 });
 
 test("reward deltas and wishlist use paired trials from the current hypothetical build", () => {
@@ -262,6 +265,29 @@ test("best next click follows the available alternative to an unbeatable target"
   assert.equal(analysis.nextAction.title, "Farm Farm A");
   const hidden = createWebAnalysis({ ...input, hiddenSketchIds: ["farm_a"] });
   assert.equal(hidden.recommendation.action, "redraw");
+  const empty = createWebAnalysis({ ...input, hiddenSketchIds: ["farm_a", "rose_window"] });
+  assert.deepEqual(empty.activeSketches, []);
+  assert.equal(empty.buildComparison[0].targetId, null);
+  assert.deepEqual(empty.strategicPlan.runEV.sketches, []);
+  assert.deepEqual(empty.activeDeltas, {});
+  assert.ok(empty.rollWishlist.excluded.hidden.includes("farm_a"));
+  assert.ok(empty.strategicPlan.opusValues.every((item) => item.id !== "farm_a"));
+});
+
+test("a precise sample still reports an unverified Steam build", () => {
+  const save = { meta: { profile: "steam" }, version: 86, state: { saveProfile: "steam",
+    playerStats: { maxHp: 1000, attack: 1000, attackSpeed: 500 }, availableSketches: ["farm_a"] } };
+  const dataMetadata = { platform: "steam", buildId: "unverified-test", saveVersion: 86, gameVersion: "v0.999" };
+  const input = { save, dataMetadata, sketches: { farm_a: sketches.farm_a }, targetId: "farm_a",
+    trials: 1000, maxSeconds: 5, seed: "compatibility" };
+  const { result, diagnostics } = createWebAnalysis(input);
+  assert.deepEqual(diagnostics.sample.ci95, result.winRateCi95);
+  assert.equal(diagnostics.sample.trials, 1000);
+  assert.equal(diagnostics.modelBuild.status, "unverified");
+  assert.notEqual(diagnostics.confidence.level, "high");
+  const matched = createWebAnalysis({ ...input, dataMetadata: { ...dataMetadata, buildId: "26823208" } });
+  assert.equal(matched.diagnostics.modelBuild.status, "verified");
+  assert.deepEqual(matched.diagnostics.sample, diagnostics.sample);
 });
 
 test("createWebAnalysis returns a strategic planner section when strategy options are supplied", () => {
