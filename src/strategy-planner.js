@@ -198,7 +198,6 @@ export function createStrategyPlan({
     runEV,
     opusValues: visibleOpusValues,
     state,
-    farmSeconds,
   });
   const profileGoal = createProfileGoal({
     profile: profileConfig,
@@ -538,10 +537,10 @@ function estimateProfileProgress({ profile, profileGoal, approach, runEV, curren
   let unit = type;
 
   if (type === "quintessence") {
-    expectedPerRun = toNumber(runEV.quintessence?.expected);
+    expectedPerRun = toNumber(runEV.quintessence?.expectedPerRun);
     unit = "Q";
   } else if (type === "currency") {
-    expectedPerRun = toNumber(runEV.currencies?.[profileGoal.currency]?.expected);
+    expectedPerRun = toNumber(runEV.currencies?.[profileGoal.currency]?.expectedPerRun);
     unit = profileGoal.currency;
   } else if (type === "masterpiece_count") {
     expectedPerRun = estimateMasterpieceKillsPerRun({ currentRows, sketches });
@@ -629,7 +628,7 @@ function rankModeCandidates({ mode, currentRows, runEV, opusValues, targetId, re
         + isMasterpiece * toNumber(rewardWeights.masterpiece, 1);
 
       if (mode.id === "safe-farm") {
-        score += safety * 60 - toNumber(row.p90Seconds) * 0.2 * toNumber(rewardWeights.p90, 1);
+        score += safety * 60 - toNumber(row.p90Seconds, 60) * 0.2 * toNumber(rewardWeights.p90, 1);
       } else if (mode.id === "greedy-farm") {
         score += currencyValue * 15 + statValue * 4 - (1 - clamp01(toNumber(row.winRate))) * 5;
       } else if (mode.id === "boss-approach") {
@@ -648,14 +647,14 @@ function rankModeCandidates({ mode, currentRows, runEV, opusValues, targetId, re
         name: row.name,
         rarity: row.rarity,
         winRate: roundNumber(toNumber(row.winRate)),
-        p90Seconds: roundNumber(toNumber(row.p90Seconds)),
+        p90Seconds: row.p90Seconds == null ? null : roundNumber(row.p90Seconds),
         p90Censored: row.p90Censored,
         score: roundNumber(score),
         currencyValue: roundNumber(currencyValue),
         statValue: roundNumber(statValue),
       };
     })
-    .sort((a, b) => b.score - a.score || b.winRate - a.winRate || a.p90Seconds - b.p90Seconds);
+    .sort((a, b) => b.score - a.score || b.winRate - a.winRate || toNumber(a.p90Seconds, 60) - toNumber(b.p90Seconds, 60));
 }
 
 function createProfileRecommendations({ buildAdvice, currentRows, profile, mode, rewardWeights }) {
@@ -874,14 +873,21 @@ function estimateRunEV({ sketches, state, currentRows, targetStatWeights, farmSe
   const priorWinProbabilities = new Float64Array(perkWinsRemaining);
   if (perkWinsRemaining > 0) priorWinProbabilities[0] = 1;
   let statValue = 0;
-  let battleSeconds = 0;
+  let statValuePerRun = 0;
+  let earliestSeconds = 0;
+  let routeTimed = true;
+  let windowTimingIncomplete = false;
 
   for (const row of currentRows) {
     const sketch = sketches[row.id];
     if (!sketch || row.hidden) continue;
     const winRate = clamp01(toNumber(row.winRate));
-    const seconds = Math.max(1, toNumber(row.p90Seconds, row.medianSeconds ?? 60));
-    battleSeconds += seconds;
+    const seconds = row.p90Seconds;
+    earliestSeconds += seconds ?? 0;
+    routeTimed = routeTimed && seconds != null && !row.p90Censored;
+    // The route follows input order. Beyond an uncertain duration, only full-route rewards are estimated.
+    const completesInWindow = routeTimed && earliestSeconds <= windowSeconds;
+    if (!routeTimed && earliestSeconds <= windowSeconds) windowTimingIncomplete = true;
     const steamRewards = estimateSteamPayout({
       sketch,
       state,
@@ -904,14 +910,17 @@ function estimateRunEV({ sketches, state, currentRows, targetStatWeights, farmSe
       });
       const expected = rewardAmount * winRate;
       expectedCurrencies[reward.name] = toNumber(expectedCurrencies[reward.name]) + expected;
-      addCurrencyEV(currencies, reward.name, expected);
+      const item = currencies[reward.name] ??= { battleExpectedPerRun: 0, battleWindowExpected: 0 };
+      item.battleExpectedPerRun += expected;
+      if (completesInWindow) item.battleWindowExpected += expected;
     }
     const expectedStatScore = estimateStatRewardValue({
       rewards: steamRewards?.statRewards ?? sketch.rewards,
       targetStatWeights,
       steam: Boolean(steamRewards),
     }) * winRate;
-    statValue += expectedStatScore;
+    statValuePerRun += expectedStatScore;
+    if (completesInWindow) statValue += expectedStatScore;
     sketchesEV.push({
       id: row.id,
       name: row.name ?? sketch.name ?? row.id,
@@ -924,40 +933,44 @@ function estimateRunEV({ sketches, state, currentRows, targetStatWeights, farmSe
     });
   }
 
-  for (const [currency, rate] of Object.entries(generatorRates(state))) {
-    addCurrencyEV(currencies, currency, toNumber(rate) * windowSeconds, true);
-  }
-
+  const routeSeconds = routeTimed ? earliestSeconds : null;
+  const currencyEV = estimateCurrencyEV({ currencies, rates: generatorRates(state), routeSeconds, windowSeconds });
   const quintessenceRate = quintessencePerSecond(state);
   const quintessence = {
     expected: roundNumber(quintessenceRate * windowSeconds),
+    expectedPerRun: routeSeconds == null && quintessenceRate !== 0 ? null : roundNumber(quintessenceRate * (routeSeconds ?? 0)),
     perSecond: roundNumber(quintessenceRate),
   };
 
   return {
     windowSeconds,
+    windowTimingIncomplete,
+    routeSeconds,
     quintessence,
-    currencies: roundCurrencyEV(currencies, battleSeconds, windowSeconds),
+    currencies: currencyEV,
     statValue: roundNumber(statValue),
-    totalValue: roundNumber(totalEVValue({ currencies, quintessence, statValue })),
+    statValuePerRun: roundNumber(statValuePerRun),
+    totalValue: roundNumber(totalEVValue({ currencies: currencyEV, quintessence, statValue, amountKey: "expected" })),
+    totalValuePerRun: roundNumber(totalEVValue({ currencies: currencyEV, quintessence, statValue: statValuePerRun, amountKey: "expectedPerRun" })),
     sketches: sketchesEV.sort((a, b) => b.expectedStatScore - a.expectedStatScore),
   };
 }
 
 function decideSoftcapOrRedraw({ state, seconds, maxSoftcapWaitSeconds, currentRows, runEV }) {
+  const runValue = runEV.totalValuePerRun;
   if (seconds == null || !Number.isFinite(seconds)) {
     return {
       decision: "unknown",
       reason: "softcap_time_missing",
       secondsToSoftcap: null,
       waitValue: null,
-      runValue: runEV.totalValue,
+      runValue,
     };
   }
 
   const waitValue = estimatePassiveWaitValue({ state, seconds });
   if (seconds === 0) {
-    return { decision: "softcap_reached", reason: "softcap_time_elapsed", secondsToSoftcap: 0, waitValue: 0, runValue: runEV.totalValue };
+    return { decision: "softcap_reached", reason: "softcap_time_elapsed", secondsToSoftcap: 0, waitValue: 0, runValue };
   }
   const bestWinRate = Math.max(0, ...currentRows.map((row) => toNumber(row.winRate)));
   if (seconds <= maxSoftcapWaitSeconds) {
@@ -966,16 +979,16 @@ function decideSoftcapOrRedraw({ state, seconds, maxSoftcapWaitSeconds, currentR
       reason: "softcap_is_close",
       secondsToSoftcap: roundNumber(seconds),
       waitValue: roundNumber(waitValue),
-      runValue: runEV.totalValue,
+      runValue,
     };
   }
-  if (bestWinRate >= 0.5 && runEV.totalValue > waitValue) {
+  if (bestWinRate >= 0.5 && runValue > waitValue) {
     return {
       decision: "finish_current_run",
       reason: "current_run_ev_beats_waiting",
       secondsToSoftcap: roundNumber(seconds),
       waitValue: roundNumber(waitValue),
-      runValue: runEV.totalValue,
+      runValue,
     };
   }
   return {
@@ -983,11 +996,11 @@ function decideSoftcapOrRedraw({ state, seconds, maxSoftcapWaitSeconds, currentR
     reason: "softcap_is_far_and_current_run_ev_is_low",
     secondsToSoftcap: roundNumber(seconds),
     waitValue: roundNumber(waitValue),
-    runValue: runEV.totalValue,
+    runValue,
   };
 }
 
-function createFarmPlan({ approach, runEV, opusValues, state, farmSeconds }) {
+function createFarmPlan({ approach, runEV, opusValues, state }) {
   const qGap = approach.resources.quintessence;
   const missingCurrency = Object.entries(approach.resources.currencies)
     .find(([, gap]) => !gap.ready && gap.missing > 0);
@@ -1022,7 +1035,7 @@ function createFarmPlan({ approach, runEV, opusValues, state, farmSeconds }) {
   return {
     decision: goal.missing <= 0 ? "goal_reached" : goal.estimatedSeconds == null ? "farm_best_active_rewards" : "farm_until_goal",
     goal,
-    windowSeconds: farmSeconds,
+    windowSeconds: runEV.windowSeconds,
     passiveRates: {
       quintessence: quintessencePerSecond(state),
       currencies: generatorRates(state),
@@ -1345,15 +1358,16 @@ function normalizeCurrentRows({ currentRun, state, sketches }) {
 
 function normalizeCurrentRow(row, state) {
   const remaining = remainingSketchVictories(state, row.id);
+  const p90Seconds = toNumber(row.p90Seconds, -1);
+  const medianSeconds = toNumber(row.medianSeconds, -1);
   return {
     id: row.id,
     name: row.name ?? row.id,
     rarity: row.rarity ?? "unknown",
     hidden: Boolean(row.hidden),
     winRate: toNumber(row.winRate),
-    p90Seconds: toNumber(row.p90Seconds, row.medianSeconds ?? 60),
-    p90Censored: row.p90Seconds == null ? Boolean(row.medianCensored) : Boolean(row.p90Censored),
-    medianSeconds: toNumber(row.medianSeconds),
+    p90Seconds: p90Seconds >= 0 ? p90Seconds : medianSeconds >= 0 ? medianSeconds : null,
+    p90Censored: p90Seconds >= 0 ? Boolean(row.p90Censored) : medianSeconds >= 0 && Boolean(row.medianCensored),
     remainingToMax: Math.min(toNumber(row.remainingToMax, remaining), remaining),
   };
 }
@@ -1392,35 +1406,31 @@ function estimateSteamPayout({ sketch, state, perkWinsRemaining = 0, perkProbabi
   };
 }
 
-function addCurrencyEV(currencies, name, expected, passive = false) {
-  const item = currencies[name] ?? {
-    expected: 0,
-    battleExpected: 0,
-    passiveExpected: 0,
-  };
-  item.expected += expected;
-  if (passive) item.passiveExpected += expected;
-  else item.battleExpected += expected;
-  currencies[name] = item;
-}
-
-function roundCurrencyEV(currencies, battleSeconds, windowSeconds) {
-  return Object.fromEntries(Object.entries(currencies).map(([name, item]) => {
-    const battlePerSecond = battleSeconds > 0 ? item.battleExpected / battleSeconds : 0;
-    const passivePerSecond = item.passiveExpected / windowSeconds;
+function estimateCurrencyEV({ currencies, rates, routeSeconds, windowSeconds }) {
+  const names = new Set([...Object.keys(currencies), ...Object.keys(rates)]);
+  return Object.fromEntries([...names].map((name) => {
+    const { battleExpectedPerRun = 0, battleWindowExpected = 0 } = currencies[name] ?? {};
+    const passivePerSecond = toNumber(rates[name]);
+    const passiveExpected = passivePerSecond * windowSeconds;
+    const passiveExpectedPerRun = routeSeconds == null && passivePerSecond !== 0 ? null : passivePerSecond * (routeSeconds ?? 0);
+    const battlePerSecond = battleExpectedPerRun === 0 ? 0 : routeSeconds > 0 ? battleExpectedPerRun / routeSeconds : null;
     return [name, {
-      expected: roundNumber(item.expected),
-      perSecond: roundNumber(battlePerSecond + passivePerSecond),
-      battlePerSecond: roundNumber(battlePerSecond),
-      passiveExpected: roundNumber(item.passiveExpected),
+      expected: roundNumber(battleWindowExpected + passiveExpected),
+      battleWindowExpected: roundNumber(battleWindowExpected),
+      passiveExpected: roundNumber(passiveExpected),
+      expectedPerRun: roundNumber(battleExpectedPerRun + (passiveExpectedPerRun ?? 0)),
+      battleExpectedPerRun: roundNumber(battleExpectedPerRun),
+      passiveExpectedPerRun: passiveExpectedPerRun == null ? null : roundNumber(passiveExpectedPerRun),
+      perSecond: roundNumber((battlePerSecond ?? 0) + passivePerSecond),
+      battlePerSecond: battlePerSecond == null ? null : roundNumber(battlePerSecond),
     }];
   }));
 }
 
-function totalEVValue({ currencies, quintessence, statValue }) {
+function totalEVValue({ currencies, quintessence, statValue, amountKey }) {
   const currencyValue = Object.values(currencies)
-    .reduce((sum, item) => sum + Math.log10(1 + Math.max(0, item.expected)), 0);
-  const quintessenceValue = Math.log10(1 + Math.max(0, quintessence.expected));
+    .reduce((sum, item) => sum + Math.log10(1 + Math.max(0, item[amountKey])), 0);
+  const quintessenceValue = Math.log10(1 + Math.max(0, quintessence[amountKey] ?? 0));
   return currencyValue + quintessenceValue + statValue;
 }
 

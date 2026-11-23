@@ -212,7 +212,7 @@ function createSoftcapEV({ state, seconds, runEV, softcap }) {
       waitQuintessence: null,
       waitCurrencies: {},
       waitValue: softcap?.waitValue ?? null,
-      runValue: runEV?.totalValue ?? softcap?.runValue ?? null,
+      runValue: runEV?.totalValuePerRun ?? runEV?.totalValue ?? softcap?.runValue ?? null,
     };
   }
   const waitSeconds = Math.max(0, toNumber(seconds));
@@ -225,7 +225,7 @@ function createSoftcapEV({ state, seconds, runEV, softcap }) {
   const waitQuintessence = qRate * waitSeconds;
   const waitValue = logValue(waitQuintessence)
     + Object.values(waitCurrencies).reduce((sum, item) => sum + logValue(item.expected), 0);
-  const runValue = runEV?.totalValue ?? softcap?.runValue ?? 0;
+  const runValue = runEV?.totalValuePerRun ?? runEV?.totalValue ?? softcap?.runValue ?? 0;
   const reached = waitSeconds === 0;
   return {
     decision: softcap?.decision ?? (reached ? "softcap_reached" : waitValue >= runValue ? "wait_softcap" : "finish_current_run"),
@@ -268,7 +268,8 @@ function createSpecialCurrencyModels({ state, goalCurrencies, runEV, generatorEV
     const current = toNumber(state.currencies?.[currency]);
     const goal = toNumber(goalCurrencies?.[currency]);
     const perSecond = combinedCurrencyPerSecond({ currency, runEV, generatorEV });
-    const expectedPerRun = toNumber(runEV?.currencies?.[currency]?.expected);
+    const item = runEV?.currencies?.[currency];
+    const expectedPerRun = toNumber(item?.expectedPerRun ?? item?.expected);
     const missing = goal > 0 ? Math.max(0, goal - current) : 0;
     result[currency] = {
       current: roundNumber(current),
@@ -289,6 +290,7 @@ function createSpecialCurrencyModels({ state, goalCurrencies, runEV, generatorEV
 function createCurrencyForecasts({ state, goalCurrencies, runEV, generatorEV }) {
   const currencies = new Set([
     ...Object.keys(goalCurrencies ?? {}),
+    ...Object.keys(runEV?.currencies ?? {}),
     ...SPECIAL_CURRENCIES,
   ]);
   return [...currencies]
@@ -298,7 +300,8 @@ function createCurrencyForecasts({ state, goalCurrencies, runEV, generatorEV }) 
       const goal = explicitGoal > 0 ? explicitGoal : current > 0 ? current * 10 : 0;
       const missing = Math.max(0, goal - current);
       const perSecond = combinedCurrencyPerSecond({ currency, runEV, generatorEV });
-      const expectedPerRun = toNumber(runEV?.currencies?.[currency]?.expected);
+      const item = runEV?.currencies?.[currency];
+      const expectedPerRun = toNumber(item?.expectedPerRun ?? item?.expected);
       return {
         currency,
         current: roundNumber(current),
@@ -458,11 +461,12 @@ function secretUpgradeMateriality({ item, profile, generatorEV }) {
 }
 
 function combinedCurrencyPerSecond({ currency, runEV, generatorEV }) {
-  return battleCurrencyPerSecond({ currency, runEV }) + toNumber(generatorEV.currencies?.[currency]?.perSecond);
+  return (battleCurrencyPerSecond({ currency, runEV }) ?? 0) + toNumber(generatorEV.currencies?.[currency]?.perSecond);
 }
 
 function battleCurrencyPerSecond({ currency, runEV }) {
   const item = runEV?.currencies?.[currency];
+  if (item?.battlePerSecond === null) return null;
   if (item?.battlePerSecond != null) return toNumber(item.battlePerSecond);
   return Math.max(0, toNumber(item?.perSecond) - toNumber(item?.passiveExpected) / Math.max(1, toNumber(runEV?.windowSeconds)));
 }

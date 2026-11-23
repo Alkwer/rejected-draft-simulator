@@ -26,12 +26,18 @@ test("active Steam slot and uploaded web save select their own catalogs", async 
   assert.equal(native.slotName, "slot-4.json");
   assert.equal(native.analysis.bundle.platform, "steam");
   assert.equal(native.analysis.statSource, "playerStats");
-  const { saveHash, catalogHash } = native.analysis.replayIdentity;
+  const { saveHash, catalogHash, modelVersion } = native.analysis.replayIdentity;
   assert.match(saveHash, /^[0-9a-f]{64}$/);
   assert.match(catalogHash, /^[0-9a-f]{64}$/);
-  const replay = await (await request({ saveSource: "steam", expectedSaveHash: saveHash, expectedCatalogHash: catalogHash })).json();
+  const settings = { expectedSaveHash: saveHash, expectedCatalogHash: catalogHash, expectedModelVersion: modelVersion };
+  const reordered = JSON.stringify({ state: { saveProfile: "steam", availableSketches: state.availableSketches,
+    playerStats: { attackSpeed: 1000, attack: 100, maxHp: 100 } }, meta: save.meta, version: save.version });
+  const replay = await (await request({ saveText: reordered, ...settings })).json();
   assert.deepEqual(replay.analysis, native.analysis);
-  const changedCatalog = await request({ saveSource: "steam", expectedSaveHash: saveHash, expectedCatalogHash: "old" });
+  const changedModel = await request({ saveSource: "steam", ...settings, expectedModelVersion: "older" });
+  assert.equal(changedModel.status, 409);
+  assert.match((await changedModel.json()).error, /model version/i);
+  const changedCatalog = await request({ saveSource: "steam", ...settings, expectedCatalogHash: "old" });
   assert.equal(changedCatalog.status, 409);
   assert.match((await changedCatalog.json()).error, /catalog has changed/i);
   const old = await (await request({ saveText: JSON.stringify({ version: 52, state }) })).json();

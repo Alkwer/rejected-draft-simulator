@@ -364,6 +364,7 @@ async function analyze({ loadSlot = false, replay = null } = {}) {
       // Earlier history entries included their analysis time in the generated seed.
       referenceTimeMs: settings.referenceTimeMs ?? Number(/^web-(\d+)$/.exec(settings.seed)?.[1] ?? now),
       expectedSaveHash: replay?.saveHash, expectedCatalogHash: replay?.catalogHash,
+      expectedModelVersion: replay?.modelVersion,
     };
     const data = await api("/api/analyze", {
       method: "POST",
@@ -806,7 +807,7 @@ function renderRoutePreview(preview) {
     return;
   }
   renderSimpleList(els.routePreviewList, steps.map((step) => ({
-    title: `${step.index}. ${step.name}`,
+    title: `${step.index}. ${step.name}${step.status === "skipped_max_victories" ? " (victory cap reached)" : ""}`,
     detail: `target win ${percent(step.targetWinRate)} | p90 ${seconds(step.p90Seconds, step.p90Censored)} | atk ${formatNumber(step.finalStats?.attack)} | hp ${formatNumber(step.finalStats?.maxHp)}`,
   })));
 }
@@ -920,10 +921,10 @@ function renderStrategyPlan(plan) {
       detail: `runs ${nullableNumber(item.estimatedRuns)} | redraws ${nullableNumber(item.estimatedRedraws)} | best ${item.bestSketchId ?? "none"}`,
     })),
   );
-  renderEconomyPlan(plan.economy);
+  renderEconomyPlan(plan.economy, plan.runEV);
 }
 
-function renderEconomyPlan(economy) {
+function renderEconomyPlan(economy, runEV) {
   if (!economy) {
     renderSimpleList(els.economyBuyList, []);
     renderSimpleList(els.economyBottleneckList, []);
@@ -954,10 +955,15 @@ function renderEconomyPlan(economy) {
 
   renderSimpleList(
     els.economyForecastList,
-    (economy.currencyForecasts ?? []).slice(0, 8).map((item) => ({
-      title: item.currency,
-      detail: `goal ${formatNumber(item.goal)} | ${formatNumber(item.perSecond)}/s | runs ${nullableNumber(item.runsToGoal)}`,
-    })),
+    (economy.currencyForecasts ?? []).slice(0, 8).map((item) => {
+      const ev = runEV.currencies[item.currency];
+      const fullRoute = ev?.passiveExpectedPerRun === null ? "full route (battle only)" : "full route";
+      const window = runEV.windowTimingIncomplete ? "timed rewards in" : "in";
+      return {
+        title: item.currency,
+        detail: `${formatNumber(ev?.expected ?? 0)} ${window} ${seconds(runEV.windowSeconds)} | ${formatNumber(item.expectedPerRun)} ${fullRoute} | goal ${formatNumber(item.goal)} | ${formatNumber(item.perSecond)}/s | runs ${nullableNumber(item.runsToGoal)}`,
+      };
+    }),
   );
 
   renderSimpleList(
@@ -1021,15 +1027,18 @@ function renderHistory() {
     if (item.replay?.settings && item.replay.saveHash && item.replay.catalogHash) {
       const { settings } = item.replay;
       const details = document.createElement("span");
-      details.textContent = `Seed ${settings.seed} · trials ${settings.trials} · limit ${settings.maxSeconds} s`;
+      const version = item.replay.modelVersion;
+      details.textContent = `Seed ${settings.seed} · trials ${settings.trials} · limit ${settings.maxSeconds} s · ${version ? "model " + version : "model version unknown"}`;
       row.firstElementChild.append(details);
-      const repeat = document.createElement("button");
-      repeat.type = "button";
-      repeat.className = "mini-button";
-      repeat.textContent = "Repeat analysis";
-      repeat.disabled = state.isBusy;
-      repeat.addEventListener("click", () => analyze({ replay: item.replay }));
-      row.append(repeat);
+      if (version) {
+        const repeat = document.createElement("button");
+        repeat.type = "button";
+        repeat.className = "mini-button";
+        repeat.textContent = "Repeat analysis";
+        repeat.disabled = state.isBusy;
+        repeat.addEventListener("click", () => analyze({ replay: item.replay }));
+        row.append(repeat);
+      }
     }
     els.historyList.append(row);
   }

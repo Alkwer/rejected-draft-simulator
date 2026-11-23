@@ -46,8 +46,9 @@ test("web recommendations, assumed rewards and route preview share the game's vi
 
   assert.deepEqual(result.assumedVictories, { open: 1 });
   assert.equal(result.finalStats.attack, 150);
+  // The assumed victory already consumed the last reward for "open" before the route begins.
   assert.deepEqual(result.routePreview.steps.map((step) => step.status), [
-    "skipped_max_victories", "defeated", "skipped_max_victories",
+    "skipped_max_victories", "skipped_max_victories", "skipped_max_victories",
   ]);
   assert.equal(result.routePreview.finalStats.attack, 150);
   assert.ok(!result.activeSketches.some(({ id }) => id === "capped"));

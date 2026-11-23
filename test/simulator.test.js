@@ -7,6 +7,17 @@ import { decodeSaveText, toNumber } from "../src/save.js";
 import { parseSketches } from "../src/sketch-data.js";
 import { applySketchRewards } from "../src/rewards.js";
 
+test("legacy fights record death at the lethal event even when the next deadline is later", () => {
+  const fast = { maxHp: 100, attack: 100, attackSpeed: 100, minDamage: 100, maxDamage: 100 };
+  const slow = { maxHp: 1, attack: 0, attackSpeed: 800 };
+  for (const [player, enemy, winner] of [[fast, slow, "player"], [slow, fast, "enemy"]]) {
+    const result = simulateFight({ player, enemy, rng: createRng("lethal"), maxSeconds: 0.15, trace: { seconds: 1 } });
+    assert.equal(result.winner, winner);
+    assert.equal(result.seconds, 0.1);
+    assert.equal(result.trace.at(-1).time, result.trace.at(-2).time);
+  }
+});
+
 test("decodeSaveText decodes base64 save exports", () => {
   const payload = {
     version: 52,

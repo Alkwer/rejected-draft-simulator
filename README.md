@@ -37,7 +37,7 @@ npm.cmd run simulate -- --save latest --inspect-save
 npm.cmd run simulate -- --save latest --target mega_pan --trials 500
 ```
 
-Under **Compare**, **Repeat analysis** restores a history entry's target, seed, trial count, time limit and planner settings. Softcap deadlines use the original analysis time. It checks the save and catalog against the original run. For an export, load the original file first. For a changed Steam slot, you can also use an exported copy of the original save. History stores the settings and fingerprints locally for the last 12 analyses. Older entries remain viewable.
+Under **Compare**, **Repeat analysis** restores a history entry's target, seed, trial count, time limit and planner settings. Softcap deadlines use the original analysis time. Replay checks the saved model version and fingerprints of the save and catalog. JSON object keys in a save can appear in any order. Array order and the sketch order in the catalog affect the simulation and are checked. For an export, load the original file first. For a changed Steam slot, you can also use an exported copy of the original save. History keeps the last 12 entries locally. Entries from unknown or different model versions remain available for viewing.
 
 After a Steam patch, use **Refresh Steam data** or run `npm.cmd run update-data`. The import reads the installed game's renderer manifest, verifies the sketch and store assets, and refreshes the local catalog. It works offline. To select a custom installation:
 
@@ -189,6 +189,8 @@ npm.cmd run simulate -- --save "C:\path\to\save.txt" --target duct_taped_banana 
 
 `--strategy-plan` combines target readiness, missing Q/currency, wait-vs-redraw at softcap, farm plan, Opus currency-vs-stat value, run EV over `--farm-seconds`, economy planning, booster set comparison by route simulation, Masterpiece keep/redraw and finish-run/redraw decisions. Use `--goal-q`, `--goal-currency`, `--softcap-seconds`, `--farm-seconds`, `--booster-candidates`, `--masterpiece-targets` and `--strategy-trials` to make the assumptions explicit.
 
+Farm window earnings include passive generation for the entire window and payouts from fights projected to finish within it. Full-route earnings cover one attempt per eligible sketch in planner order. The planner budgets the p90 duration of each fight, using its median when p90 is absent. A missing or censored time makes subsequent finish times uncertain. The report marks incomplete window totals and shows battle-only full-route earnings when it cannot time passive generation.
+
 The strategy output also includes an economy section: shop upgrade ROI, buy-now vs delay recommendations, softcap wait EV, generator income split by currency, Secret Stash EV, Photon/Gold Leaf forecasts, wasted rewards and current currency bottlenecks.
 
 Explain target mechanics and thresholds without running Monte Carlo:
@@ -232,9 +234,12 @@ npm.cmd test
 npm.cmd run lint
 npm.cmd run benchmark -- --trials 1000
 npm.cmd run benchmark -- --trials 1000 --json
+npm.cmd run benchmark:dashboard
 ```
 
 `npm run lint` syntax-checks the simulator, tests, web UI, companion and browser test script. `npm run benchmark` reports simulations per second for a fixed combat scenario.
+
+`npm run benchmark:dashboard` measures the Steam panel from clicking **Run simulation** through the first rendered frame of the completed analysis. It uses headless Chrome (or `PLAYWRIGHT_CHANNEL`), a local server and two synthetic saves. It prints the median and three individual timings after one warm-up for each scenario, with the catalog build and simulated fight duration.
 
 `npm run test:browser` checks save imports and the displayed confidence interval in headless Chrome. To use Edge on Windows, set `$env:PLAYWRIGHT_CHANNEL = "msedge"` in PowerShell.
 
@@ -280,7 +285,7 @@ Known approximations:
 - On Steam, direct fights use the effective `playerStats` saved by the game, including existing upgrades. Encounter stats include the current universe and Precise Eraser. Reward projections account for cards and reward multipliers, then estimate the resulting effective player stats. The game recalculates these from accumulated battle rewards and upgrades.
 - The model covers individual sketch fights. Full counterattack ordering, Overkill and Victory Lap reward batches, and resuming a partially completed fight remain approximate or outside its scope. Refreshing a catalog after a patch updates data; changes to combat rules require independent verification. The full-game catalog also differs from the Steam demo.
 - Calculations use JavaScript finite numbers. The importer reports out-of-range player stats and the analysis warns when a saved currency exceeds that range.
-- Some game mechanics are still approximate until enough real combat-log samples are available. The calibration layer now reports missing logs and suggests tuning only from observed samples.
+- Calibration compares historical fights even when their patch is unknown or differs from the catalog. Only logs explicitly tagged with the catalog's game patch contribute to tuning. The report lists the number eligible and the reasons for exclusions.
 - Route mode simulates a declared plan. It does not yet choose the optimal route automatically.
 - Redraw planning is a Monte Carlo estimate. Exact game redraw weights are still inferred from observed mechanics and local bundle parsing.
 - Build advisor is heuristic. Use route simulation or combat simulation to verify close calls.
@@ -288,6 +293,8 @@ Known approximations:
 The median, p10 and p90 use empirical nearest ranks. A ≥ before a time marks a lower bound caused by the simulation cutoff. Diagnostics show the win-rate interval and model build status separately. Model-assumption comparisons use the same trial seeds for each variant. Auto trials extend the existing sample until the interval is narrow enough or the trial limit is reached.
 
 The target-readiness planner checks up to eight successive sketch victories using up to 200 paired target fights per build. Each step assumes the preceding rewards were collected. A step can trigger the target attempt when its measured gain brings the projection to the goal and its paired win rate reaches that goal. In the web planner, assumed victories credit both stats and currency before checking resource goals. The roll wishlist estimates each displayed sketch's chance of appearing across 500 simulated redraws using the save's settings.
+
+Route previews and target comparisons also include the rewards from assumed victories. **Active run** and **Best next click** start from the imported player's current stats. A 95% win-rate interval that crosses the fight threshold prompts a larger sample when there is no clearly favorable alternative. Steam reward projections use the verified 500 ms effective player attack interval floor and preserve faster intervals already present in imported stats.
 
 For build comparison, run the same target with the same save and different stat source or edited save snapshots.
 

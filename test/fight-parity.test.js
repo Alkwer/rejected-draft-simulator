@@ -135,7 +135,7 @@ test("compareFightParityFixture applies combat speed multiplier from fixture ass
   });
 
   assert.equal(parity.ok, true);
-  assert.equal(parity.simulated.seconds, 0.5005);
+  assert.equal(parity.simulated.seconds, 0.5);
   assert.deepEqual(parity.deviations, []);
 });
 

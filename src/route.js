@@ -725,8 +725,10 @@ function applyRewardsToStats({ stats, rewards = [], multiplier, steamRewards }) 
   for (const reward of rewards ?? []) {
     const statName = reward.statName;
     const amount = steamRewards ? steamRewards.statGain(reward) : toNumber(reward.amount) * multiplier;
-    stats[statName] = applyStatReward(statName, toNumber(stats[statName]), amount, Boolean(steamRewards));
-    applied.push({ statName, amount: roundNumber(amount), finalValue: roundNumber(stats[statName]) });
+    const before = toNumber(stats[statName]);
+    stats[statName] = applyStatReward(statName, before, amount, Boolean(steamRewards));
+    const effectiveGain = steamRewards && statName === "attackSpeed" ? stats[statName] - before : amount;
+    applied.push({ statName, amount: roundNumber(effectiveGain), finalValue: roundNumber(stats[statName]) });
   }
   return applied;
 }

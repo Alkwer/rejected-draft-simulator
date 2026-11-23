@@ -12,6 +12,14 @@ import { decodeSaveText, toNumber } from "./save.js";
 import { enemyFromSketch, sketchForEncounter } from "./combat/steam-encounter.js";
 import { createStrategyPlan, parseStrategyCurrencyGoals } from "./strategy-planner.js";
 import { remainingSketchVictories } from "./victory-limit.js";
+import { RewardProjectionError } from "./rewards.js";
+
+// Bump when changes to simulation or planner rules affect replayed analyses.
+const ANALYSIS_MODEL_VERSION = "2";
+function sortedJsonKeys(_key, value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+  return Object.fromEntries(Object.keys(value).sort().map((key) => [key, value[key]]));
+}
 
 const IMPORTANT_TARGET_IDS = [
   "duct_taped_banana",
@@ -49,19 +57,26 @@ export function createWebAnalysis({
   identifyInputs = false,
   expectedSaveHash,
   expectedCatalogHash,
+  expectedModelVersion,
 } = {}) {
   let replayIdentity;
   if (identifyInputs) {
-    const hash = (value) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
-    const saveHash = hash(save);
+    if ((expectedModelVersion || expectedSaveHash || expectedCatalogHash) && expectedModelVersion !== ANALYSIS_MODEL_VERSION) {
+      throw Object.assign(new Error("This analysis used a different or unknown model version. Run a new analysis with the current model."), { status: 409 });
+    }
+    const hash = (json) => createHash("sha256").update(json).digest("hex");
+    const canonicalSave = JSON.stringify(save, sortedJsonKeys);
+    const saveHash = hash(canonicalSave);
     if (expectedSaveHash && saveHash !== expectedSaveHash) {
       throw Object.assign(new Error("The save has changed. Load the original save to repeat this analysis."), { status: 409 });
     }
-    const catalogHash = hash({ sketches, dataMetadata });
+    // Sketch order determines redraw odds, so keep it in the catalog fingerprint.
+    const catalogHash = hash(JSON.stringify({ sketches: Object.entries(sketches), dataMetadata }, sortedJsonKeys));
     if (expectedCatalogHash && catalogHash !== expectedCatalogHash) {
       throw Object.assign(new Error("The catalog has changed since this analysis. Run a new analysis instead."), { status: 409 });
     }
-    replayIdentity = { saveHash, catalogHash };
+    save = JSON.parse(canonicalSave);
+    replayIdentity = { saveHash, catalogHash, modelVersion: ANALYSIS_MODEL_VERSION };
   }
   const resolvedTargetId = resolveTargetId(targetId) ?? "duct_taped_banana";
   const combatAssumptions = combatAssumptionsFromSave(save);
@@ -136,11 +151,15 @@ export function createWebAnalysis({
     targetId: resolvedTargetId,
     currentRun: { targets: activeSketches },
   });
+  const projectedActive = assumedRouteIds.length ? createActiveSketchRows({
+    analysis, sketches, baseStats: finalStats, trialsSetting: auxiliaryTrialsSetting, maxSeconds: targetMaxSeconds,
+    seed, assumptions: combatAssumptions, targetId: resolvedTargetId, currentTargetResult: result,
+  }) : activeSketches;
   const targetComparisons = createTargetComparisons({
     analyzedId: resolvedTargetId,
     analyzedResult: result,
     sketches,
-    activeSketches,
+    activeSketches: projectedActive,
     finalStats,
     trialsSetting: auxiliaryTrialsSetting,
     maxSeconds: targetMaxSeconds,
@@ -151,24 +170,34 @@ export function createWebAnalysis({
     target, trialsSetting: auxiliaryTrialsSetting, maxSeconds: targetMaxSeconds,
     seed: `${seed}:reward-impact`, assumptions: combatAssumptions,
   };
-  const rewardComparison = compareSketchRewards({ state: rewardState, stats: finalStats, sketches, pairedOptions });
+  const projectionWarnings = new Set();
+  function optionalProjection(label, calculate) {
+    try {
+      return calculate();
+    } catch (error) {
+      if (!(error instanceof RewardProjectionError)) throw error;
+      projectionWarnings.add(`${label}: ${error.message}`);
+      return null;
+    }
+  }
+  const rewardComparison = compareSketchRewards({ state: rewardState, stats: finalStats, sketches, pairedOptions, optionalProjection });
   const route = normalizeIds(routeIds);
-  const projectedRoute = projectVictories({ baseStats: finalStats, sketches, state: rewardState, ids: route });
-  const routeComparison = route.length ? compareSketchRewards({
-    state: projectedRoute.state, sketches, pairedOptions, stats: projectedRoute.stats,
+  const projectedRoute = optionalProjection("Route", () => projectVictories({ baseStats: finalStats, sketches, state: rewardState, ids: route }));
+  const routeComparison = route.length && projectedRoute ? compareSketchRewards({
+    state: projectedRoute.state, sketches, pairedOptions, stats: projectedRoute.stats, optionalProjection,
   }) : rewardComparison;
-  const activeDeltas = createActiveDeltas({ activeSketches, state: projectedRoute.state, ...routeComparison });
-  const routePreview = createRoutePreview({
+  const activeDeltas = projectedRoute ? createActiveDeltas({ activeSketches, state: projectedRoute.state, ...routeComparison }) : {};
+  const routePreview = projectedRoute && optionalProjection("Route", () => createRoutePreview({
     sketches,
-    state: save.state,
-    baseStats,
+    state: rewardState,
+    baseStats: finalStats,
     routeIds,
     targetId: resolvedTargetId,
     trialsSetting: auxiliaryTrialsSetting,
     maxSeconds: targetMaxSeconds,
     seed,
     assumptions: combatAssumptions,
-  });
+  }));
   const rollWishlist = createRollWishlist({
     sketches,
     state: rewardState,
@@ -181,7 +210,7 @@ export function createWebAnalysis({
     seed,
     assumptions: combatAssumptions,
   });
-  const strategicPlan = createStrategyPlan({
+  const strategicPlan = optionalProjection("Strategy plan", () => createStrategyPlan({
     referenceTimeMs,
     sketches,
     state: rewardState,
@@ -189,12 +218,12 @@ export function createWebAnalysis({
     targetId: resolvedTargetId,
     baseStats: finalStats,
     targetSimulation: result,
-    currentRun: { targets: activeSketches },
+    currentRun: { targets: projectedActive },
     ...normalizeStrategyOptions(strategyOptions),
     trials: auxiliaryTrials,
     maxSeconds: targetMaxSeconds,
     seed,
-  });
+  }));
 
   return {
     ...(replayIdentity && { replayIdentity }),
@@ -202,7 +231,7 @@ export function createWebAnalysis({
     target: targetSummary(target),
     statSource,
     statsReason: analysis.stats.reason,
-    warnings: analysis.warnings,
+    warnings: [...analysis.warnings, ...Array.from(projectionWarnings, (message) => ({ code: "reward_projection_unavailable", message }))],
     assumedVictories: assumedVictoryPlan,
     assumedVictoryIds: assumedRouteIds,
     finalStats,
@@ -213,13 +242,13 @@ export function createWebAnalysis({
     fightTrace,
     activeSketches,
     recommendation,
-    nextAction: describeNextAction(recommendation, activeSketches, strategicPlan.softcap),
+    nextAction: describeNextAction(recommendation, activeSketches, strategicPlan?.softcap),
     strategicPlan,
     targetComparisons,
     activeDeltas,
     routePreview,
     rollWishlist,
-    buildComparison: createBuildComparison({ targetComparisons, activeSketches }),
+    buildComparison: createBuildComparison({ targetComparisons, activeSketches: projectedActive }),
     bundle: summarizeGameBundle({ sketches, dataMetadata }),
     performance: {
       primaryTrials: result.trials,
@@ -338,7 +367,7 @@ function createActiveSketchRows({ analysis, sketches, baseStats, trialsSetting, 
     seen.add(item.id);
     const sketch = sketches[item.id];
     if (!sketch?.stats) continue;
-    const options = { target: sketch, player: baseStats, trialsSetting, maxSeconds, seed: `${seed}:active:${item.id}`, assumptions };
+    const options = { target: sketch, player: baseStats, trialsSetting, maxSeconds, seed: `${seed}:${item.id}`, assumptions };
     const result = (item.id === targetId && currentTargetResult) || simulateTarget(options);
     rows.push({
       id: item.id,
@@ -403,7 +432,7 @@ function createTargetComparisons({ sketches, activeSketches, finalStats, trialsS
       player: finalStats,
       trialsSetting,
       maxSeconds,
-      seed: `${seed}:target-compare:${id}`,
+      seed: `${seed}:${id}`,
       assumptions,
     });
     rows.push(comparisonRow({ target, result, source }));
@@ -457,14 +486,16 @@ function sourceRank(source) {
   return source === "key_target" ? 0 : 1;
 }
 
-function compareSketchRewards({ state, stats, sketches, pairedOptions }) {
+function compareSketchRewards({ state, stats, sketches, pairedOptions, optionalProjection }) {
   const rewardBaseline = simulateTarget({ ...pairedOptions, player: stats });
   const results = new Map();
   function simulateAfterReward(id) {
     if (!results.has(id)) {
-      const { stats: next, lastReward } = projectVictories({ baseStats: stats, sketches, state, ids: [id] });
-      const changed = sketches[id].rewards?.some(({ statName }) => next[statName] !== stats[statName]);
-      results.set(id, { simulation: changed ? simulateTarget({ ...pairedOptions, player: next }) : rewardBaseline, reward: lastReward });
+      results.set(id, optionalProjection(id, () => {
+        const { stats: next, lastReward } = projectVictories({ baseStats: stats, sketches, state, ids: [id] });
+        const changed = sketches[id].rewards?.some(({ statName }) => next[statName] !== stats[statName]);
+        return { simulation: changed ? simulateTarget({ ...pairedOptions, player: next }) : rewardBaseline, reward: lastReward };
+      }));
     }
     return results.get(id);
   }
@@ -475,7 +506,9 @@ function createActiveDeltas({ activeSketches, state, rewardBaseline, simulateAft
   const result = {};
   for (const item of activeSketches) {
     if (remainingSketchVictories(state, item.id) <= 0) continue;
-    const { simulation: nextResult, reward } = simulateAfterReward(item.id);
+    const projection = simulateAfterReward(item.id);
+    if (!projection) continue;
+    const { simulation: nextResult, reward } = projection;
     result[item.id] = {
       id: item.id,
       name: item.name,
@@ -556,7 +589,9 @@ function createRollWishlist({
 
   for (const candidate of preselected) {
     const sketch = candidate.sketch;
-    const { simulation: targetResult, reward } = simulateAfterReward(sketch.id);
+    const projection = simulateAfterReward(sketch.id);
+    if (!projection) continue;
+    const { simulation: targetResult, reward } = projection;
     const targetDelta = round((targetResult.winRate ?? 0) - (currentResult.winRate ?? 0));
     if (targetDelta <= 0 && candidate.source !== "active_run") continue;
 
@@ -683,6 +718,10 @@ function inferCompanionTargetId({ save, sketches, targetId }) {
 
 function describeNextAction(recommendation, activeSketches, softcap) {
   const row = activeSketches.find((item) => item.id === recommendation.targetId);
+  if (row && recommendation.action === "increase_trials") return {
+    type: "uncertain", title: `Run more trials for ${row.name}`,
+    detail: "The 95% win-rate interval crosses the 50% fight threshold.",
+  };
   if (row) {
     const target = recommendation.action === "fight_target";
     return {

@@ -755,10 +755,13 @@ function printStrategyPlan({ target, statSource, strategicPlan }) {
   console.log("");
 
   console.log("Run EV:");
-  console.log(`  Window: ${strategicPlan.runEV.windowSeconds}s`);
-  console.log(`  Quintessence: ${formatNumber(strategicPlan.runEV.quintessence.expected)} (${formatNumber(strategicPlan.runEV.quintessence.perSecond)}/s)`);
-  for (const [currency, ev] of Object.entries(strategicPlan.runEV.currencies)) {
-    console.log(`  ${currency}: ${formatNumber(ev.expected)} (${formatNumber(ev.perSecond)}/s)`);
+  const { windowSeconds, routeSeconds, windowTimingIncomplete, quintessence, currencies } = strategicPlan.runEV;
+  console.log(`  Window: ${windowSeconds}s | full route: ${routeSeconds == null ? "duration unknown" : formatNumber(routeSeconds) + "s"}`);
+  if (windowTimingIncomplete) console.log("  Window totals include only fights with a known finish inside the window.");
+  for (const [currency, ev] of [["Quintessence", quintessence], ...Object.entries(currencies)]) {
+    const fullRoute = ev.expectedPerRun == null ? "unknown" : formatNumber(ev.expectedPerRun);
+    const qualifier = ev.passiveExpectedPerRun === null ? " (battle rewards only)" : "";
+    console.log(`  ${currency}: ${formatNumber(ev.expected)} in window | ${fullRoute}${qualifier} for full route | ${formatNumber(ev.perSecond)}/s`);
   }
   console.log("");
 
@@ -1149,6 +1152,7 @@ function printCalibrationReport({ statSource, calibration }) {
   console.log(`Stats source fallback: ${statSource}`);
   console.log(`Combat logging: ${calibration.logs.combatLoggingEnabled === false ? "disabled" : calibration.logs.combatLoggingEnabled === true ? "enabled" : "unknown"}`);
   console.log(`Combat logs: ${calibration.logs.used}/${calibration.logs.total} used (save ${calibration.logs.fromSave}, external ${calibration.logs.external})`);
+  console.log(`Logs eligible for tuning: ${calibration.logs.tuningEligible}`);
   if (calibration.logs.targetFilter) console.log(`Target filter: ${calibration.logs.targetFilter}`);
   console.log("");
 

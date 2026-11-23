@@ -209,8 +209,8 @@ export function simulateFight({ rng = Math.random, player, enemy, maxSeconds = 3
   recordTrace(combat, "start");
 
   while (combat.time < maxSeconds) {
-    if (steam && combat.enemyHp <= 0) return finish("player", "enemy_hp_zero", combat);
-    if (steam && combat.playerHp <= 0) return finish("enemy", "player_hp_zero", combat);
+    if (combat.enemyHp <= 0) return finish("player", "enemy_hp_zero", combat);
+    if (combat.playerHp <= 0) return finish("enemy", "player_hp_zero", combat);
     if (seppukuRules.length > 0 && shouldTriggerSeppuku(combat, seppukuRules)) {
       return finishSeppuku(combat);
     }
@@ -248,8 +248,6 @@ export function simulateFight({ rng = Math.random, player, enemy, maxSeconds = 3
     );
     combat.time = nextTime;
 
-    if (combat.enemyHp <= 0) return finish("player", "enemy_hp_zero", combat);
-    if (combat.playerHp <= 0) return finish("enemy", "player_hp_zero", combat);
     if (combat.time >= maxSeconds) break;
     if (seppukuRules.length > 0 && shouldTriggerSeppuku(combat, seppukuRules)) return finishSeppuku(combat);
     if (combat.time === nextSpeedChange) continue;

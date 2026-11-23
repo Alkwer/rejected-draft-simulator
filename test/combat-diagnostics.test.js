@@ -342,7 +342,8 @@ test("nearest-rank duration bounds retain censoring at the selected trial", () =
   assert.equal(summary.timeouts, 1);
   assert.equal(summary.p10Seconds, summary.medianSeconds);
   assert.equal(summary.p90Seconds, 1);
-  assert.equal(summary.medianSeconds, summary.p90Seconds);
+  assert.equal(summary.medianSeconds, player.attackSpeed / 1000);
+  assert.ok(summary.medianSeconds < summary.p90Seconds);
   assert.equal(summary.p10Censored, false);
   assert.equal(summary.medianCensored, false);
   assert.equal(summary.p90Censored, true);

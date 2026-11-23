@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 
 import { createMonteCarloAccumulator, runMonteCarlo } from "./combat.js";
+import { confidenceInterval95 } from "./combat/math.js";
 import { findActiveSteamSave, toNumber } from "./save.js";
 import { enemyFromSketch } from "./combat/steam-encounter.js";
 import { maxSketchVictories, remainingSketchVictories } from "./victory-limit.js";
@@ -218,7 +219,7 @@ export function createRunRecommendation({ currentRun, targetId = null } = {}) {
   const target = targetId ? targets.find((item) => item.id === targetId) : null;
   const best = targets[0];
   const hideCandidates = targets
-    .filter((item) => !item.hidden && item.winRate <= 0.05)
+    .filter((item) => (recommendationInterval(item)?.upper ?? item.winRate) <= 0.05)
     .slice(0, 5)
     .map((item) => ({
       id: item.id,
@@ -236,25 +237,33 @@ export function createRunRecommendation({ currentRun, targetId = null } = {}) {
     };
   }
 
-  if (target && target.winRate >= 0.5) {
+  const favorable = (item) => (recommendationInterval(item)?.lower ?? item.winRate) >= 0.5;
+  if (target && favorable(target)) {
     return {
       action: "fight_target",
       targetId: target.id,
-      confidence: confidenceForRate(target.winRate),
+      confidence: confidenceForEstimate(target),
       reason: "target_present_and_favorable",
       hideCandidates,
     };
   }
 
-  if (best && best.winRate >= 0.5) {
+  const alternative = targets.find(favorable);
+  if (alternative) {
     return {
       action: "finish_first",
-      targetId: best.id,
-      confidence: confidenceForRate(best.winRate),
+      targetId: alternative.id,
+      confidence: confidenceForEstimate(alternative),
       reason: "best_visible_sketch_has_good_odds",
       hideCandidates,
     };
   }
+
+  const uncertain = [target, ...targets].find((row) => row && recommendationInterval(row)?.upper >= 0.5);
+  if (uncertain) return {
+    action: "increase_trials", targetId: uncertain.id, confidence: "low",
+    reason: "win_interval_crosses_fight_threshold", hideCandidates,
+  };
 
   if (targetId && !target) {
     return {
@@ -323,10 +332,14 @@ function topKey(counts = {}) {
   return Object.entries(counts).sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
 }
 
-function confidenceForRate(rate) {
-  if (rate >= 0.85) return "high";
-  if (rate >= 0.5) return "medium";
-  return "low";
+function recommendationInterval(row) {
+  return row.winRateCi95 ?? (row.trials > 0 ? confidenceInterval95(row.winRate, row.trials) : null);
+}
+
+function confidenceForEstimate(row) {
+  const interval = recommendationInterval(row);
+  if (!interval) return "low";
+  return interval.lower >= 0.85 ? "high" : "medium";
 }
 
 function rarityRank(rarity) {

@@ -133,10 +133,12 @@ test("createCalibrationReport compares observed fights with simulation and flags
 });
 
 test("calibration excludes censored simulated medians and observed timeouts from duration tuning", () => {
-  const log = { targetId: "wall", outcome: "win", seconds: 300, reason: "burn" };
+  const log = { targetId: "wall", outcome: "win", seconds: 300, reason: "burn", gameVersion: "v0.874" };
   const report = createCalibrationReport({ save: { state: { combatLog: [log] } },
     sketches: { wall: { stats: { maxHp: 1000, attack: 0, attackSpeed: 1000 } } },
-    player: { maxHp: 100, attack: 1, attackSpeed: 1000 }, trials: 5, maxSeconds: 5 });
+    player: { maxHp: 100, attack: 1, attackSpeed: 1000 }, trials: 5, maxSeconds: 5,
+    dataMetadata: { gameVersion: "v0.874" } });
+  assert.equal(report.logs.tuningEligible, 1);
   assert.equal(report.comparisons[0].predicted.medianCensored, true);
   assert.equal(report.comparisons[0].predicted.medianSeconds, 5);
   assert.equal(report.tuning.durationMultiplier.sampleCount, 0);
@@ -145,21 +147,83 @@ test("calibration excludes censored simulated medians and observed timeouts from
     simulated: { summary: { medianSeconds: 2 } } }]).durationMultiplier.value, null);
 });
 
-test("calibration keeps a completed median even when half the trials timed out at the same time", () => {
+test("calibration keeps a completed median just below the horizon when half the trials time out", () => {
   const report = createCalibrationReport({
-    save: { state: { combatLog: [{ targetId: "wall", outcome: "win", seconds: 5 }] } },
+    save: { state: { combatLog: [{ targetId: "wall", outcome: "win", seconds: 5, gameVersion: "v0.874" }] } },
     sketches: { wall: { stats: { maxHp: 15, attack: 0, attackSpeed: 8000 } } },
     player: { maxHp: 100, attack: 10, attackSpeed: 999.9999, critChance: 50, minDamage: 100, maxDamage: 100 },
     trials: 2,
     maxSeconds: 1,
     seed: "0",
+    dataMetadata: { gameVersion: "v0.874" },
   });
 
   const { predicted } = report.comparisons[0];
   assert.equal(predicted.timeoutRate, 0.5);
-  assert.equal(predicted.medianSeconds, 1);
+  assert.ok(Math.abs(predicted.medianSeconds - 0.9999999) < 1e-12);
   assert.equal(predicted.medianCensored, false);
   assert.equal(report.tuning.durationMultiplier.sampleCount, 1);
+});
+
+test("calibration tunes only matching patches after importing mixed external and save logs", () => {
+  const fight = {
+    targetId: "training_target",
+    outcome: "win",
+    seconds: 3,
+    playerStats: { maxHp: 100, attack: 10, attackSpeed: 1000, minDamage: 100, maxDamage: 100, critChance: 50 },
+    targetStats: { maxHp: 15, attack: 0, attackSpeed: 1000 },
+  };
+  const save = {
+    version: 52,
+    meta: { gameVersion: "v0.881" },
+    state: { combatLog: [{ ...fight, seconds: 20 }] },
+  };
+  const mixed = {
+    metadata: { gameVersion: "v0.881" },
+    logs: [{ ...fight, seconds: 30, patchVersion: "v0.874" }, fight],
+  };
+  const externalLogs = parseCombatLogText(Buffer.from(JSON.stringify(mixed)).toString("base64"));
+  const options = { dataMetadata: { gameVersion: "v0.881", saveVersion: 52 }, trials: 8, maxSeconds: 50 };
+  const report = createCalibrationReport({ ...options, save, externalLogs });
+  const matchingOnly = createCalibrationReport({ ...options, externalLogs: [externalLogs[1]] });
+
+  assert.equal(report.logs.used, 3);
+  assert.equal(report.logs.tuningEligible, 1);
+  assert.deepEqual(report.comparisons.map(({ patchVersion, tuningExclusion }) => [patchVersion, tuningExclusion]), [
+    [null, "calibration_log_patch_missing"],
+    ["v0.874", "calibration_log_patch_mismatch"],
+    ["v0.881", null],
+  ]);
+  assert.ok(report.comparisons.every(({ simulated }) => simulated));
+  assert.deepEqual(report.comparisons[2].simulated, matchingOnly.comparisons[0].simulated);
+  assert.deepEqual(report.tuning, matchingOnly.tuning);
+  assert.equal(report.tuning.durationMultiplier.sampleCount, 1);
+  assert.ok(report.warnings.some(({ code, count }) => code === "calibration_log_patch_missing" && count === 1));
+  assert.ok(report.warnings.some(({ code, count }) => code === "calibration_log_patch_mismatch" && count === 1));
+});
+
+test("calibration needs catalog patch metadata even when a log matches the reference snapshot", () => {
+  const { version: snapshotVersion } = checkPatchSanity();
+  const report = createCalibrationReport({
+    externalLogs: [{
+      targetId: "training_target",
+      outcome: "win",
+      seconds: 3,
+      gameVersion: snapshotVersion,
+      playerStats: { maxHp: 100, attack: 10, attackSpeed: 1000 },
+      targetStats: { maxHp: 1, attack: 0, attackSpeed: 1000 },
+    }],
+    trials: 2,
+    maxSeconds: 5,
+  });
+
+  assert.equal(report.gameDataVersion, null);
+  assert.equal(report.patchSanity.version, snapshotVersion);
+  assert.ok(report.comparisons[0].simulated);
+  assert.equal(report.comparisons[0].tuningExclusion, "calibration_catalog_patch_missing");
+  assert.equal(report.logs.tuningEligible, 0);
+  assert.equal(report.tuning.durationMultiplier.value, null);
+  assert.ok(report.warnings.some(({ code, count }) => code === "calibration_catalog_patch_missing" && count === 1));
 });
 
 test("suggestCalibrationTuning derives status, reflect and duration multipliers", () => {
