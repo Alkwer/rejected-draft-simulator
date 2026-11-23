@@ -20,10 +20,12 @@ function readJson(file) {
 
 function readOptionalJson(file) {
   try {
-    return readJson(file);
+    const data = readJson(file);
+    if (!data || typeof data !== "object" || Array.isArray(data)) throw new Error("Invalid saved fight file.");
+    return data;
   } catch (error) {
     if (error.code !== "ENOENT") throw error;
-    return null;
+    return undefined;
   }
 }
 
@@ -79,28 +81,86 @@ function writeWatchCheckpoint(root, id, checkpoint) {
   }
 }
 
-function getFight(root, id, includePending = false) {
+function unreadableFight(id, cause) {
+  return Object.assign(problem(422, `Could not read saved fight ${id}.`), { cause });
+}
+
+function validateFightMetadata(metadata, id) {
+  const target = metadata.forecast?.target ?? metadata.target;
+  if (metadata.id !== id || typeof metadata.capturedAt !== "string" ||
+      !Number.isFinite(Date.parse(metadata.capturedAt)) || typeof metadata.source !== "string" ||
+      typeof target?.id !== "string" || typeof target.name !== "string") {
+    throw new Error("Invalid saved fight metadata.");
+  }
+  return metadata;
+}
+
+function readCaptureMetadata(dir, id) {
+  const capture = readOptionalJson(path.join(dir, "capture.json"));
+  return capture && validateFightMetadata({ ...capture.record, target: capture.target }, id);
+}
+
+function readFightMetadata(root, id) {
   const dir = fightDir(root, id);
-  const record = readOptionalJson(path.join(dir, "forecast", "forecast.json"))
-    ?? readOptionalJson(path.join(dir, "forecast.json"));
-  const capture = record ? null : readOptionalJson(path.join(dir, "capture.json"));
-  if (!record && !capture) throw problem(404, "Saved fight not found.");
-  if (!record && !includePending) throw problem(409, "The forecast is pending. Open this saved fight to resume it.");
-  let revision = 0;
-  for (const item of fs.readdirSync(dir, { withFileTypes: true })) {
-    const match = item.isDirectory() && /^result-(\d+)$/.exec(item.name);
-    if (match) revision = Math.max(revision, Number(match[1]));
-  }
-  let observation = null;
-  if (revision) {
-    const resultDir = path.join(dir, `result-${revision}`);
-    observation = readOptionalJson(path.join(resultDir, "observation.json"));
-    if (!observation) {
-      const result = readJson(path.join(resultDir, "steam-observation.json"));
-      observation = record ? { ...compareSteamFightObservation(record.forecast, result), ...result } : result;
+  try {
+    const record = readOptionalJson(path.join(dir, "forecast", "forecast.json"))
+      ?? readOptionalJson(path.join(dir, "forecast.json"));
+    if (record) {
+      if (!record.forecast?.target) throw new Error("Missing saved forecast.");
+      return validateFightMetadata(record, id);
     }
+    const capture = readCaptureMetadata(dir, id);
+    if (capture) return capture;
+    if (!fs.existsSync(dir)) return null;
+    throw new Error("Missing saved fight metadata.");
+  } catch (cause) {
+    throw unreadableFight(id, cause);
   }
-  return { ...(record ?? { ...capture.record, target: capture.target }), revision, observation };
+}
+
+function restoreSteamTiming(observation) {
+  const { source, startedAt, notifiedAt } = observation;
+  if (source === "steam-notification" && Number.isSafeInteger(startedAt) && startedAt > 0 &&
+      Number.isSafeInteger(notifiedAt) && notifiedAt >= startedAt) {
+    return { ...observation, elapsedSeconds: (notifiedAt - startedAt) / 1000 };
+  }
+  return observation;
+}
+
+function readFight(root, id, metadata) {
+  const dir = fightDir(root, id);
+  try {
+    let revision = 0;
+    for (const item of fs.readdirSync(dir, { withFileTypes: true })) {
+      const match = item.isDirectory() && /^result-(\d+)$/.exec(item.name);
+      if (match) revision = Math.max(revision, Number(match[1]));
+    }
+    let observation = null;
+    if (revision) {
+      const resultDir = path.join(dir, `result-${revision}`);
+      const recorded = readOptionalJson(path.join(resultDir, "observation.json"));
+      observation = restoreSteamTiming(recorded === undefined
+        ? readJson(path.join(resultDir, "steam-observation.json"))
+        : recorded);
+      if (!["win", "loss", "timeout"].includes(observation.outcome) ||
+          !Number.isFinite(observation.elapsedSeconds) || observation.elapsedSeconds < 0) {
+        throw new Error("Invalid saved fight observation.");
+      }
+      if (metadata.forecast && (recorded === undefined || observation.source === "steam-notification")) {
+        observation = { ...observation, ...compareSteamFightObservation(metadata.forecast, observation) };
+      }
+    }
+    return { ...metadata, revision, observation };
+  } catch (cause) {
+    throw unreadableFight(id, cause);
+  }
+}
+
+function getFight(root, id, includePending = false) {
+  const metadata = readFightMetadata(root, id);
+  if (!metadata) throw problem(404, "Saved fight not found.");
+  if (!metadata.forecast && !includePending) throw problem(409, "The forecast is pending. Open this saved fight to resume it.");
+  return readFight(root, id, metadata);
 }
 
 function savedInput(body, steamSaveDir) {
@@ -180,7 +240,7 @@ function recordObservation(root, id, body, evidence = {}) {
   } catch (error) {
     throw problem(400, error.message);
   }
-  if (fight.observation?.outcome === comparison.outcome &&
+  if (fight.observation?.outcome === comparison.outcome && fight.observation.source === evidence.source &&
       fight.observation.elapsedSeconds === comparison.elapsedSeconds) return fight;
   const conflict = "This result changed in another window. Reload the saved fight before editing it.";
   if (body.revision !== fight.revision) throw problem(409, conflict);
@@ -190,16 +250,40 @@ function recordObservation(root, id, body, evidence = {}) {
   return { ...fight, revision: fight.revision + 1, observation };
 }
 
-export function listSteamFights(root) {
+function summarizeFight({ id, capturedAt, source, forecast, target }) {
+  return { id, capturedAt, source, target: forecast?.target ?? target };
+}
+
+function archiveEntries(root) {
   if (!fs.existsSync(root)) return [];
   return fs.readdirSync(root, { withFileTypes: true })
     .filter((item) => item.isDirectory() && UUID.test(item.name))
-    .map(({ name }) => getFight(root, name, true))
-    .map(({ id, capturedAt, source, forecast, target, observation }) => ({
-      id, capturedAt, source, target: forecast?.target ?? target, outcome: observation?.outcome ?? null,
-      ...(!forecast && { pending: true }),
-    }))
-    .sort((a, b) => b.capturedAt.localeCompare(a.capturedAt) || b.id.localeCompare(a.id));
+    .map(({ name: id }) => {
+      let summary = { id };
+      try {
+        const metadata = readFightMetadata(root, id);
+        if (!metadata) return { id, unreadable: true };
+        summary = summarizeFight(metadata);
+        const { observation } = readFight(root, id, metadata);
+        return { ...summary, outcome: observation?.outcome ?? null, ...(!metadata.forecast && { pending: true }) };
+      } catch (error) {
+        if (error.status !== 422) throw error;
+        if (!summary.target) {
+          try {
+            const capture = readCaptureMetadata(fightDir(root, id), id);
+            if (capture) summary = summarizeFight(capture);
+          } catch {
+            // The unreadable entry may have no usable timestamp or slot to delimit earlier captures.
+          }
+        }
+        return { ...summary, unreadable: true };
+      }
+    })
+    .sort((a, b) => (b.capturedAt ?? "").localeCompare(a.capturedAt ?? "") || b.id.localeCompare(a.id));
+}
+
+export function listSteamFights(root) {
+  return archiveEntries(root).map((fight) => fight.unreadable ? { id: fight.id, unreadable: true } : fight);
 }
 
 export function createSteamFightMonitor({ root, steamSaveDir = defaultSteamSaveDir() }) {
@@ -212,12 +296,12 @@ export function createSteamFightMonitor({ root, steamSaveDir = defaultSteamSaveD
     if (stamp === directoryStamp) return;
     const nextCapture = new Map();
     const pending = new Set();
-    for (const fight of listSteamFights(root)) {
-      if (fight.target.id !== "hyena_hulk" || !/^slot-[1-6]\.json$/.test(fight.source)) continue;
+    for (const fight of archiveEntries(root)) {
+      if (fight.target?.id !== "hyena_hulk" || !/^slot-[1-6]\.json$/.test(fight.source)) continue;
       const since = Date.parse(fight.capturedAt);
       const until = nextCapture.get(fight.source) ?? Infinity;
       nextCapture.set(fight.source, since);
-      if (fight.outcome) continue;
+      if (fight.outcome || fight.unreadable) continue;
       const watch = watches.get(fight.id) ?? { source: fight.source, since };
       watch.until = until;
       watches.set(fight.id, watch);
@@ -272,16 +356,19 @@ export function createSteamFightMonitor({ root, steamSaveDir = defaultSteamSaveD
         continue;
       }
       const result = { outcome: match.outcome, elapsedSeconds: match.elapsedSeconds };
-      if (getFight(root, id, true).forecast) {
-        try {
+      try {
+        if (getFight(root, id, true).forecast) {
           recordObservation(root, id, { revision: 0, ...result }, match.evidence);
-        } catch (error) {
-          if (error.status !== 409) throw error;
+        } else {
+          // The forecast can still be running when Steam saves the result.
+          const observation = { ...result, ...match.evidence, recordedAt: new Date().toISOString() };
+          publish(fightDir(root, id), "result-1", { "steam-observation.json": JSON.stringify(observation) });
         }
-      } else {
-        // The forecast can still be running when Steam saves the result.
-        const observation = { ...result, ...match.evidence, recordedAt: new Date().toISOString() };
-        publish(fightDir(root, id), "result-1", { "steam-observation.json": JSON.stringify(observation) });
+      } catch (error) {
+        if (error.status !== 409) {
+          watch.status = "unavailable";
+          continue;
+        }
       }
       watches.delete(id);
     }

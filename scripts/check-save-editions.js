@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { chromium } from "playwright-core";
@@ -46,12 +46,14 @@ try {
   await page.getByRole("tab", { name: "Run", exact: true }).press("Enter");
 
   const { state } = JSON.parse(Buffer.from(saveText, "base64").toString());
+  state.nextSoftcapAt = Date.now() + 60000;
   const steamFile = JSON.stringify({ meta: { profile: "steam" }, version: 86, state });
   const steamResponse = page.waitForResponse((r) => r.url().endsWith("/api/analyze"));
   await page.locator("#saveFile").setInputFiles({ name: "slot-1.json", mimeType: "application/json", buffer: Buffer.from(steamFile) });
   const steam = await (await steamResponse).json();
   assert.equal(steam.ok, true, steam.error);
   assert.equal(steam.analysis.bundle.platform, "steam");
+  assert.ok(steam.analysis.strategicPlan.softcap.secondsToSoftcap > 0 && steam.analysis.strategicPlan.softcap.secondsToSoftcap <= 60);
   assert.equal(await target.locator('option[value="little_stapler"]').count(), 1);
   await page.waitForFunction(() => !document.querySelector("#analyzeButton").disabled);
 
@@ -80,7 +82,8 @@ try {
   assert.deepEqual(repeated.analysis, steam.analysis);
   await page.waitForFunction(() => document.querySelector("#trialsSelect").value === "100");
   const history = await page.evaluate(() => JSON.parse(localStorage.getItem("rd-sim-history")));
-  assert.ok(history.every((row) => row.replay.saveHash && row.replay.catalogHash && !("saveText" in row.replay.settings)));
+  assert.ok(history.every((row) => row.replay.saveHash && row.replay.catalogHash &&
+    Number.isSafeInteger(row.replay.settings.referenceTimeMs) && !("saveText" in row.replay.settings)));
   await page.setViewportSize({ width: 390, height: 844 });
   await page.getByRole("button", { name: "Planner", exact: true }).click();
   assert.ok(await historyRow.getByRole("button", { name: "Repeat analysis" }).isVisible());
@@ -123,14 +126,28 @@ try {
   await page.getByRole("cell", { name: "No active farm target" }).waitFor();
   await page.goto(`http://127.0.0.1:${server.address().port}/steam-fights.html`);
   await page.locator("#logSource").selectOption("export");
+  state.activeBattleSpeedupRemainingSeconds = 0.1;
+  state.fundamentals = { ...state.fundamentals, timeAcceleration: 1, battleSpeedupRate: 2 };
   await page.locator("#logFile").setInputFiles({ name: "test-slot.json", mimeType: "application/json",
     buffer: Buffer.from(JSON.stringify({ meta: { profile: "steam" }, version: 999, state })) });
   await page.getByText("Forecast settings", { exact: true }).click();
   await page.locator("#logTrials").fill("1");
   await page.locator("#captureForm button[type=submit]").click();
   await page.getByText(/but save is version 999/).waitFor();
+  const unreadableId = "0536c44b-f55c-4080-acac-70cee323d102";
+  await mkdir(path.join(testDir, "fights", unreadableId));
+  await page.reload();
+  await page.locator("#unreadableFightIds").getByText(unreadableId).waitFor();
+  await page.locator("#snapshotDetails summary").click();
+  await page.locator("#snapshotStats").getByText(/2× for 0[.,]1 s, then 1×/).waitFor();
+  await page.getByText(/but save is version 999/).waitFor();
+  assert.equal(await page.locator("#fightPicker option").count(), 1);
+  for (const width of [390, 768, 1440]) {
+    await page.setViewportSize({ width, height: 900 });
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth), width, `Archive overflows at ${width}px`);
+  }
   assert.deepEqual(errors, []);
-  console.log("Passed save imports, responsive layout, queued changes, history replay, censored times, build diagnostics, hidden targets and Steam forecast warnings.");
+  console.log("Passed save imports, responsive layout, queued changes, history replay, censored times, diagnostics, hidden targets and Steam archive checks.");
 } finally {
   await browser.close();
   if (server.listening) await new Promise((resolve) => server.close(resolve));

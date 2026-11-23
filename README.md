@@ -37,7 +37,7 @@ npm.cmd run simulate -- --save latest --inspect-save
 npm.cmd run simulate -- --save latest --target mega_pan --trials 500
 ```
 
-Under **Compare**, **Repeat analysis** restores a history entry's target, seed, trial count, time limit and planner settings. It checks the save and catalog against the original run. For an export, load the original file first. For a changed Steam slot, you can also use an exported copy of the original save. History stores the settings and fingerprints locally for the last 12 analyses. Older entries remain viewable.
+Under **Compare**, **Repeat analysis** restores a history entry's target, seed, trial count, time limit and planner settings. Softcap deadlines use the original analysis time. It checks the save and catalog against the original run. For an export, load the original file first. For a changed Steam slot, you can also use an exported copy of the original save. History stores the settings and fingerprints locally for the last 12 analyses. Older entries remain viewable.
 
 After a Steam patch, use **Refresh Steam data** or run `npm.cmd run update-data`. The import reads the installed game's renderer manifest, verifies the sketch and store assets, and refreshes the local catalog. It works offline. To select a custom installation:
 
@@ -53,7 +53,7 @@ You can also set `REJECTED_DRAFT_STEAM_DIR` for both the UI and CLI. `npm.cmd ru
 2. Open **Steam fight log** in the simulator, leave **Hyena Hulk** selected and click **Save pre-fight state**. The simulator copies the slot from disk and stores a forecast alongside it. You can also choose an exported Steam save. The default forecast runs 1,000 fights with a 300-second limit.
 3. Fight Hyena Hulk with that setup and keep the simulator server running. After Steam writes its next save, the simulator reads the original slot and fills in **Steam result**. You can close the simulator tab while playing. The entry shows the start time and the source of the result.
 
-The Steam slot contains recent victory and defeat notifications. Each linked notification identifies the encounter and records its start and notification timestamps. The imported duration (**≈**) is their difference in real seconds, rounded to a tenth. The in-game Combat Log finalizes the encounter separately, so its displayed duration can differ slightly.
+The Steam slot contains recent victory and defeat notifications. Each linked notification identifies the encounter and records its start and notification timestamps. The simulator compares their difference (**≈**) with the forecast at millisecond precision. The in-game Combat Log finalizes the encounter separately, so its displayed duration can differ slightly.
 
 The monitor accepts the first matching fight it sees that started after the capture and finished before the next Hyena Hulk capture for that slot. Steam retains up to ten notifications in docked mode and five in basic mode. If the saved history has rolled over or lacks timing, the entry explains how to proceed. **Enter or correct a result manually** also works with exports and other opponents.
 
@@ -61,7 +61,7 @@ Each Steam forecast records its catalog build, simulation seed, trial count and 
 
 The comparison shows how often the observed outcome occurred in the simulations, the difference from their median duration and whether the time fell between the 10th and 90th percentiles. If you stop timing a fight that is still running, select **Still fighting at cutoff**. A **≥** marks a lower bound wherever the time limit prevents an exact duration.
 
-Reopen the entry under **Saved fights** to review it, correct the observed result or download the original pre-fight save. The local archive lives in `.local/steam-fights/` and survives server restarts and slot changes. Capturing another fight creates a separate entry.
+Reopen the entry under **Saved fights** to review it, correct the observed result or download the original pre-fight save. The local archive lives in `.local/steam-fights/` and survives server restarts and slot changes. Capturing another fight creates a separate entry. If an entry is unreadable, the archive shows its ID and you can still open the other fights.
 
 ## Legacy web companion
 
@@ -76,6 +76,8 @@ companion/rejected-draft-companion.user.js
 Start the local simulator first, then open `https://kuzzigames.com/rejected_draft/`. The overlay reads `localStorage["unnamed-battler-save"]`, sends it to the local endpoint `/api/companion/analyze`, and shows a short recommendation directly on the game page.
 
 Enable `Combat Logging` in the game options before collecting parity data. After a fight, `Capture fight fixture` sends the current save, read-only combat-log candidates, and a short in-memory save history to `/api/companion/fight-fixture`. The local simulator builds a downloadable JSON fixture and immediately compares it with the deterministic fight trace used by `--fight-fixture`. If no observed fight is found, the downloaded fixture includes `captureDiagnostics` so the missing source can be inspected.
+
+New companion fixtures include the simulation seed, fight time limit and trace settings. Running the downloaded file with `--fight-fixture` reproduces the captured simulation on the same simulator version.
 
 The companion is intentionally read-only: it does not write to game storage, does not click game buttons and does not mutate the save.
 
@@ -285,7 +287,7 @@ Known approximations:
 
 The median, p10 and p90 use empirical nearest ranks. A ≥ before a time marks a lower bound caused by the simulation cutoff. Diagnostics show the win-rate interval and model build status separately. Model-assumption comparisons use the same trial seeds for each variant. Auto trials extend the existing sample until the interval is narrow enough or the trial limit is reached.
 
-The target-readiness planner checks up to eight successive sketch victories using up to 200 paired target fights per build. Each step assumes the preceding rewards were collected. A step can trigger the target attempt when its measured gain brings the projection to the goal and its paired win rate reaches that goal.
+The target-readiness planner checks up to eight successive sketch victories using up to 200 paired target fights per build. Each step assumes the preceding rewards were collected. A step can trigger the target attempt when its measured gain brings the projection to the goal and its paired win rate reaches that goal. In the web planner, assumed victories credit both stats and currency before checking resource goals. The roll wishlist estimates each displayed sketch's chance of appearing across 500 simulated redraws using the save's settings.
 
 For build comparison, run the same target with the same save and different stat source or edited save snapshots.
 

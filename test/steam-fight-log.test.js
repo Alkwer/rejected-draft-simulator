@@ -129,8 +129,8 @@ test("Steam monitor imports a Hyena result in the background from the captured s
   const second = await capture();
   const start = Date.parse(second.capturedAt) + 10;
   const notices = [{ type: "DEFEAT", message: "Defeated by Hyena Hulk! 7 second cooldown.",
-    action: { kind: "combat-log", startTime: start, encounterId: "combat-42" }, timestamp: start + 5420 }];
-  const saved = { ...empty, meta: { ...empty.meta, savedAt: start + 5500 },
+    action: { kind: "combat-log", startTime: start, encounterId: "combat-42" }, timestamp: start + 1999 }];
+  const saved = { ...empty, meta: { ...empty.meta, savedAt: start + 2000 },
     state: { ...empty.state, notificationHistory: notices } };
   fs.writeFileSync(later, JSON.stringify({ ...saved, meta: { ...saved.meta, slot: 2 } }));
   fs.writeFileSync(path.join(dir, "last-slot.txt"), "2");
@@ -144,24 +144,39 @@ test("Steam monitor imports a Hyena result in the background from the captured s
   const deadline = Date.now() + 10000;
   while (!fs.existsSync(persisted) && Date.now() < deadline) await delay(100);
   assert.ok(fs.existsSync(persisted));
+  const rawObservation = JSON.parse(fs.readFileSync(persisted, "utf8"));
+  assert.equal(rawObservation.elapsedSeconds, 1.999);
+  assert.equal(rawObservation.outcomeProbability, second.forecast.probabilities.loss);
   const { fight } = await fetchFight(second.id);
   assert.equal(fight.revision, 1);
   assert.equal(fight.observation.source, "steam-notification");
   assert.equal(fight.observation.encounterId, "combat-42");
-  assert.equal(fight.observation.elapsedSeconds, 5.4);
+  assert.equal(fight.observation.elapsedSeconds, 1.999);
   assert.equal(fight.observation.outcome, "loss");
   assert.deepEqual(fight.forecast, second.forecast);
   const older = await fetchFight(first.id);
   assert.equal(older.fight.observation, null);
   assert.equal(older.monitorStatus, "superseded");
+
+  // A prior version stored rounded elapsed time and calculated the comparison with it.
+  fs.writeFileSync(persisted, JSON.stringify({ ...rawObservation, elapsedSeconds: 2, outcomeProbability: null }));
+  assert.deepEqual((await fetchFight(second.id)).fight, fight);
+
+  // An explicit manual correction can replace automatic timing even when the values agree.
   const corrected = await server.request("/" + second.id + "/observation", "PUT", {
-    revision: 1, outcome: "loss", elapsedSeconds: 5.5,
+    revision: 1, outcome: "loss", elapsedSeconds: 1.999,
   });
-  assert.equal((await corrected.json()).fight.revision, 2);
+  const correctedFight = (await corrected.json()).fight;
+  assert.equal(correctedFight.revision, 2);
+  assert.equal(correctedFight.observation.source, undefined);
+  const atHorizon = await server.request("/" + second.id + "/observation", "PUT", {
+    revision: 2, outcome: "loss", elapsedSeconds: 2,
+  });
+  assert.equal((await atHorizon.json()).fight.observation.outcomeProbability, null);
   await server.close();
   server = await startServer(options);
-  assert.equal((await fetchFight(second.id)).fight.observation.elapsedSeconds, 5.5);
-  assert.equal((await fetchFight(second.id)).fight.revision, 2);
+  assert.equal((await fetchFight(second.id)).fight.observation.elapsedSeconds, 2);
+  assert.equal((await fetchFight(second.id)).fight.revision, 3);
 });
 
 test("Steam monitor restores inspected coverage after a restart with a full, overlapping history", async (t) => {
@@ -222,9 +237,67 @@ test("Steam monitor restores inspected coverage after a restart with a full, ove
   assert.equal(fight.revision, 1);
   assert.equal(fight.observation.source, "steam-notification");
   assert.equal(fight.observation.encounterId, "combat-after-checkpoint");
-  assert.equal(fight.observation.elapsedSeconds, 5.4);
+  assert.equal(fight.observation.elapsedSeconds, 5.42);
   restarted.captured();
   assert.equal(handleSteamFightRequest(request).fight.revision, 1);
+});
+
+test("an unreadable archive entry is reported by ID without blocking other fights", async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rd-damaged-fight-log-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const root = path.join(dir, "log");
+  const start = Date.now();
+  const target = { id: "hyena_hulk", name: "Hyena Hulk" };
+  const forecast = { target, maxSeconds: 2, probabilities: { win: 0.25 },
+    duration: { medianSeconds: 1, p10Seconds: 0.5, p90Seconds: 1.5 } };
+  function archiveFight(slotNumber, offset) {
+    const id = randomUUID();
+    const entryDir = path.join(root, id);
+    const file = path.join(entryDir, "forecast.json");
+    const capture = { id, capturedAt: new Date(start + offset).toISOString(), source: `slot-${slotNumber}.json` };
+    fs.mkdirSync(entryDir, { recursive: true });
+    fs.writeFileSync(file, JSON.stringify({ ...capture, forecast }));
+    return { id, entryDir, file, capture };
+  }
+  const older = archiveFight(1, 0);
+  const brokenResult = archiveFight(1, 10);
+  const malformedForecast = archiveFight(1, 20);
+  const tracked = archiveFight(2, 30);
+  const brokenForecast = archiveFight(3, 40);
+  const latest = path.join(brokenResult.entryDir, "result-1");
+  fs.mkdirSync(latest);
+  fs.writeFileSync(path.join(latest, "observation.json"), "null");
+  fs.writeFileSync(malformedForecast.file, JSON.stringify({ ...malformedForecast.capture, target }));
+  fs.writeFileSync(brokenForecast.file, '{"forecast":');
+
+  const notification = { type: "VICTORY", message: "Hyena Hulk defeated!", timestamp: start + 2019,
+    action: { kind: "combat-log", startTime: start + 120, encounterId: "separate-slot" } };
+  for (const slotNumber of [1, 2]) {
+    fs.writeFileSync(path.join(dir, `slot-${slotNumber}.json`), JSON.stringify({
+      ...slot, meta: { ...slot.meta, slot: slotNumber, savedAt: notification.timestamp },
+      state: { ...slot.state, notificationHistory: [notification] },
+    }));
+  }
+
+  const server = await startServer({ steamSaveDir: dir, fightLogDir: root, watchSteamFightsOnStart: true });
+  t.after(() => server.close());
+  const list = await server.request();
+  assert.equal(list.status, 200);
+  const { fights } = await list.json();
+  assert.deepEqual(fights.filter((fight) => !fight.unreadable).map((fight) => fight.id), [tracked.id, older.id]);
+  assert.deepEqual(fights.filter((fight) => fight.unreadable).map((fight) => fight.id).sort(),
+    [brokenResult.id, brokenForecast.id, malformedForecast.id].sort());
+  for (const { id } of [brokenResult, malformedForecast, brokenForecast]) {
+    const response = await server.request(`/${id}`);
+    assert.equal(response.status, 422);
+    assert.ok((await response.json()).error.includes(id));
+  }
+  const newest = await (await server.request(`/${tracked.id}`)).json();
+  assert.equal(newest.fight.observation.outcome, "win");
+  assert.equal(newest.fight.observation.elapsedSeconds, 1.899);
+  const previous = await (await server.request(`/${older.id}`)).json();
+  assert.equal(previous.fight.observation, null);
+  assert.equal(previous.monitorStatus, "superseded");
 });
 
 test("concurrent captures share work and a failed forecast can reuse the original save and catalog", async (t) => {
@@ -266,7 +339,7 @@ test("concurrent captures share work and a failed forecast can reuse the origina
   assert.equal(download.download.toString("utf8"), bytes);
   const snapshot = JSON.parse(fs.readFileSync(path.join(root, id, "capture.json"), "utf8"));
   const startedAt = Date.parse(snapshot.record.capturedAt) + 10;
-  const timestamp = startedAt + 1250;
+  const timestamp = startedAt + 1999;
   fs.writeFileSync(file, JSON.stringify({
     ...original, meta: { ...original.meta, savedAt: timestamp },
     state: { ...original.state, playerStats: { ...original.state.playerStats, attack: 42 },
@@ -274,7 +347,10 @@ test("concurrent captures share work and a failed forecast can reuse the origina
         action: { kind: "combat-log", startTime: startedAt, encounterId: "while-running" } }] },
   }));
   monitor.captured();
-  assert.ok(fs.existsSync(path.join(root, id, "result-1", "steam-observation.json")));
+  const pendingObservation = path.join(root, id, "result-1", "steam-observation.json");
+  const pendingResult = JSON.parse(fs.readFileSync(pendingObservation, "utf8"));
+  assert.equal(pendingResult.elapsedSeconds, 1.999);
+  fs.writeFileSync(pendingObservation, JSON.stringify({ ...pendingResult, elapsedSeconds: 2 }));
   fs.writeFileSync(dataPath, "{}");
   rejectForecast(new Error("Worker stopped"));
   for (const result of await Promise.allSettled([first, duplicate])) assert.match(result.reason.message, /Worker stopped/);
@@ -293,7 +369,7 @@ test("concurrent captures share work and a failed forecast can reuse the origina
   assert.equal(fight.forecast.player.attack, original.state.playerStats.attack);
   assert.equal(fight.capturedAt, snapshot.record.capturedAt);
   assert.equal(fight.observation.encounterId, "while-running");
-  assert.equal(fight.observation.elapsedSeconds, 1.3);
+  assert.equal(fight.observation.elapsedSeconds, 1.999);
   assert.equal(fight.observation.outcomeProbability, fight.forecast.probabilities.loss);
   assert.ok(fight.forecast.warnings.some(({ code }) => code === "game_version_mismatch"));
   const pendingAfterRead = (await (await server.request()).json()).fights[0];

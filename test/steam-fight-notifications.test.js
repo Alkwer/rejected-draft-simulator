@@ -18,10 +18,10 @@ test("matches the first subsequent Hyena encounter by target, category, timing a
     { ...win, action: { ...win.action, startTime: since - 10000 }, timestamp: since + 1 }];
   const match = inspect(history);
   assert.equal(match.outcome, "win");
-  assert.equal(match.elapsedSeconds, 6.2);
+  assert.equal(match.elapsedSeconds, 6.165);
   assert.deepEqual(match.evidence, { source: "steam-notification", encounterId: "combat-2",
     startedAt: win.action.startTime, notifiedAt: win.timestamp });
-  assert.equal(inspect([loss]).elapsedSeconds, 1.7);
+  assert.equal(inspect([loss]).elapsedSeconds, 1.66);
   assert.equal(inspect([loss], { until: since + 8000 }).status, "superseded");
   assert.equal(inspect([{ ...loss, type: "VICTORY" }]).status, "waiting");
   assert.equal(inspect([{ ...win, action: { ...win.action, startTime: since - 10000 } }]).status, "waiting");

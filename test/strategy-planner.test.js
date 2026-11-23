@@ -5,6 +5,7 @@ import { runMonteCarlo } from "../src/combat.js";
 import { combatAssumptionsFromSave } from "../src/combat-assumptions.js";
 import { enemyFromSketch } from "../src/combat/steam-encounter.js";
 import { simulateRoute } from "../src/route.js";
+import { createEconomyPlan } from "../src/economy.js";
 import {
   createStrategyPlan,
   parseStrategyCurrencyGoals,
@@ -205,6 +206,21 @@ test("farming verifies cumulative victories, decay and boosters against paired t
   assert.equal(mismatchedBaseline.stopFarming.decision, "farm_more");
 });
 
+test("strategy and economy resolve softcap deadlines against the same reference time", () => {
+  const deadline = 1700000000000;
+  const options = { state: { nextSoftcapAt: deadline }, targetId: "target", trials: 1 };
+  for (const [offset, seconds, decision] of [[-60000, 60, "wait_softcap"], [0, 0, "softcap_reached"], [1000, 0, "softcap_reached"]]) {
+    const input = { ...options, referenceTimeMs: deadline + offset };
+    const plan = createStrategyPlan(input);
+    for (const result of [plan.softcap, plan.economy.softcapEV, createEconomyPlan(input).softcapEV]) {
+      assert.equal(result.secondsToSoftcap, seconds);
+      assert.equal(result.decision, decision);
+    }
+  }
+  assert.equal(createStrategyPlan({ ...options, softcapSeconds: 20 }).softcap.secondsToSoftcap, 20);
+  assert.equal(createStrategyPlan({ ...options, state: {} }).softcap.secondsToSoftcap, null);
+});
+
 test("farming uses the Steam universe for both the target and the next reward", () => {
   const steamSketches = {
     ...sketches,
@@ -232,8 +248,10 @@ test("farming uses the Steam universe for both the target and the next reward", 
   const nextWinRate = runMonteCarlo({ ...sample, player: { ...baseStats, attack: 99 } }).winRate;
 
   assert.ok(nextWinRate > current);
-  assert.equal(plan.stopFarming.curve[0].projectedWinRate, nextWinRate);
-  assert.equal(plan.stopFarming.decision, "farm_more");
+  assert.equal(plan.stopFarming.curve[0].projectedWinRate, Number(nextWinRate.toFixed(6)));
+  assert.ok(nextWinRate >= 0.7);
+  assert.equal(plan.stopFarming.curve[0].reachesTarget, true);
+  assert.equal(plan.stopFarming.decision, "farm_until_step");
 });
 
 test("an explicitly empty current run does not fall back to available sketches", () => {

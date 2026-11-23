@@ -87,6 +87,19 @@ function state(overrides = {}) {
   };
 }
 
+test("one-pass forecasts match each separately simulated prefix, including skipped and missing sketches", () => {
+  const options = { state: state({ fundamentals: { maxVictories: 2, rewardDecay: 1 } }),
+    sketches, targetId: "target", seed: "route-prefix", maxSeconds: 5, trials: 5 };
+  const ids = ["warmup", "missing", "warmup", "warmup", "drain"];
+  const route = simulateRoute({ ...options, routeIds: ids, includeStepForecasts: true });
+  for (const [index, step] of route.steps.entries()) {
+    const prefix = simulateRoute({ ...options, routeIds: ids.slice(0, index + 1) });
+    const { winRate, p90Seconds, p90Censored } = prefix.target.simulation;
+    assert.equal(step.status, prefix.steps[index].status);
+    assert.deepEqual(step.forecast, { winRate, p90Seconds, p90Censored, finalStats: prefix.finalStats, currencies: prefix.currencies });
+  }
+});
+
 test("simulateRoute applies route rewards with decay and respects max victories", () => {
   const capped = simulateRoute({
     sketches,

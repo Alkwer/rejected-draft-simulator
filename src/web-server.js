@@ -103,6 +103,7 @@ export function createWebServer({
           trials: body.trials ?? "auto",
           maxSeconds: body.maxSeconds ?? 300,
           seed: body.seed ?? "web-ui",
+          referenceTimeMs: body.referenceTimeMs,
           strategyOptions: body.strategyOptions,
           routeIds: body.routeIds,
           hiddenSketchIds: body.hiddenSketchIds,

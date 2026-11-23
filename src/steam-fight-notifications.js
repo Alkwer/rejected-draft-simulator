@@ -46,7 +46,7 @@ export function inspectHyenaHistory(save, { since, until = Infinity, checkedThro
     if (action.startTime < since) continue;
     return {
       status: "imported", outcome,
-      elapsedSeconds: Math.round((notice.timestamp - action.startTime) / 100) / 10,
+      elapsedSeconds: (notice.timestamp - action.startTime) / 1000,
       evidence: { source: "steam-notification", encounterId: action.encounterId,
         startedAt: action.startTime, notifiedAt: notice.timestamp },
     };

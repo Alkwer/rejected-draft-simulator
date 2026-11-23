@@ -41,6 +41,10 @@
         <section class="panel log-panel" aria-labelledby="savedHeading">
           <h2 id="savedHeading">Saved fights</h2>
           <p id="emptyFights">Loading saved fights…</p>
+          <div id="unreadableFights" hidden>
+            <p>Could not read these saved fights.</p>
+            <ul id="unreadableFightIds"></ul>
+          </div>
           <label id="fightPickerLabel" hidden>Choose a saved fight<select id="fightPicker"></select></label>
           <div id="fightDetail" hidden>
             <div class="log-fight-title"><h3 id="fightTitle"></h3><span id="resultState"></span></div>

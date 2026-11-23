@@ -139,3 +139,31 @@ test("Steam forecast uses the engine's nearest-rank bounds for two sampled durat
   assert.equal(duration.medianSeconds, 0.5);
   assert.equal(duration.p90Seconds, 1);
 });
+
+test("Steam forecast captures an expiring speedup in real seconds and replays the resulting duration", () => {
+  const input = forecastInput();
+  input.save.state = {
+    playerStats: { maxHp: 100, attack: 10, attackSpeed: 1000, minDamage: 100, maxDamage: 100 },
+    fundamentals: { timeAcceleration: 2, battleSpeedupRate: 2 },
+    activeBattleSpeedupRemainingSeconds: 0.35,
+  };
+  input.sketches.hyena_hulk.stats = { maxHp: 30, attack: 0, attackSpeed: 9000 };
+
+  const forecast = createSteamFightForecast(input);
+  assert.deepEqual(forecast.assumptions.battleSpeedup, { multiplier: 2, remainingSeconds: 0.35 });
+  assert.equal(forecast.assumptions.combatSpeedMultiplier, 2);
+  assert.equal(forecast.duration.medianSeconds, 1.25);
+  assert.equal(runMonteCarlo(JSON.parse(JSON.stringify(forecast))).medianSeconds, 1.25);
+  assert.equal(createSteamFightForecast({ ...input, maxSeconds: 1 }).probabilities.timeout, 1);
+
+  input.save.state.activeBattleSpeedupRemainingSeconds = 0;
+  assert.equal(createSteamFightForecast(input).duration.medianSeconds, 1.5);
+  input.save.state.activeBattleSpeedupRemainingSeconds = 0.2;
+  assert.equal(createSteamFightForecast(input).duration.medianSeconds, 1.5);
+  input.save.state.activeBattleSpeedupRemainingSeconds = 10;
+  assert.equal(createSteamFightForecast(input).duration.medianSeconds, 0.75);
+  input.save.state.trainingState = { isActive: true };
+  assert.equal(createSteamFightForecast(input).duration.medianSeconds, 1.5);
+  input.save.state.trainingState.fastForward = true;
+  assert.ok(Math.abs(createSteamFightForecast(input).duration.medianSeconds - 0.15) < 1e-12);
+});

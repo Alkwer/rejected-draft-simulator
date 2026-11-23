@@ -344,6 +344,7 @@ async function analyze({ loadSlot = false, replay = null } = {}) {
     await loadTargets(edition);
     if (generation !== state.analysisGeneration || els.saveInput.value !== exportText) return;
     if (!replay && !hasSelectedTarget()) throw new Error("Choose a target before running the simulation.");
+    const now = Date.now();
     const settings = replay?.settings ?? {
       targetId: els.targetSelect.value,
       assumedVictories: loadSlot ? [] : assumedVictoriesPayload(),
@@ -354,11 +355,14 @@ async function analyze({ loadSlot = false, replay = null } = {}) {
       observedOutcome: els.observedOutcomeSelect.value,
       traceSeconds: Number(els.traceSecondsInput.value || 60),
       strategyOptions: strategyOptionsPayload(),
-      seed: `web-${Date.now()}`,
+      referenceTimeMs: now,
+      seed: `web-${now}`,
     };
     const saveSource = fromSlot ? "steam" : "export";
     const payload = {
       ...settings, saveSource, saveText: fromSlot ? undefined : exportText,
+      // Earlier history entries included their analysis time in the generated seed.
+      referenceTimeMs: settings.referenceTimeMs ?? Number(/^web-(\d+)$/.exec(settings.seed)?.[1] ?? now),
       expectedSaveHash: replay?.saveHash, expectedCatalogHash: replay?.catalogHash,
     };
     const data = await api("/api/analyze", {
@@ -752,7 +756,7 @@ function renderRollWishlist(wishlist) {
       `target ${percent(item.targetWinRate)} (${signedPercent(item.targetWinRateDelta)})`,
       `kill ${percent(item.candidateWinRate)}`,
       `p90 ${seconds(item.p90Seconds, item.p90Censored)}`,
-      `roll share ${percent(item.rollShare)}`,
+      item.rollShare == null ? "redraw chance unavailable" : `estimated redraw chance ${percent(item.rollShare)}`,
       rewardSummary(item),
     ].filter(Boolean).join(" | "),
   })));

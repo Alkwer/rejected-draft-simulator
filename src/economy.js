@@ -31,6 +31,7 @@ const DEFAULT_STAT_WEIGHTS = {
 
 export function createEconomyPlan({
   state = {},
+  baseStats = state.currentRunStats ?? state.battleStats ?? state.playerStats ?? {},
   sketches = {},
   currentRows = [],
   targetStatWeights = {},
@@ -40,11 +41,12 @@ export function createEconomyPlan({
   farmSeconds = DEFAULT_FARM_SECONDS,
   softcap = null,
   softcapSeconds = null,
+  referenceTimeMs = Date.now(),
   runEV = null,
   profile = null,
 } = {}) {
   const windowSeconds = Math.max(1, toNumber(farmSeconds, DEFAULT_FARM_SECONDS));
-  const stats = numericObject(state.currentRunStats ?? state.battleStats ?? state.playerStats ?? {});
+  const stats = numericObject(baseStats);
   const currencies = numericObject(state.currencies ?? {});
   const shopUpgrades = analyzeShopUpgrades({
     state,
@@ -55,7 +57,7 @@ export function createEconomyPlan({
   });
   const purchasePlan = createPurchasePlan(shopUpgrades);
   const generatorEV = createGeneratorEV({ state, windowSeconds });
-  const effectiveSoftcapSeconds = softcap?.secondsToSoftcap ?? softcapSeconds ?? detectSoftcapSeconds(state);
+  const effectiveSoftcapSeconds = softcap?.secondsToSoftcap ?? resolveSoftcapSeconds(state, softcapSeconds, referenceTimeMs);
   const softcapEV = createSoftcapEV({
     state,
     seconds: effectiveSoftcapSeconds,
@@ -224,9 +226,10 @@ function createSoftcapEV({ state, seconds, runEV, softcap }) {
   const waitValue = logValue(waitQuintessence)
     + Object.values(waitCurrencies).reduce((sum, item) => sum + logValue(item.expected), 0);
   const runValue = runEV?.totalValue ?? softcap?.runValue ?? 0;
+  const reached = waitSeconds === 0;
   return {
-    decision: softcap?.decision ?? (waitValue >= runValue ? "wait_softcap" : "finish_current_run"),
-    reason: softcap?.reason ?? (waitValue >= runValue ? "wait_value_beats_run" : "run_value_beats_wait"),
+    decision: softcap?.decision ?? (reached ? "softcap_reached" : waitValue >= runValue ? "wait_softcap" : "finish_current_run"),
+    reason: softcap?.reason ?? (reached ? "softcap_time_elapsed" : waitValue >= runValue ? "wait_value_beats_run" : "run_value_beats_wait"),
     secondsToSoftcap: roundNumber(waitSeconds),
     waitQuintessence: roundNumber(waitQuintessence),
     waitCurrencies,
@@ -469,13 +472,16 @@ function isSecretStashUnlocked(state) {
   return toNumber(skillLevels["stats-hidden-upgrades"]) > 0 || Boolean(state.secretStashUnlocked);
 }
 
-function detectSoftcapSeconds(state) {
-  const direct = state.secondsToSoftcap ?? state.softcapSeconds ?? state.nextSoftcapSeconds;
-  if (direct != null) return toNumber(direct);
+export function resolveSoftcapSeconds(state, override, referenceTimeMs) {
+  const direct = override ?? state.secondsToSoftcap ?? state.softcapSeconds ?? state.nextSoftcapSeconds;
+  if (direct != null) {
+    const seconds = toNumber(direct, NaN);
+    return Number.isFinite(seconds) ? Math.max(0, seconds) : null;
+  }
   const timestamp = state.nextSoftcapAt ?? state.softcapAt;
-  const parsed = timestamp == null ? NaN : Number(timestamp);
-  if (!Number.isFinite(parsed)) return null;
-  return parsed > Date.now() ? (parsed - Date.now()) / 1000 : parsed;
+  const deadlineMs = toNumber(timestamp, NaN);
+  if (!Number.isFinite(deadlineMs) || !Number.isFinite(referenceTimeMs)) return null;
+  return Math.max(0, (deadlineMs - referenceTimeMs) / 1000);
 }
 
 function quintessencePerSecond(state) {

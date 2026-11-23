@@ -234,3 +234,127 @@ test("Steam combat rejects a zero or negative attack delay from raw battle rewar
     }), /positive effective attackSpeed/);
   }
 });
+
+const fixedDamage = { minDamage: 100, maxDamage: 100 };
+const steamAssumptions = combatAssumptionsFromSave({ saveProfile: "steam" });
+
+function firstAttackBy(side, attacker, defender, options = {}) {
+  const result = simulateFight({
+    player: side === "player" ? attacker : defender,
+    enemy: side === "player" ? defender : attacker,
+    assumptions: steamAssumptions,
+    rng: () => 0.5,
+    maxSeconds: 0.95,
+    trace: { seconds: 1 },
+    ...options,
+  });
+  return result.trace.find((event) => event.event === "attack" && event.attackerSide === side);
+}
+
+test("Steam Berserk checks the attacker's current HP and the target's immunity on both sides", () => {
+  for (const side of ["player", "enemy"]) {
+    const attacker = { ...fixedDamage, maxHp: 100, attack: 10, attackSpeed: 750, berserk: 250 };
+    const defender = { ...fixedDamage, maxHp: 1000, attack: 75, attackSpeed: 500 };
+    for (const [incomingDamage, expectedDamage] of [[74, 10], [75, 25], [76, 25]]) {
+      const event = firstAttackBy(side, attacker, { ...defender, attack: incomingDamage });
+      assert.equal(event.action.totalDamage, expectedDamage, side);
+      if (incomingDamage === 75) {
+        assert.deepEqual(event.mechanics.find(({ type }) => type === "offense").berserk, {
+          triggered: true, hpRatio: 0.25, threshold: 0.25, multiplier: 2.5, before: 10, after: 25,
+        });
+      }
+    }
+    assert.equal(firstAttackBy(side, attacker, { ...defender, immunities: ["berserk"] }).action.totalDamage, 10);
+    assert.equal(firstAttackBy(side, { ...attacker, berserk: 100 }, defender).action.totalDamage, 10);
+    assert.equal(firstAttackBy(side, attacker, defender, { assumptions: {} }).action.totalDamage, 10);
+  }
+});
+
+test("Steam Accuracy multiplies damage before mitigation for each defense it bypasses", () => {
+  for (const side of ["player", "enemy"]) {
+    const attacker = { ...fixedDamage, maxHp: 1000, attack: 100, attackSpeed: 500, accuracy: 80 };
+    const defender = { maxHp: 1000, attack: 0, attackSpeed: 2000, parryDmg: 50, armor: 25 };
+    for (const [dodge, parry, expectedDamage] of [[0, 0, 75], [100, 0, 125], [0, 100, 125], [100, 100, 200]]) {
+      const event = firstAttackBy(side, attacker, { ...defender, dodge, parry });
+      assert.equal(event.action.totalDamage, expectedDamage, side);
+    }
+    const evasiveDefender = { ...defender, dodge: 100, parry: 100 };
+    const event = firstAttackBy(side, attacker, evasiveDefender);
+    assert.deepEqual(event.mechanics.filter(({ type }) => type === "evasion").map(
+      ({ mode, outcome, incomingDamage, outgoingDamage }) => [mode, outcome, incomingDamage, outgoingDamage],
+    ), [["dodge", "bypassed", 100, 150], ["parry", "bypassed", 150, 225]]);
+    const legacy = firstAttackBy(side, attacker, evasiveDefender, { assumptions: {} });
+    assert.equal(legacy.action.totalDamage, 75);
+
+    const parried = firstAttackBy(side, attacker, evasiveDefender, {
+      rng: (label) => label === "evasion.parryAccuracy" ? 0.9 : 0.5,
+    });
+    assert.equal(parried.action.parriedHits, 1);
+    assert.equal(parried[side + "Hp"], 925);
+  }
+});
+
+test("Steam parry damage immunity protects the attacker and still allows the defender to parry", () => {
+  for (const side of ["player", "enemy"]) {
+    const attacker = { ...fixedDamage, maxHp: 1000, attack: 100, attackSpeed: 500, accuracy: 0, immunities: ["parryDmg"] };
+    const defender = { maxHp: 1000, attack: 0, attackSpeed: 2000, parry: 100, parryDmg: 50 };
+    const immune = firstAttackBy(side, attacker, defender);
+    assert.equal(immune.action.parriedHits, 1);
+    assert.equal(immune[side + "Hp"], 1000);
+    const vulnerable = firstAttackBy(side, { ...attacker, immunities: [] }, { ...defender, immunities: ["parryDmg"] });
+    assert.equal(vulnerable[side + "Hp"], 950);
+    const legacy = firstAttackBy(side, attacker, defender, { assumptions: {} });
+    assert.equal(legacy[side + "Hp"], 1000);
+  }
+});
+
+test("Steam counters apply Berserk and both Accuracy damage multipliers", () => {
+  const { trace } = simulateFight({
+    player: { ...fixedDamage, maxHp: 1000, attack: 75, attackSpeed: 500, dodge: 100, parry: 100 },
+    enemy: { ...fixedDamage, maxHp: 100, attack: 10, attackSpeed: 2000, accuracy: 80, berserk: 200, counter: 100 },
+    assumptions: steamAssumptions,
+    rng: () => 0.5,
+    maxSeconds: 0.9,
+    trace: { seconds: 1 },
+  });
+  const counter = trace.find(({ event }) => event === "pending_effect");
+  assert.equal(counter.action.damage, 45);
+  assert.equal(counter.playerHp, 955);
+});
+
+test("Steam lifesteal immunity prevents healing when striking an immune target on either side", () => {
+  for (const side of ["player", "enemy"]) {
+    const attacker = { ...fixedDamage, maxHp: 1000, attack: 100, attackSpeed: 750, lifesteal: 50 };
+    const defender = { ...fixedDamage, maxHp: 1000, attack: 250, attackSpeed: 500, immunities: ["lifesteal"] };
+    const immune = firstAttackBy(side, attacker, defender);
+    assert.equal(immune.action.totalDamage, 100);
+    assert.equal(immune[side + "Hp"], 750);
+    const vulnerable = firstAttackBy(side, { ...attacker, immunities: ["lifesteal"] }, { ...defender, immunities: [] });
+    assert.equal(vulnerable[side + "Hp"], 800);
+    const legacy = firstAttackBy(side, attacker, defender, { assumptions: {} });
+    assert.equal(legacy[side + "Hp"], 750);
+  }
+});
+
+test("Steam speedup expiry recalculates attack and tick deadlines and preserves an already queued counter", () => {
+  const assumptions = combatAssumptionsFromSave({
+    saveProfile: "steam",
+    fundamentals: { timeAcceleration: 2, battleSpeedupRate: 2 },
+    activeBattleSpeedupRemainingSeconds: 0.275,
+  });
+  const { trace } = simulateFight({
+    player: { ...fixedDamage, maxHp: 1000, attack: 10, attackSpeed: 1000, inspirationChance: 100 },
+    enemy: { ...fixedDamage, maxHp: 1000, attack: 20, attackSpeed: 1600, counter: 100, regen: 1 },
+    assumptions,
+    rng: () => 0.5,
+    maxSeconds: 0.9,
+    trace: { seconds: 1 },
+  });
+  assert.deepEqual(trace.filter(({ event }) => event === "attack").map(({ attackerSide, time }) => [attackerSide, time]),
+    [["player", 0.25], ["player", 0.75], ["enemy", 0.8]]);
+  assert.deepEqual(trace.filter(({ event }) => event === "tick").map(
+    ({ healing, statusDelta, time }) => [time, healing.enemy.regen, statusDelta.player.Inspiration?.delta ?? 0],
+  ), [[0.25, 1, 0], [0.251, 0, 1], [0.751, 1, 0], [0.752, 0, 1]]);
+  assert.equal(trace.find(({ event }) => event === "pending_effect").time, 0.3);
+  assert.equal(trace.find(({ event }) => event === "pending_effect").action.damage, 20);
+});
