@@ -27,6 +27,7 @@ test("matches the first subsequent Hyena encounter by target, category, timing a
   assert.equal(inspect([{ ...win, action: { ...win.action, startTime: since - 10000 } }]).status, "waiting");
   assert.equal(inspect([{ ...loss, message: "Pokonane przez Hyena Hulk! 7 sekundowe odnowienie." }]).outcome, "loss");
   assert.equal(inspect([{ ...win, message: "鬣狗浩克 已被击败！" }]).outcome, "win");
+  assert.equal(inspect([loss, null, win]).evidence.encounterId, win.action.encounterId);
 });
 
 test("missing timing, disabled notifications and rotated histories never invent a result", () => {

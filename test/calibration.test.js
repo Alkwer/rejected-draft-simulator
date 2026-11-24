@@ -198,10 +198,11 @@ test("calibration preserves both combatants' modifiers through external log impo
 });
 
 test("calibration excludes censored simulated medians and observed timeouts from duration tuning", () => {
-  const log = { targetId: "wall", outcome: "win", seconds: 300, reason: "burn", gameVersion: "v0.874" };
+  const playerStats = { maxHp: 100, attack: 1, attackSpeed: 1000 };
+  const log = { targetId: "wall", outcome: "win", seconds: 300, reason: "burn", gameVersion: "v0.874", playerStats };
   const report = createCalibrationReport({ save: { state: { combatLog: [log] } },
     sketches: { wall: { stats: { maxHp: 1000, attack: 0, attackSpeed: 1000 } } },
-    player: { maxHp: 100, attack: 1, attackSpeed: 1000 }, trials: 5, maxSeconds: 5,
+    trials: 5, maxSeconds: 5,
     dataMetadata: { gameVersion: "v0.874" } });
   assert.equal(report.logs.tuningEligible, 1);
   assert.equal(report.comparisons[0].predicted.medianCensored, true);
@@ -213,10 +214,10 @@ test("calibration excludes censored simulated medians and observed timeouts from
 });
 
 test("calibration keeps a completed median just below the horizon when half the trials time out", () => {
+  const playerStats = { maxHp: 100, attack: 10, attackSpeed: 999.9999, critChance: 50, minDamage: 100, maxDamage: 100 };
   const report = createCalibrationReport({
-    save: { state: { combatLog: [{ targetId: "wall", outcome: "win", seconds: 5, gameVersion: "v0.874" }] } },
+    save: { state: { combatLog: [{ targetId: "wall", outcome: "win", seconds: 5, gameVersion: "v0.874", playerStats }] } },
     sketches: { wall: { stats: { maxHp: 15, attack: 0, attackSpeed: 8000 } } },
-    player: { maxHp: 100, attack: 10, attackSpeed: 999.9999, critChance: 50, minDamage: 100, maxDamage: 100 },
     trials: 2,
     maxSeconds: 1,
     seed: "0",
@@ -228,6 +229,54 @@ test("calibration keeps a completed median just below the horizon when half the 
   assert.ok(Math.abs(predicted.medianSeconds - 0.9999999) < 1e-12);
   assert.equal(predicted.medianCensored, false);
   assert.equal(report.tuning.durationMultiplier.sampleCount, 1);
+});
+
+test("calibration keeps missing and incomplete player snapshots in diagnostics without using them for tuning", () => {
+  const fight = { targetId: "wall", outcome: "win", seconds: 2, gameVersion: "v0.881" };
+  const playerStats = { maxHp: 100, attack: 10, attackSpeed: 1000, critChance: 50 };
+  const options = {
+    dataMetadata: { gameVersion: fight.gameVersion },
+    sketches: { wall: { stats: { maxHp: 15, attack: 0, attackSpeed: 1000 } } },
+    player: playerStats,
+    trials: 8,
+    maxSeconds: 10,
+  };
+  const recorded = { ...fight, playerStats };
+  const report = createCalibrationReport({
+    ...options,
+    externalLogs: [fight, { ...fight, playerStats: { attack: 10 } },
+      { ...fight, playerStats: { ...playerStats, attack: "" } }, recorded],
+  });
+  const recordedOnly = createCalibrationReport({ ...options, externalLogs: [recorded] });
+
+  assert.equal(report.logs.used, 4);
+  assert.equal(report.logs.tuningEligible, 1);
+  assert.deepEqual(report.comparisons.map(({ tuningExclusion }) => tuningExclusion),
+    ["calibration_player_stats_missing", "calibration_player_stats_missing", "calibration_player_stats_missing", null]);
+  assert.ok(report.comparisons.every(({ simulated }) => simulated));
+  assert.ok(report.warnings.some(({ code, count }) => code === "calibration_player_stats_missing" && count === 3));
+  assert.deepEqual(report.comparisons[3].simulated, recordedOnly.comparisons[0].simulated);
+  assert.deepEqual(report.tuning, recordedOnly.tuning);
+});
+
+test("an invalid Steam attack interval does not interrupt calibration of other fights", () => {
+  const stats = { maxHp: 100, attack: 5, attackSpeed: 1000 };
+  const log = { targetId: "wall", gameVersion: "v0.881", targetStats: stats, outcome: "loss" };
+  const options = {
+    save: { meta: { profile: "steam" }, state: {} },
+    externalLogs: [{ ...log, playerStats: { ...stats, attackSpeed: 0 } }, { ...log, playerStats: stats }],
+    trials: 2,
+    maxSeconds: 5,
+    dataMetadata: { gameVersion: log.gameVersion },
+  };
+  const report = createCalibrationReport(options);
+  assert.equal(report.comparisons[0].simulated, null);
+  assert.equal(report.comparisons[0].deviations[0].code, "missing_stats");
+  assert.ok(report.comparisons[1].simulated);
+  assert.equal(report.logs.tuningEligible, 1);
+  const diagnostic = createCalibrationReport({ ...options, player: stats });
+  assert.ok(diagnostic.comparisons[0].simulated);
+  assert.deepEqual(diagnostic.tuning, report.tuning);
 });
 
 test("calibration tunes only matching patches after importing mixed external and save logs", () => {

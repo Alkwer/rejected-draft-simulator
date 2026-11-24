@@ -127,7 +127,7 @@ function analyzeShopUpgrades({ state, stats, currencies, targetStatWeights, rewa
       const currentCurrency = toNumber(currencies[upgrade.currency]);
       const affordable = cost != null && currentCurrency >= cost && !hiddenLocked && !capped;
       const statWeight = statUpgradeWeight({ statName: upgrade.statName, targetStatWeights, rewardWeights });
-      const marginalEffect = capped ? 0 : marginalUpgradeEffect({ upgrade, level });
+      const marginalEffect = capped ? { multiplier: 1, percent: 0 } : marginalUpgradeEffect({ upgrade, level });
       const marginalStatGain = marginalUpgradeStatGain({ stats, upgrade, marginalEffect });
       const score = statWeight * Math.max(0, marginalEffect.percent);
       const roi = cost > 0 ? score / Math.log10(10 + cost) : 0;

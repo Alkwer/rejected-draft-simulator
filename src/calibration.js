@@ -326,9 +326,11 @@ export function createCalibrationReport({
   const assumptions = combatAssumptionsFromSave(save);
   let tuningIndex = 0;
   const comparisons = filteredLogs.map((log, index) => {
-    const patchExclusion = patchTuningExclusion(log.patchVersion, gameDataVersion);
+    const tuningExclusion = patchTuningExclusion(log.patchVersion, gameDataVersion)
+      ?? (!hasLoggedPlayerStats(log.playerStats) ? "calibration_player_stats_missing" : null)
+      ?? (!hasStats(log.targetStats) && !hasStats(sketches[log.targetId]?.stats) ? "missing_stats" : null);
     // Diagnostic-only fights cannot change the RNG sequence used for tuning.
-    const simulationIndex = patchExclusion ? index : tuningIndex++;
+    const simulationIndex = tuningExclusion ? index : tuningIndex++;
     const comparison = compareLogToSimulation({
       log,
       sketches,
@@ -341,16 +343,17 @@ export function createCalibrationReport({
     return {
       ...comparison,
       patchVersion: log.patchVersion,
-      tuningExclusion: patchExclusion ?? (comparison.simulated ? null : "missing_stats"),
+      tuningExclusion,
     };
   });
   const deviations = comparisons.flatMap((comparison) => comparison.deviations);
-  const patchWarnings = {
+  const tuningWarnings = {
     calibration_catalog_patch_missing: "the sketch catalog has no game patch metadata",
     calibration_log_patch_missing: "the logs specify no game patch",
     calibration_log_patch_mismatch: `the logs specify a different game patch than the catalog (${gameDataVersion})`,
+    calibration_player_stats_missing: "the logs lack the recorded player health, attack, or attack speed needed for tuning",
   };
-  for (const [code, reason] of Object.entries(patchWarnings)) {
+  for (const [code, reason] of Object.entries(tuningWarnings)) {
     const count = comparisons.filter((comparison) => comparison.tuningExclusion === code).length;
     if (count > 0) {
       warnings.push({
@@ -555,12 +558,12 @@ function compareLogToSimulation({
   seed,
 }) {
   const sketch = sketches[log.targetId] ?? null;
-  const playerStats = hasStats(log.playerStats) ? log.playerStats : fallbackPlayer;
+  const playerStats = hasLoggedPlayerStats(log.playerStats) ? log.playerStats : fallbackPlayer;
   const hasLoggedTargetStats = hasStats(log.targetStats);
   const targetStats = hasLoggedTargetStats ? log.targetStats : sketch?.stats;
   const deviations = [];
 
-  if (!hasStats(playerStats) || !hasStats(targetStats)) {
+  if (!hasLoggedPlayerStats(playerStats) || !hasStats(targetStats)) {
     return {
       logIndex: log.index,
       targetId: log.targetId,
@@ -865,6 +868,7 @@ function numericObject(raw = {}) {
   if (!raw || typeof raw !== "object") return {};
   const result = {};
   for (const [key, value] of Object.entries(raw)) {
+    if (typeof value === "string" && !value.trim()) continue;
     const number = toNumber(value, NaN);
     if (Number.isFinite(number)) result[key] = number;
   }
@@ -873,6 +877,12 @@ function numericObject(raw = {}) {
 
 function hasStats(stats) {
   return Boolean(stats && typeof stats === "object" && Object.keys(stats).length > 0);
+}
+
+function hasLoggedPlayerStats(stats) {
+  return Number.isFinite(stats?.maxHp) && stats.maxHp > 0
+    && Number.isFinite(stats.attack) && stats.attack >= 0
+    && Number.isFinite(stats.attackSpeed) && stats.attackSpeed > 0;
 }
 
 function breakdownValue(breakdown, side, key) {

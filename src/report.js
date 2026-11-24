@@ -308,5 +308,6 @@ function formatNumber(value) {
 
 function round(value) {
   if (!Number.isFinite(value)) return 0;
+  if (Math.abs(value) >= 1e12) return value;
   return Math.round(value * 1e6) / 1e6;
 }

@@ -43,6 +43,12 @@ function sampleSave(overrides = {}) {
   };
 }
 
+test("save inspection serializes finite late-game stat comparisons", () => {
+  const save = sampleSave({ playerStats: { maxHp: 1e305 }, battleStats: { maxHp: 2e305 } });
+  const { stats } = JSON.parse(JSON.stringify(analyzeSave({ save, sketches })));
+  assert.deepEqual(stats.playerVsBattle.maxHp, { playerStats: 1e305, battleStats: 2e305, delta: 1e305, percentDelta: 100 });
+});
+
 test("analyzeSave recommends run stats and compares global to battle stats", () => {
   const analysis = analyzeSave({ save: sampleSave(), sketches, targetId: "target" });
 

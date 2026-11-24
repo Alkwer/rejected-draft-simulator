@@ -30,6 +30,8 @@ npm.cmd run dev:open
 
 Open the printed local URL, usually `http://127.0.0.1:5173`. Under **Run**, choose a target and click **Use active Steam slot**. Further simulations read that slot from disk. You can also open a specific `slot-N.json`, choose an exported `.txt` file, or paste an export. The simulator reads saves locally. Each fight starts at full health.
 
+Loading a new export clears the previous save's assumed victories, route and hidden sketches. On a phone, use **Run simulation** below the pasted export. The battle result appears as soon as it is ready. Strategy and comparisons follow when their simulations finish.
+
 On Windows, the game stores its six slots under `%APPDATA%\Rejected Draft\saves\steam`. The simulator follows `last-slot.txt` and uses the most recently modified slot if the selected file is missing. CLI users can run:
 
 ```powershell
@@ -55,7 +57,7 @@ You can also set `REJECTED_DRAFT_STEAM_DIR` for both the UI and CLI. `npm.cmd ru
 
 The Steam slot contains recent victory and defeat notifications. Each linked notification identifies the encounter and records its start and notification timestamps. The simulator compares their difference (**≈**) with the forecast at millisecond precision. The in-game Combat Log finalizes the encounter separately, so its displayed duration can differ slightly.
 
-The monitor accepts the first matching fight it sees that started after the capture and finished before the next Hyena Hulk capture for that slot. Steam retains up to ten notifications in docked mode and five in basic mode. If the saved history has rolled over or lacks timing, the entry explains how to proceed. **Enter or correct a result manually** also works with exports and other opponents.
+The monitor accepts the first matching fight it sees that started after the capture and finished before the next Hyena Hulk capture for that slot. If an intervening save shows different combat stats, assumptions or game version, or prevents the setup from being verified, the monitor requires a new capture or manual result. It cannot detect a change first saved together with the outcome because the fight's rewards can also change stats. Steam retains up to ten notifications in docked mode and five in basic mode. If the saved history has rolled over or lacks timing, the entry explains how to proceed. **Enter or correct a result manually** also works with exports and other opponents.
 
 Each Steam forecast records its simulator model version, catalog build, simulation seed, trial count and time limit. Earlier forecasts show “Not recorded” for the model version. Group attempts by model version, game build, universe and setup when checking predicted win rates.
 
@@ -239,7 +241,7 @@ npm.cmd run benchmark:dashboard
 
 `npm run lint` syntax-checks the simulator, tests, web UI, companion and browser test script. `npm run benchmark` reports simulations per second for a fixed combat scenario.
 
-`npm run benchmark:dashboard` measures the Steam panel from clicking **Run simulation** through the first rendered frame of the completed analysis. It uses headless Chrome (or `PLAYWRIGHT_CHANNEL`), a local server and two synthetic saves. It prints the median and three individual timings after one warm-up for each scenario, with the catalog build and simulated fight duration.
+`npm run benchmark:dashboard` measures two times from clicking **Run simulation**: the first rendered battle result and the completed panel. It uses headless Chrome (or `PLAYWRIGHT_CHANNEL`), a local server and two synthetic saves. It prints the median and three individual timings after one warm-up for each scenario, with the catalog build and simulated fight duration.
 
 `npm run test:browser` checks save imports and the displayed confidence interval in headless Chrome. To use Edge on Windows, set `$env:PLAYWRIGHT_CHANNEL = "msedge"` in PowerShell.
 
@@ -285,14 +287,14 @@ Known approximations:
 - On Steam, direct fights use the effective `playerStats` saved by the game, including existing upgrades. Encounter stats include the current universe and Precise Eraser. Reward projections account for cards and reward multipliers, then estimate the resulting effective player stats. The game recalculates these from accumulated battle rewards and upgrades.
 - The model covers individual sketch fights. Full counterattack ordering, Overkill and Victory Lap reward batches, and resuming a partially completed fight remain approximate or outside its scope. Refreshing a catalog after a patch updates data; changes to combat rules require independent verification. The full-game catalog also differs from the Steam demo.
 - Calculations use JavaScript finite numbers. The importer reports out-of-range player stats and the analysis warns when a saved currency exceeds that range.
-- Calibration compares historical fights even when their patch is unknown or differs from the catalog. Only logs explicitly tagged with the catalog's game patch contribute to tuning. The report lists the number eligible and the reasons for exclusions.
+- Calibration uses historical fights for tuning when they explicitly match the catalog's game patch and record the player's health, attack and attack interval. Other logs can still provide diagnostic comparisons using the supplied player stats. The report lists the number eligible and the reasons for exclusions.
 - Route mode simulates a declared plan. It does not yet choose the optimal route automatically.
 - Redraw planning is a Monte Carlo estimate. Exact game redraw weights are still inferred from observed mechanics and local bundle parsing.
 - Build advisor is heuristic. Use route simulation or combat simulation to verify close calls.
 
 The median, p10 and p90 use empirical nearest ranks. A ≥ before a time marks a lower bound caused by the simulation cutoff. Diagnostics show the win-rate interval and model build status separately. Model-assumption comparisons use the same trial seeds for each variant. Auto trials extend the existing sample until the interval is narrow enough or the trial limit is reached.
 
-The target-readiness planner checks up to eight steps in reward order. It can revisit a sketch while reward victories remain, applying decay after each win. A repeat on changed stats uses up to 20 fights to check that the sketch can still be beaten, within a budget of 200 trials per step. The suggested route lists the wins in order. Each step assumes the preceding rewards were collected. The planner flags unexplored alternatives when the checked route falls short. A step can trigger the target attempt when its measured gain brings the projection to the goal and its paired win rate reaches that goal. In the web planner, assumed victories credit both stats and currency before checking resource goals. The roll wishlist estimates each displayed sketch's chance of appearing across 500 simulated redraws using the save's settings.
+The target-readiness planner checks up to eight steps in reward order. It can revisit a sketch while reward victories remain, applying decay after each win. When a reward changes combat stats, up to 20 of the next step's 200 trials check whether the player can beat that step's opponent. The suggested route lists the wins in order. Each step assumes the preceding rewards were collected. The planner flags unexplored alternatives when the checked route falls short. A step can trigger the target attempt when its measured gain brings the projection to the goal and the lower bound of its paired 95% win-rate interval reaches that goal. A target estimate whose interval crosses the goal calls for more trials. In the web planner, assumed victories credit both stats and currency before checking resource goals. The roll wishlist estimates each displayed sketch's chance of appearing across 500 simulated redraws using the save's settings.
 
 Route previews and target comparisons also include the rewards from assumed victories. **Active run** and **Best next click** start from the imported player's current stats. A 95% win-rate interval that crosses the fight threshold prompts a larger sample when there is no clearly favorable alternative. Steam reward projections use the verified 500 ms effective player attack interval floor and preserve faster intervals already present in imported stats.
 

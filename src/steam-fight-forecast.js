@@ -44,11 +44,7 @@ export function createSteamFightForecast(input) {
   const { save, sketches, dataMetadata, targetId, trials, maxSeconds, seed } = validateSteamFightForecastInput(input);
   const sketch = sketches[targetId];
   const target = { id: targetId, name: sketch.name ?? targetId };
-  const player = extractStats(save.state, "playerStats");
-  const assumptions = combatAssumptionsFromSave(save);
-  // Only these memberships affect the requested encounter.
-  assumptions.flowStateKnownTargetIds = assumptions.flowStateKnownTargetIds.filter((id) => id === targetId);
-  assumptions.steam.erasedSketchIds = assumptions.steam.erasedSketchIds.filter((id) => id === targetId);
+  const { player, assumptions } = steamFightSetup(save, targetId);
   const enemy = buildSteamEnemy(enemyFromSketch(sketch, targetId), assumptions.steam);
   const result = runMonteCarlo({
     player, enemy, assumptions, trials, seed, maxSeconds,
@@ -77,6 +73,15 @@ export function createSteamFightForecast(input) {
       p90Censored: result.p90Censored,
     },
   })));
+}
+
+export function steamFightSetup(save, targetId) {
+  const player = extractStats(save.state, "playerStats");
+  const assumptions = combatAssumptionsFromSave(save);
+  // Only the requested target's memberships affect this encounter.
+  assumptions.flowStateKnownTargetIds = assumptions.flowStateKnownTargetIds.filter((id) => id === targetId);
+  assumptions.steam.erasedSketchIds = assumptions.steam.erasedSketchIds.filter((id) => id === targetId);
+  return { player, assumptions };
 }
 
 export function compareSteamFightObservation(forecast, { outcome, elapsedSeconds } = {}) {

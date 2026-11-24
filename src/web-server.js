@@ -92,6 +92,11 @@ export function createWebServer({
           return sendJson(res, { ok: false, error: "Missing targetId" }, 400);
         }
         save ??= decodeSaveText(body.saveText);
+        const onPrimary = req.headers.accept === "application/x-ndjson" ? (primary) => {
+          if (res.destroyed) return;
+          res.writeHead(200, { "content-type": "application/x-ndjson; charset=utf-8", "cache-control": "no-store" });
+          res.write(JSON.stringify({ primary }) + "\n");
+        } : undefined;
         const analysis = await analysisRunner.run(isSteamSave(save) ? dataPath : legacyDataPath, {
           identifyInputs: true,
           expectedSaveHash: body.expectedSaveHash,
@@ -110,8 +115,11 @@ export function createWebServer({
           hiddenSketchIds: body.hiddenSketchIds,
           observedOutcome: body.observedOutcome,
           traceSeconds: body.traceSeconds,
-        });
-        return sendJson(res, { ok: true, analysis, slotName });
+        }, false, onPrimary);
+        const result = { ok: true, analysis, slotName };
+        if (res.destroyed) return;
+        if (res.headersSent) return res.end(JSON.stringify(result) + "\n");
+        return sendJson(res, result);
       }
       if (url.pathname === "/api/companion/analyze" && req.method === "POST") {
         const body = await readJsonBody(req);
@@ -149,6 +157,8 @@ export function createWebServer({
 
       return serveStatic({ req, res, publicDir, url });
     } catch (error) {
+      if (res.destroyed) return;
+      if (res.headersSent) return res.end(JSON.stringify({ ok: false, error: error.message ?? String(error) }) + "\n");
       return sendJson(res, {
         ok: false,
         error: error.message ?? String(error),

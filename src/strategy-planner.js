@@ -1,6 +1,7 @@
 import { analyzeBuildAdvice } from "./build-advisor.js";
 import { runMonteCarlo } from "./combat.js";
 import { combatAssumptionsFromSave } from "./combat-assumptions.js";
+import { confidenceInterval95 } from "./combat/math.js";
 import { enemyFromSketch } from "./combat/steam-encounter.js";
 import { createEconomyPlan, resolveSoftcapSeconds } from "./economy.js";
 import { applySketchRewards, steamCurrencyPerkWinsRemaining, steamSketchRewards } from "./rewards.js";
@@ -14,7 +15,7 @@ const DEFAULT_MAX_SOFTCAP_WAIT_SECONDS = 30 * 60;
 const DEFAULT_COMPARE_PROFILE_IDS = ["farm-q", "3-masterpiece", "transcendent-paragon"];
 const MAX_FARM_STEPS = 8;
 const MAX_FARM_TRIALS = 200;
-const MAX_REPEAT_TRIALS = 20;
+const MAX_FARM_CHECK_TRIALS = 20;
 
 const DEFAULT_REWARD_WEIGHTS = {
   quintessence: 1,
@@ -157,38 +158,39 @@ export function createStrategyPlan({
   };
   const effectiveTargetWinRate = resolveTargetWinRate(profileConfig, targetWinRate);
   const defeatedMasterpieces = defeatedMasterpieceIds({ state, sketches, currentRows });
-  const profileWinRates = new Map();
-  const getProfileWinRate = (id) => {
+  const profileResults = new Map();
+  const getProfileResult = (id) => {
     if (!id) return null;
-    if (!profileWinRates.has(id)) {
+    if (!profileResults.has(id)) {
       const provided = [
         id === targetId ? targetSimulation : null,
         targetComparisons.find((row) => row.id === id),
         currentRun?.targets?.find((row) => row.id === id),
-      ].map((result) => toNumber(result?.winRate, null)).find((rate) => rate != null);
-      const winRate = provided ?? (sketches[id]?.stats ? runMonteCarlo({
+      ].find((result) => toNumber(result?.winRate, null) != null);
+      const result = provided ?? (sketches[id]?.stats ? runMonteCarlo({
         player: stats,
         enemy: enemyFromSketch(sketches[id], id),
         assumptions,
         trials: boundedFarmTrials(trials),
         maxSeconds,
         seed: `${seed}:${id}:profile`,
-      }).winRate : null);
-      profileWinRates.set(id, winRate == null ? null : clamp01(winRate));
+      }) : null);
+      profileResults.set(id, result);
     }
-    return profileWinRates.get(id);
+    return profileResults.get(id);
   };
   const buildAdvice = analyzeBuildAdvice({ sketches, state, assumptions, targetId, baseStats: stats });
   const rawTargetStatWeights = Object.fromEntries(
     buildAdvice.targetPlan.priorityStats.map((item) => [item.stat, item.weight]),
   );
   const targetStatWeights = scaleTargetStatWeights(rawTargetStatWeights, rewardWeights);
+  const targetEstimate = assessWinRate(
+    toNumber(targetSimulation?.winRate, null) != null ? targetSimulation : currentRows.find((row) => row.id === targetId),
+    effectiveTargetWinRate,
+  );
   const approach = estimateApproachReadiness({
     state,
-    targetSimulation,
-    currentRows,
-    targetId,
-    targetWinRate: effectiveTargetWinRate,
+    targetEstimate,
     goalQuintessence: effectiveGoalQuintessence,
     goalCurrencies: normalizedGoalCurrencies,
   });
@@ -230,7 +232,7 @@ export function createStrategyPlan({
     goalCurrencies: normalizedGoalCurrencies,
     targetId,
     targetWinRate: effectiveTargetWinRate,
-    getProfileWinRate,
+    getProfileResult,
   });
   const profileModes = createProfileModes({
     currentRows,
@@ -263,6 +265,7 @@ export function createStrategyPlan({
   const masterpieceRoll = decideMasterpieceRoll({
     currentRows,
     targetId,
+    targetEstimate,
     masterpieceTargetIds,
     opusValues: visibleOpusValues,
     targetWinRate: effectiveTargetWinRate,
@@ -271,6 +274,7 @@ export function createStrategyPlan({
     currentRows,
     opusValues: visibleOpusValues,
     targetId,
+    targetEstimate,
   });
   const profileRecommendations = createProfileRecommendations({
     buildAdvice,
@@ -284,11 +288,10 @@ export function createStrategyPlan({
     state,
     assumptions,
     stats,
-    targetSimulation,
+    targetEstimate,
     currentRows,
     runEV,
     targetId,
-    targetWinRate: effectiveTargetWinRate,
     trials,
     maxSeconds,
     seed,
@@ -303,7 +306,7 @@ export function createStrategyPlan({
     currentRows,
     targetId,
     targetWinRate,
-    getProfileWinRate,
+    getProfileResult,
     defeatedMasterpieces,
   });
   const economy = createEconomyPlan({
@@ -513,7 +516,7 @@ function scaleTargetStatWeights(targetStatWeights, rewardWeights) {
 }
 
 function createProfileGoal({
-  profile, state, defeatedMasterpieces, goalQuintessence, goalCurrencies, targetId, targetWinRate, getProfileWinRate,
+  profile, state, defeatedMasterpieces, goalQuintessence, goalCurrencies, targetId, targetWinRate, getProfileResult,
 }) {
   const goal = profile.goal ?? {};
   if (goal.type === "quintessence") {
@@ -550,13 +553,16 @@ function createProfileGoal({
   }
   if (goal.type === "target_win_rate") {
     const goalTargetId = profile.targetId ?? targetId;
-    const current = getProfileWinRate(goalTargetId);
+    const result = getProfileResult(goalTargetId);
+    const estimate = result ? assessWinRate(result, targetWinRate) : null;
+    const current = estimate?.current ?? null;
     return {
       type: "target_win_rate",
       current,
       goal: targetWinRate,
       missing: current == null ? null : Math.max(0, targetWinRate - current),
       targetId: goalTargetId ?? null,
+      needsMoreTrials: estimate?.decision === "increase_trials",
     };
   }
   return {
@@ -603,6 +609,17 @@ function estimateProfileProgress({ profileGoal, approach, runEV, currentRows, sk
     missing = approach.ready ? 0 : toNumber(approach.winRate.missing);
     expectedPerRun = estimateWinRateGainPerRun({ currentRows, runEV });
     unit = "custom";
+  }
+
+  if (profileGoal.needsMoreTrials || type === "custom" && approach.winRate.decision === "increase_trials") {
+    return {
+      decision: "increase_trials",
+      unit,
+      missing: roundNumber(missing),
+      expectedPerRun: roundNumber(expectedPerRun),
+      averageRuns: null,
+      averageRedraws: null,
+    };
   }
 
   if (missing <= 0) {
@@ -740,17 +757,14 @@ function rankToolAdvice(items = [], { currentRows, rewardWeights, tool }) {
 }
 
 function decideStopFarming({
-  sketches, state, assumptions, stats, targetSimulation, currentRows, runEV,
-  targetId, targetWinRate, trials, maxSeconds, seed,
+  sketches, state, assumptions, stats, targetEstimate, currentRows, runEV,
+  targetId, trials, maxSeconds, seed,
 }) {
-  const current = clamp01(toNumber(
-    targetSimulation?.winRate,
-    currentRows.find((row) => row.id === targetId)?.winRate ?? 0,
-  ));
-  if (current >= targetWinRate) {
+  const { current, target: targetWinRate, decision } = targetEstimate;
+  if (decision !== "below_target") {
     return {
-      decision: "attempt_target",
-      reason: "target_win_rate_reached",
+      decision: decision === "ready" ? "attempt_target" : "increase_trials",
+      reason: decision === "ready" ? "target_win_rate_reached" : "win_interval_crosses_fight_threshold",
       currentWinRate: roundNumber(current),
       targetWinRate,
       curve: [],
@@ -794,7 +808,7 @@ function createProfileComparison({
   currentRows,
   targetId,
   targetWinRate,
-  getProfileWinRate,
+  getProfileResult,
   defeatedMasterpieces,
 }) {
   const ids = normalizeList(requestedProfileIds);
@@ -815,7 +829,7 @@ function createProfileComparison({
         goalCurrencies: defaults.goalCurrencies,
         targetId,
         targetWinRate: resolveTargetWinRate(profile, targetWinRate),
-        getProfileWinRate,
+        getProfileResult,
       });
       const progress = estimateProfileProgress({
         profileGoal: goal,
@@ -847,19 +861,27 @@ function createProfileComparison({
     });
 }
 
-function estimateApproachReadiness({
-  state,
-  targetSimulation,
-  currentRows,
-  targetId,
-  targetWinRate,
-  goalQuintessence,
-  goalCurrencies,
-}) {
-  const currentWinRate = roundNumber(toNumber(
-    targetSimulation?.winRate,
-    currentRows.find((row) => row.id === targetId)?.winRate ?? 0,
-  ));
+function assessWinRate(result, target) {
+  const current = clamp01(toNumber(result?.winRate));
+  const trials = toNumber(result?.trials, null);
+  const provided = result?.winRateCi95;
+  const interval = Number.isFinite(provided?.lower) && Number.isFinite(provided?.upper)
+    ? provided : trials > 0 ? confidenceInterval95(current, trials) : null;
+  const decision = (interval?.lower ?? current) >= target ? "ready"
+    : interval?.upper >= target ? "increase_trials" : "below_target";
+  return {
+    current,
+    target,
+    missing: roundNumber(Math.max(0, target - current)),
+    trials,
+    ci95Lower: interval?.lower ?? null,
+    ci95Upper: interval?.upper ?? null,
+    ci95HalfWidth: interval?.halfWidth ?? provided?.halfWidth ?? null,
+    decision,
+  };
+}
+
+function estimateApproachReadiness({ state, targetEstimate, goalQuintessence, goalCurrencies }) {
   const resources = {
     quintessence: createResourceGap({
       current: toNumber(state.quintessence),
@@ -876,18 +898,12 @@ function estimateApproachReadiness({
 
   const resourceReady = resources.quintessence.ready
     && Object.values(resources.currencies).every((item) => item.ready);
-  const winRateReady = currentWinRate >= targetWinRate;
+  const ready = targetEstimate.decision === "ready" && resourceReady;
   return {
-    decision: winRateReady && resourceReady ? "ready_to_attempt" : "farm_more",
-    winRate: {
-      current: currentWinRate,
-      target: targetWinRate,
-      missing: roundNumber(Math.max(0, targetWinRate - currentWinRate)),
-      trials: targetSimulation?.trials ?? null,
-      ci95HalfWidth: targetSimulation?.winRateCi95?.halfWidth ?? null,
-    },
+    decision: ready ? "ready_to_attempt" : targetEstimate.decision === "increase_trials" ? "increase_trials" : "farm_more",
+    winRate: { ...targetEstimate, current: roundNumber(targetEstimate.current) },
     resources,
-    ready: winRateReady && resourceReady,
+    ready,
   };
 }
 
@@ -1079,7 +1095,8 @@ function createFarmPlan({ approach, runEV, opusValues, state }) {
       };
 
   return {
-    decision: goal.missing <= 0 ? "goal_reached" : goal.estimatedSeconds == null ? "farm_best_active_rewards" : "farm_until_goal",
+    decision: goal.type === "win_rate" && approach.winRate.decision === "increase_trials" ? "increase_trials"
+      : goal.missing <= 0 ? "goal_reached" : goal.estimatedSeconds == null ? "farm_best_active_rewards" : "farm_until_goal",
     goal,
     windowSeconds: runEV.windowSeconds,
     passiveRates: {
@@ -1142,28 +1159,29 @@ function compareBoosterChoices({
   };
 }
 
-function decideMasterpieceRoll({ currentRows, targetId, masterpieceTargetIds, opusValues, targetWinRate }) {
+function decideMasterpieceRoll({ currentRows, targetId, targetEstimate, masterpieceTargetIds, opusValues, targetWinRate }) {
   const wanted = new Set([targetId, ...normalizeList(masterpieceTargetIds)].filter(Boolean));
   const visibleMasterpieces = currentRows.filter((row) => row.rarity === "masterpiece");
   const wantedVisible = visibleMasterpieces.find((row) => wanted.has(row.id));
   const bestVisible = visibleMasterpieces.sort((a, b) => toNumber(b.winRate) - toNumber(a.winRate))[0] ?? null;
   const bestOpus = opusValues[0] ?? null;
+  const wantedEstimate = wantedVisible?.id === targetId ? targetEstimate : assessWinRate(wantedVisible, targetWinRate);
 
-  if (wantedVisible && toNumber(wantedVisible.winRate) >= targetWinRate) {
+  if (wantedVisible && wantedEstimate.decision === "ready") {
     return {
       decision: "keep_target",
       reason: "wanted_masterpiece_visible_and_favorable",
       targetId: wantedVisible.id,
-      winRate: roundNumber(toNumber(wantedVisible.winRate)),
+      winRate: roundNumber(wantedEstimate.current),
       visibleMasterpieces,
     };
   }
   if (wantedVisible) {
     return {
       decision: "keep_scout",
-      reason: "wanted_masterpiece_visible_but_low_odds",
+      reason: wantedEstimate.decision === "increase_trials" ? "win_interval_crosses_fight_threshold" : "wanted_masterpiece_visible_but_low_odds",
       targetId: wantedVisible.id,
-      winRate: roundNumber(toNumber(wantedVisible.winRate)),
+      winRate: roundNumber(wantedEstimate.current),
       visibleMasterpieces,
     };
   }
@@ -1184,24 +1202,37 @@ function decideMasterpieceRoll({ currentRows, targetId, masterpieceTargetIds, op
   };
 }
 
-function decideRunCompletion({ currentRows, opusValues, targetId }) {
-  const visibleRows = [...currentRows].filter((row) => !row.hidden);
-  const targetRow = visibleRows.find((row) => row.id === targetId);
-  if (targetRow && toNumber(targetRow.winRate) >= 0.5) {
+function decideRunCompletion({ currentRows, opusValues, targetId, targetEstimate }) {
+  const targetRow = currentRows.find((row) => row.id === targetId);
+  if (targetRow && targetEstimate.decision === "ready") {
     return {
       decision: "fight_target",
       reason: "target_is_visible_and_favorable",
       targetId,
-      winRate: roundNumber(toNumber(targetRow.winRate)),
+      winRate: roundNumber(targetEstimate.current),
     };
   }
-  const best = visibleRows.sort((a, b) => toNumber(b.winRate) - toNumber(a.winRate))[0] ?? null;
-  if (best && toNumber(best.winRate) >= 0.5) {
+  const alternatives = currentRows.filter((row) => row.id !== targetId)
+    .sort((a, b) => b.winRate - a.winRate)
+    .map((row) => ({ id: row.id, estimate: assessWinRate(row, 0.5) }));
+  const best = alternatives.find(({ estimate }) => estimate.decision === "ready");
+  if (best) {
     return {
       decision: "finish_best",
       reason: "best_visible_sketch_has_good_odds",
       targetId: best.id,
-      winRate: roundNumber(toNumber(best.winRate)),
+      winRate: roundNumber(best.estimate.current),
+    };
+  }
+  const uncertain = targetRow && targetEstimate.decision === "increase_trials"
+    ? { id: targetId, estimate: targetEstimate }
+    : alternatives.find(({ estimate }) => estimate.decision === "increase_trials");
+  if (uncertain) {
+    return {
+      decision: "increase_trials",
+      reason: "win_interval_crosses_fight_threshold",
+      targetId: uncertain.id,
+      winRate: roundNumber(uncertain.estimate.current),
     };
   }
   const bestOpus = opusValues[0] ?? null;
@@ -1302,8 +1333,9 @@ function createWinRateCurve({
     return { curve, improvesTarget: false, hasUnverifiedCandidates: rewardingCandidates.length > 0 };
   }
   const enemy = enemyFromSketch(sketches[targetId], targetId);
-  const repeatTrialBudget = rewardingCandidates.some((item) => item.remaining > 1) ? MAX_REPEAT_TRIALS : 0;
-  const sampleTrials = Math.min(boundedFarmTrials(trials), MAX_FARM_TRIALS - repeatTrialBudget);
+  const needsFarmChecks = rewardingCandidates.some((item) => queue.length > 1 || item.remaining > 1);
+  const checkTrialBudget = needsFarmChecks ? MAX_FARM_CHECK_TRIALS : 0;
+  const sampleTrials = Math.min(boundedFarmTrials(trials), MAX_FARM_TRIALS - checkTrialBudget);
   const simulate = (player) => runMonteCarlo({
     player, enemy, assumptions, trials: sampleTrials, maxSeconds, seed: `${seed}:farm-curve`,
   }).winRate;
@@ -1320,22 +1352,23 @@ function createWinRateCurve({
   let winRate;
   let projected = current;
   let improvesTarget = false;
-  let unverifiedRepeat = false;
+  let unverifiedFight = false;
   let nextIndex = 0;
 
-  // Share the per-step trial budget between checking a repeat and simulating the target.
+  // At the original stats the current-run results already cover the fight.
+  // With projected stats, share the per-step trial budget between both fights.
   for (; nextIndex < queue.length && nextIndex < MAX_FARM_STEPS; nextIndex += 1) {
     const item = queue[nextIndex];
     const farmer = sketches[item.id];
-    if (item.previousPlayer && item.previousPlayer !== player && (!farmer.stats || runMonteCarlo({
+    if (player !== stats && (!farmer.stats || runMonteCarlo({
       player,
       enemy: enemyFromSketch(farmer, item.id),
       assumptions,
-      trials: Math.min(MAX_REPEAT_TRIALS, sampleTrials),
+      trials: Math.min(checkTrialBudget, sampleTrials),
       maxSeconds,
-      seed: `${seed}:${item.id}:farm-repeat`,
+      seed: `${seed}:${item.id}:farm-check`,
     }).wins === 0)) {
-      unverifiedRepeat = true;
+      unverifiedFight = true;
       continue;
     }
     const previousPlayer = player;
@@ -1354,7 +1387,7 @@ function createWinRateCurve({
     }
     projectedVictories[item.id] = (projectedVictories[item.id] ?? 0) + 1;
     if (item.remaining > 1 && previousPlayer !== player) {
-      queue.push({ ...item, remaining: item.remaining - 1, previousPlayer });
+      queue.push({ ...item, remaining: item.remaining - 1 });
     }
 
     // Pair the target trials and anchor their measured difference to the reported win rate.
@@ -1367,7 +1400,8 @@ function createWinRateCurve({
       victoryNumber: projectedVictories[item.id],
       projectedWinRate: roundNumber(nextProjected),
       gain: roundNumber(nextProjected - projected),
-      reachesTarget: nextProjected >= targetWinRate && winRate >= targetWinRate && winRate > baseline,
+      reachesTarget: nextProjected >= targetWinRate && winRate > baseline
+        && confidenceInterval95(winRate, sampleTrials).lower >= targetWinRate,
     });
     projected = nextProjected;
     if (curve.at(-1).reachesTarget) {
@@ -1375,7 +1409,7 @@ function createWinRateCurve({
       break;
     }
   }
-  const hasUnverifiedCandidates = unverifiedRepeat
+  const hasUnverifiedCandidates = unverifiedFight
     || queue.slice(nextIndex).some((item) => item.rewards.length > 0)
     || rewardingCandidates.length > 1
     || (player !== stats && [...optionsById.values()].some((item) => item.winRate <= 0 && item.rewards.length > 0));
@@ -1459,6 +1493,8 @@ function normalizeCurrentRow(row, state) {
     rarity: row.rarity ?? "unknown",
     hidden: Boolean(row.hidden),
     winRate: toNumber(row.winRate),
+    winRateCi95: row.winRateCi95,
+    trials: row.trials,
     p90Seconds: p90Seconds >= 0 ? p90Seconds : medianSeconds >= 0 ? medianSeconds : null,
     p90Censored: p90Seconds >= 0 ? Boolean(row.p90Censored) : medianSeconds >= 0 && Boolean(row.medianCensored),
     remainingToMax: Math.min(toNumber(row.remainingToMax, remaining), remaining),
