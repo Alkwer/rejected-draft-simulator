@@ -29,7 +29,8 @@ function steamFlowTarget(state, savedAt) {
   if (Math.max(savedAt, toNumber(state.challengeCooldownUntil)) - victory.time >= 5000) return null;
   // The next target can differ with randomizer/advance. Only credit a known start.
   const retry = state.autoRetryActive && state.autoRetryUnlocked;
-  const challenge = state.autoChallengeActive && state.autoChallengeUnlocked;
+  const challenge = state.autoChallengeActive && state.autoChallengeUnlocked && !combat.isPlayerDefeated
+    && (!Array.isArray(state.availableSketches) || state.availableSketches.includes(victory.enemyId));
   const target = retry ? state.lastEnemyId : challenge ? victory.enemyId : null;
   if (!target || (retry && state.randomizerActive && state.randomizerUnlocked)) return null;
   const limit = state.reviewAuditUnlocked && state.autoAdvanceActive && state.autoAdvanceUnlocked

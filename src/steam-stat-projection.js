@@ -7,6 +7,9 @@ export class RewardProjectionError extends RangeError {}
 
 const HARD_CAPPED = new Set("absorb accuracy blockChance counter critChance dodge elementalManipulationChance glancingBlow goldenLuckChance grappleChance interceptChance isolation opacity parry surrealism varnish".split(" "));
 const GLOSSARY_GAINS = { scrap: 0.01, rough: 0.03, framed: 0.1, opus: 0.33, masterpiece: 1 };
+// An effective-only stat can hit a cap during a projection. Carry its modeled
+// contribution and uncapped value separately from raw stats supplied by Steam.
+const PARTIAL_REWARDS = Symbol("Projected Steam rewards for effective-only stats");
 
 function capStat(state, stat, value) {
   if (!Number.isFinite(value)) throw new RewardProjectionError(`Projected ${stat} exceeds the numeric range.`);
@@ -63,6 +66,8 @@ export function createSteamStatProjection(state, stats, { raw = false, trackGlos
   // put the effective delay here as well as in playerStats.
   if (toNumber(battleStats.attackSpeed) > 0) delete battleStats.attackSpeed;
   const rawKeys = new Set(Object.keys(battleStats));
+  const partial = { ...state[PARTIAL_REWARDS] };
+  for (const [stat, value] of Object.entries(partial)) battleStats[stat] = value.reward;
   const levels = { ...state.shopLevels };
   const buffs = Array.isArray(state.activeMeditationBuffs) ? [...state.activeMeditationBuffs] : [];
   const known = trackGlossary && Array.isArray(state.glossaryUnlocks) ? new Set(state.glossaryUnlocks) : null;
@@ -87,8 +92,13 @@ export function createSteamStatProjection(state, stats, { raw = false, trackGlos
       const slope = ({ shop, fundamental, post }) => fundamental * post * (speed ? 1 / shop : shop);
       const oldSlope = slope(oldFactors);
       const nextSlope = slope(nextFactors);
-      const next = current * (nextSlope / oldSlope) + (nextRaw - oldRaw) * nextSlope
-        + (speed ? -1 : 1) * (nextFactors.add - oldFactors.add) * nextFactors.fundamental * nextFactors.post;
+      const uncapped = partial[stat]?.uncapped ?? current;
+      const oldAdd = (speed ? -1 : 1) * oldFactors.add * oldFactors.fundamental * oldFactors.post;
+      const nextAdd = (speed ? -1 : 1) * nextFactors.add * nextFactors.fundamental * nextFactors.post;
+      const scaled = oldSlope === 0 ? uncapped - oldAdd : (uncapped - oldAdd) * (nextSlope / oldSlope);
+      const next = scaled + nextAdd + (nextRaw - oldRaw) * nextSlope;
+      if (!Number.isFinite(next)) throw new RewardProjectionError(`Projected ${stat} exceeds the numeric range.`);
+      partial[stat] = { reward: nextRaw, uncapped: next };
       stats[stat] = next;
     }
     if (!raw) {
@@ -111,7 +121,7 @@ export function createSteamStatProjection(state, stats, { raw = false, trackGlos
       });
     },
     resetReward(stat) {
-      if (!rawKeys.has(stat)) return 0;
+      if (!Object.hasOwn(battleStats, stat)) return 0;
       return change(stat, () => { battleStats[stat] = 0; });
     },
     addGlossary(id, rarity) {
@@ -138,6 +148,7 @@ export function createSteamStatProjection(state, stats, { raw = false, trackGlos
     statePatch() {
       return {
         ...(state.battleStats && { battleStats: Object.fromEntries([...rawKeys].map((stat) => [stat, battleStats[stat]])) }),
+        ...(Object.keys(partial).length && { [PARTIAL_REWARDS]: partial }),
         ...(known && { glossaryUnlocks: [...known], glossaryMultiplier: glossary }),
         ...(!raw && { playerStats: { ...stats } }),
       };

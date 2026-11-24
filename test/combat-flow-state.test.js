@@ -88,6 +88,14 @@ test("Steam first-attack advantage belongs to a confirmed fight or a recent auto
   assert.equal(winner("other"), "enemy");
   state.challengeCooldownUntil = 10100;
   assert.equal(winner(), "enemy");
+  Object.assign(state, { challengeCooldownUntil: 0, autoRetryActive: false, autoChallengeActive: true,
+    autoChallengeUnlocked: true, availableSketches: ["known_target"] });
+  assert.equal(winner(), "player");
+  state.combatState.isPlayerDefeated = true;
+  assert.equal(winner(), "enemy");
+  state.combatState.isPlayerDefeated = false;
+  state.availableSketches = ["other"];
+  assert.equal(winner(), "enemy");
   Object.assign(state.combatState, { isFighting: true, isInFlowState: true, enemyId: "other" });
   assert.equal(winner("other"), "player");
   assert.equal(winner(), "enemy");

@@ -76,6 +76,24 @@ test("Steam first clears add Glossary power once and project stat resets in appl
   assert.deepEqual(second.stats, first.stats);
 });
 
+test("universe resets remove new Steam rewards from effective-only stats in a route and across projections", () => {
+  const sketches = {
+    gain: { rewards: [{ statName: "dodge", amount: 10 }] },
+    reset: { immunities: ["dodge"], rewards: [] },
+  };
+  for (const initial of [0, 85]) {
+    const state = { saveProfile: "steam", multiverse: { currentUniverseId: "mv-medium-4" },
+      battleStats: { attack: 0 }, playerStats: { attack: 1, dodge: initial } };
+    const project = (snapshot, ids) => projectVictories({ state: snapshot, baseStats: snapshot.playerStats, sketches, ids });
+    const first = project(state, ["gain"]);
+    assert.equal(first.stats.dodge, Math.min(90, initial + 10));
+    assert.equal(project(first.state, ["reset"]).stats.dodge, initial);
+    assert.equal(project(state, ["gain", "reset"]).stats.dodge, initial);
+    assert.equal(simulateRoute({ state, sketches, routeIds: ["gain", "reset"] }).finalStats.dodge, initial);
+    assert.equal(state.playerStats.dodge, initial);
+  }
+});
+
 test("Steam flat and battle-income generators fund the route and both strategy forecasts", () => {
   const state = {
     saveProfile: "steam",
