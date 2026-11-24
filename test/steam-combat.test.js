@@ -10,6 +10,17 @@ import { simulateRoute } from "../src/route.js";
 const player = { maxHp: 10000, attack: 1, attackSpeed: 1000 };
 const enemy = { id: "sketch", source: "catalog", maxHp: 5, attack: 1, attackSpeed: 500 };
 
+test("an oversized critical hit reports numeric overflow instead of predicting a timeout", () => {
+  const options = { player: { ...player, attack: 1e308, minDamage: 100, maxDamage: 100, critChance: 100, critDmg: 200 },
+    enemy: { ...enemy, attackSpeed: 10000 }, assumptions: combatAssumptionsFromSave({ saveProfile: "steam" }),
+    maxSeconds: 5, rng: () => 0.2 };
+  assert.throws(() => simulateFight(options), /direct damage to enemy.*numeric range/);
+  const fight = simulateFight({ ...options, player: { ...options.player, attack: 1e307 }, trace: { seconds: 5 } });
+  assert.equal(fight.winner, "player");
+  const hit = fight.trace.flatMap((step) => step.damageEvents ?? []).find((event) => event.source === "direct");
+  assert.equal(hit.requestedDamage, 2e307);
+});
+
 test("Steam encounter adjusts catalog enemies and leaves fixture snapshots intact", () => {
   const assumptions = combatAssumptionsFromSave({
     meta: { profile: "steam" },

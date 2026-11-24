@@ -1485,3 +1485,26 @@ body[data-density="dense"] td {
     transition-duration: .01ms !important;
   }
 }
+
+.start-import {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 12px;
+  padding: 14px 16px;
+  border: var(--rough-line);
+  background: var(--surface);
+}
+.start-import-actions { display: flex; align-items: stretch; gap: 8px; }
+.start-import-actions > * { width: auto; }
+.start-file-picker { display: flex; align-items: center; justify-content: center; }
+body.has-analysis .start-import { display: none; }
+.result-assumptions { margin: 12px 16px 0; color: var(--muted-dark); }
+@media (max-width: 620px) {
+  .start-import { align-items: stretch; flex-direction: column; gap: 10px; }
+  .start-import-actions > * { flex: 1; }
+}
+
+@media (min-width: 621px) { body[data-function-tab="run"] .start-import { display: none; } }
+@media (max-width: 620px) { body[data-mobile-tab="controls"] .start-import { display: none; } }

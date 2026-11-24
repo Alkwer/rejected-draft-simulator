@@ -2,10 +2,29 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { createEconomyPlan } from "../src/economy.js";
-import { applySketchRewards } from "../src/rewards.js";
+import { applySketchRewards, projectSketchRewards } from "../src/rewards.js";
 import { projectVictories, simulateRoute } from "../src/route.js";
 import { STEAM_SHOP_CATALOG } from "../src/steam-shop-catalog.js";
 import { createStrategyPlan } from "../src/strategy-planner.js";
+
+test("pre-target rewards use the route's booster limits, retroactive credits and skipped IDs", () => {
+  const sketch = { rewards: [{ statName: "attack", amount: 10 }] };
+  const sketches = { first: sketch, second: sketch };
+  const state = { saveProfile: "steam", playerStats: { attack: 10, attackSpeed: 1000, maxHp: 100 },
+    sketchVictories: { first: 1 }, fundamentals: { rewardBoosterRetroactive: 1, rewardBoosterEffect: 100 } };
+  const ids = ["first", "second"];
+  const boostedIds = ["typo", "first", "first", "second"];
+  const projected = projectSketchRewards({ state, baseStats: state.playerStats, sketches, defeatedIds: ids, boostedIds });
+  const route = simulateRoute({ state, sketches, routeIds: ids, boostedIds });
+  assert.equal(route.finalStats.attack, 40);
+  assert.deepEqual(projected.stats, route.finalStats);
+  assert.deepEqual(projected.tools.boostedApplied, ["first"]);
+  assert.deepEqual(projected.tools.boostedSkipped, [
+    { id: "typo", reason: "unknown_sketch" }, { id: "second", reason: "no_booster_uses" },
+  ]);
+  assert.deepEqual(projected.tools.boostedSkipped, route.tools.boostedSkipped);
+  assert.deepEqual(projected.state.boostedSketchIds, ["first"]);
+});
 
 test("Steam reward projections use actual attack gains after the Glossary multiplier", () => {
   const catalog = JSON.parse(readFileSync(new URL("../data/steam-catalog.json", import.meta.url), "utf8"));

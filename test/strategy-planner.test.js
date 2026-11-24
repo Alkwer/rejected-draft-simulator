@@ -120,6 +120,28 @@ test("createStrategyPlan estimates resource gaps, softcap choice, farm plan and 
   assert.ok(plan.runEV.currencies.Graphite.expected > 0);
 });
 
+test("custom progress requires every resource and uses the slowest outstanding goal for its ETA", () => {
+  const farm = { id: "farm", name: "Farm", rarity: "rough", stats: { maxHp: 1, attack: 0, attackSpeed: 1000 },
+    currencyRewards: [{ name: "Photon", amount: 10 }, { name: "Graphite", amount: 2 }] };
+  const options = { sketches: { farm }, targetId: "farm", strategyProfile: "custom",
+    state: { playerStats: { attack: 10, maxHp: 100, attackSpeed: 1000 }, currencies: { Photon: 10 } },
+    currentRun: { targets: [{ id: "farm", winRate: 1, p90Seconds: 1 }] },
+    targetSimulation: { winRate: 1, trials: 100 }, targetWinRate: 0.5, trials: 2, maxSeconds: 5 };
+  const progress = (goalCurrencies) => createStrategyPlan({ ...options, goalCurrencies }).profileProgress;
+  const photon = progress({ Photon: 100 });
+  assert.equal(photon.unit, "Photon");
+  assert.equal(photon.missing, 90);
+  assert.equal(photon.averageRuns, 9);
+  const combined = progress({ Photon: 100, Graphite: 40 });
+  assert.equal(combined.unit, "Graphite");
+  assert.equal(combined.averageRuns, 20);
+  assert.equal(progress({ Photon: 10 }).decision, "goal_reached");
+  const unavailable = progress({ Photon: 100, Ink: 1 });
+  assert.equal(unavailable.unit, "Ink");
+  assert.equal(unavailable.averageRuns, null);
+  assert.equal(unavailable.decision, "need_better_income_source");
+});
+
 test("strategy requests more trials when the win interval crosses the configured threshold", () => {
   const targetRow = { id: "target", rarity: "masterpiece", winRate: 0.51, trials: 100 };
   const options = {

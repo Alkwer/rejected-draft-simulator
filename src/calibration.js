@@ -3,6 +3,7 @@ import { createRng } from "./rng.js";
 import { toNumber } from "./save.js";
 import { readFileSync } from "node:fs";
 import { combatAssumptionsFromSave } from "./combat-assumptions.js";
+import { STEAM_UNIVERSES } from "./combat/steam-universes.js";
 import { normalizeFightOutcome } from "./fight-outcome.js";
 
 export const GAME_DATA_VERSIONS = {
@@ -323,19 +324,25 @@ export function createCalibrationReport({
     });
   }
 
-  const assumptions = combatAssumptionsFromSave(save);
+  const fallbackAssumptions = combatAssumptionsFromSave(save);
   let tuningIndex = 0;
   const comparisons = filteredLogs.map((log, index) => {
+    const platform = log.patchVersion === steamSnapshot.gameVersion ? "steam"
+      : (log.patchVersion === gameDataVersion ? dataMetadata?.platform : null)
+        ?? (Object.hasOwn(GAME_DATA_VERSIONS, log.patchVersion) ? "web" : null);
+    const historicalAssumptions = historicalCombatAssumptions(log.combatAssumptions, platform);
     const tuningExclusion = patchTuningExclusion(log.patchVersion, gameDataVersion)
       ?? (!hasLoggedPlayerStats(log.playerStats) ? "calibration_player_stats_missing" : null)
+      ?? (log.combatAssumptions === undefined ? "calibration_combat_assumptions_missing" : null)
+      ?? (!historicalAssumptions ? "calibration_combat_assumptions_invalid" : null)
       ?? (!hasStats(log.targetStats) && !hasStats(sketches[log.targetId]?.stats) ? "missing_stats" : null);
     // Diagnostic-only fights cannot change the RNG sequence used for tuning.
     const simulationIndex = tuningExclusion ? index : tuningIndex++;
     const comparison = compareLogToSimulation({
       log,
       sketches,
-      fallbackPlayer: player,
-      assumptions,
+      fallbackPlayer: tuningExclusion ? player : {},
+      assumptions: historicalAssumptions ?? fallbackAssumptions,
       trials,
       maxSeconds,
       seed: `${seed}:${simulationIndex}:${log.targetId ?? "unknown"}`,
@@ -352,6 +359,8 @@ export function createCalibrationReport({
     calibration_log_patch_missing: "the logs specify no game patch",
     calibration_log_patch_mismatch: `the logs specify a different game patch than the catalog (${gameDataVersion})`,
     calibration_player_stats_missing: "the logs lack the recorded player health, attack, or attack speed needed for tuning",
+    calibration_combat_assumptions_missing: "the logs lack per-fight combat settings",
+    calibration_combat_assumptions_invalid: "the per-fight combat settings are incomplete or invalid for the combat engine",
   };
   for (const [code, reason] of Object.entries(tuningWarnings)) {
     const count = comparisons.filter((comparison) => comparison.tuningExclusion === code).length;
@@ -424,6 +433,42 @@ function patchTuningExclusion(logPatch, catalogPatch) {
   if (!catalogPatch) return "calibration_catalog_patch_missing";
   if (!logPatch) return "calibration_log_patch_missing";
   return logPatch === catalogPatch ? null : "calibration_log_patch_mismatch";
+}
+
+function historicalCombatAssumptions(assumptions, platform) {
+  if (!Number.isFinite(assumptions?.combatSpeedMultiplier) || assumptions.combatSpeedMultiplier <= 0 ||
+      typeof assumptions.flowStateActive !== "boolean") return null;
+  if (assumptions.flowStateActive && (!Number.isFinite(assumptions.flowStateLevel) || assumptions.flowStateLevel < 0 ||
+      !isStringList(assumptions.flowStateKnownTargetIds))) return null;
+
+  const { combatSpeedMultiplier, flowStateActive, flowStateLevel, flowStateKnownTargetIds, steam, battleSpeedup } = assumptions;
+  const base = {
+    combatSpeedMultiplier,
+    flowStateActive,
+    ...(flowStateActive && { flowStateLevel, flowStateKnownTargetIds }),
+  };
+  if (steam == null) return platform !== "steam" && battleSpeedup == null ? base : null;
+  if (platform === "web") return null;
+  if (battleSpeedup != null && (!Number.isFinite(battleSpeedup.multiplier) || battleSpeedup.multiplier <= 0 ||
+      !Number.isFinite(battleSpeedup.remainingSeconds) || battleSpeedup.remainingSeconds <= 0)) return null;
+  return validSteamEncounterSettings(steam) ? { ...base, steam, battleSpeedup } : null;
+}
+
+function validSteamEncounterSettings(steam) {
+  return typeof steam.universeId === "string" && Object.hasOwn(STEAM_UNIVERSES, steam.universeId)
+    && isStringList(steam.erasedSketchIds) && Number.isFinite(steam.eraserDivisor) && steam.eraserDivisor > 0
+    && Number.isFinite(steam.buffStackCapBonuses?.Haste) && Number.isFinite(steam.buffStackCapBonuses?.Inspiration)
+    && Array.isArray(steam.seppukuRules) && steam.seppukuRules.every((rule) =>
+      ["all", "any"].includes(rule?.mode) && Array.isArray(rule.conditions) && rule.conditions.length > 0
+      && rule.conditions.every((condition) => {
+        const { stat, threshold } = condition ?? {};
+        if (typeof stat !== "string" || !stat || !Number.isSafeInteger(threshold)) return false;
+        return stat === "playerHp" || stat === "enemyHp" ? threshold >= 0 && threshold <= 100 : threshold >= 1;
+      }));
+}
+
+function isStringList(values) {
+  return Array.isArray(values) && values.every((value) => typeof value === "string" && value.trim().length > 0);
 }
 
 export function checkPatchSanity({
@@ -730,6 +775,7 @@ function normalizeLogEntry(raw, sourceKey, index, collectionPatch) {
     playerVulnerability: firstVulnerability(raw.playerVulnerability, playerStats?.vulnerability, raw.player?.vulnerability),
     immunities: [raw.immunities, targetStats?.immunities, target.immunities].find(Array.isArray),
     vulnerability: firstVulnerability(raw.vulnerability, targetStats?.vulnerability, target.vulnerability),
+    combatAssumptions: Object.hasOwn(raw, "combatAssumptions") ? raw.combatAssumptions : raw.assumptions,
     damageBreakdown,
     patchVersion: firstString(raw.patchVersion, raw.gameVersion, raw.version) ?? collectionPatch,
     raw,

@@ -1728,7 +1728,10 @@ function isExportedSketchEnemy(combatant) {
 }
 
 function applyDamageToSide(combat, side, damage, rng, source = "direct", detail = {}) {
-  if (!Number.isFinite(damage) || damage <= 0) return 0;
+  if (!Number.isFinite(damage)) {
+    throw new RangeError(`Cannot simulate ${source} damage to ${side}: damage exceeds the numeric range.`);
+  }
+  if (damage <= 0) return 0;
 
   const hpKey = `${side}Hp`;
   const statuses = combat[`${side}Statuses`];
@@ -2040,7 +2043,7 @@ function roundMechanicNumbers(value) {
 
 function roundTraceNumber(value) {
   const number = Number(value);
-  if (!Number.isFinite(number)) return number;
+  if (!Number.isFinite(number) || Math.abs(number) >= 1e12) return number;
   return Math.round(number * 1e9) / 1e9;
 }
 

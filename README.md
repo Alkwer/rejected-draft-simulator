@@ -28,7 +28,7 @@ To open the browser automatically from the command line:
 npm.cmd run dev:open
 ```
 
-Open the printed local URL, usually `http://127.0.0.1:5173`. Under **Run**, choose a target and click **Use active Steam slot**. Further simulations follow the active slot on disk. Changing slots in Steam clears the previous slot’s assumed victories, route and manually hidden sketches on the next analysis. You can also open a specific `slot-N.json`, choose an exported `.txt` file, or paste an export. The simulator reads saves locally. Each fight starts at full health.
+Open the printed local URL, usually `http://127.0.0.1:5173`. Click **Use active Steam slot** or **Choose save file** to get started. Under **Run**, you can also paste an export and choose a target. Further simulations using Steam follow the active slot on disk. Changing slots in Steam clears the previous slot’s assumed victories, route and manually hidden sketches on the next analysis. The simulator reads saves locally. Each fight starts at full health.
 
 Loading a new export clears the previous save's assumed victories, route and hidden sketches. On a phone, use **Run simulation** below the pasted export. The battle result appears as soon as it is ready. Strategy and comparisons follow when their simulations finish.
 
@@ -175,6 +175,7 @@ Useful redraw planner options:
 - `--unscrambled <ids>` models Unscrambled Guarantee.
 - `--include-star-masterpieces` includes `(*)` Masterpieces with a very low default weight.
 - `--find-new-sketches` is separate from Targeted Redraw minimums. `--search-new` is kept as an alias for this mode.
+- The current-run decision keeps a visible target with reward victories remaining. When the rarity minimums are met, other visible sketches with available positive rewards can qualify for `keep_farm`. The default farm score threshold is 2, the base weight of one rewarding Opus. Set `--farm-keep-threshold <score>` to change it, or use 0 for target-only decisions.
 
 Get build advice for a target from the current save:
 
@@ -291,7 +292,7 @@ Known approximations:
 - Steam fights use the effective `playerStats` saved by the game. Reward projections use accumulated battle stats, shop levels, glossary progress, fundamentals, meditation and universe modifiers when the save provides them. Partial saves use the available effective stats. A Flow State opening requires evidence of an active Flow State encounter or an eligible automatic challenge within five seconds of victory at the time of the save.
 - The model covers individual sketch fights. Full counterattack ordering, Overkill and Victory Lap reward batches, and resuming a partially completed fight remain approximate or outside its scope. Refreshing a catalog after a patch updates data; changes to combat rules require independent verification. The full-game catalog also differs from the Steam demo.
 - Calculations use JavaScript finite numbers. The importer reports out-of-range player stats and the analysis warns when a saved currency exceeds that range.
-- Calibration uses historical fights for tuning when they explicitly match the catalog's game patch and record the player's health, attack and attack interval. Other logs can still provide diagnostic comparisons using the supplied player stats. The report lists the number eligible and the reasons for exclusions.
+- Calibration uses historical fights for tuning when the patch matches the catalog and each entry includes player health, attack, attack interval and its pre-fight `combatAssumptions` (also accepted as `assumptions`). Record the output of `combatAssumptionsFromSave(preFightSave)` for that fight. This captures combat speed, Flow State and the Steam encounter settings, including any active Battle Speedup. Entries missing those settings remain available for diagnostics. The report lists the number eligible and the reasons for exclusions.
 - Route mode simulates a declared plan. It does not yet choose the optimal route automatically.
 - Redraw planning is a Monte Carlo estimate. Exact game redraw weights are still inferred from observed mechanics and local bundle parsing.
 - Build advisor is heuristic. Use route simulation or combat simulation to verify close calls.

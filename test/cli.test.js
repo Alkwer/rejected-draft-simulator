@@ -78,6 +78,44 @@ test("CLI route reports use the erased enemy's HP for the DPS threshold", () => 
   assert.equal(report.thresholds.find((row) => row.stat === "damagePerSecond").target, 11);
 });
 
+test("CLI applies the same Steam opening and booster rules across single fights and routes", (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "rejected-draft-cli-"));
+  const file = path.join(directory, "save.json");
+  const data = path.join(directory, "catalog.json");
+  t.after(() => {
+    fs.unlinkSync(file);
+    fs.unlinkSync(data);
+    fs.rmdirSync(directory);
+  });
+  const boss = { id: "boss", name: "Boss", rarity: "rough",
+    stats: { maxHp: 10, attack: 10000, attackSpeed: 800, minDamage: 100, maxDamage: 100 }, rewards: [] };
+  const farm = { ...boss, name: "Farm", id: "farm", rarity: "opus", rewards: [{ statName: "armor", amount: 1 }] };
+  fs.writeFileSync(data, JSON.stringify({ sketches: { boss, farm }, metadata: { platform: "steam", gameVersion: "v0.9772" } }));
+  const state = { playerStats: { maxHp: 100, attack: 100, attackSpeed: 1000, minDamage: 100, maxDamage: 100 },
+    fundamentals: { flowStateLevel: 50 }, glossaryUnlocks: ["boss", "farm"], availableSketches: ["boss", "farm"],
+    combatState: { lastVictory: { time: 10000, enemyId: "boss" } }, autoChallengeActive: true, autoChallengeUnlocked: true };
+  const save = { meta: { profile: "steam", savedAt: 11000 }, version: 87, state };
+  fs.writeFileSync(file, JSON.stringify(save));
+  const run = (...args) => {
+    const result = spawnSync(process.execPath, ["src/cli.js", "--save", file, "--data", data, "--target", "boss",
+      "--trials", "10", "--max-seconds", "5", "--seed", "opening", "--json", ...args], { cwd: projectRoot, encoding: "utf8" });
+    assert.equal(result.status, 0, result.stderr);
+    return JSON.parse(result.stdout);
+  };
+  const direct = run();
+  assert.equal(direct.winRate, 1);
+  assert.equal(run("--route", "farm").route.target.simulation.winRate, direct.winRate);
+  assert.equal(run("--compare-routes", "empty:").comparison.routes[0].winRate, direct.winRate);
+  const applied = run("--apply", "farm,boss", "--boosted", "farm,boss");
+  assert.ok(applied.saveWarnings.some((warning) => warning.code === "no_booster_uses" && warning.message.includes("boss")));
+
+  state.availableSketches = ["farm"];
+  fs.writeFileSync(file, JSON.stringify(save));
+  const plan = (...args) => run("--plan-redraw", "--redraw-minimums", "0/0/1/0", ...args).redrawPlan.currentRun;
+  assert.equal(plan().decision, "keep_farm");
+  assert.equal(plan("--farm-keep-threshold", "3").decision, "redraw");
+});
+
 test("CLI rejects invalid stat sources, time limits, and trial counts", () => {
   for (const args of [["--stats", "typo"], ["--max-seconds", "typo"], ["--max-seconds", "0"],
     ["--max-seconds"], ["--trials", "1.5"], ["--trials", "Infinity"]]) {

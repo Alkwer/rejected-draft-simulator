@@ -1,7 +1,40 @@
 import { parseSaveEnvelope, isSteamSave } from "./save-format.js";
 import { readAnalysisResponse } from "./analysis-response.js";
 
+// Preserve changes for this page when browser storage is blocked or full.
+const sessionStorageFallback = new Map();
+function savePreference(key, value) {
+  let pending = false;
+  try {
+    if (value === null) window.localStorage.removeItem(key);
+    else window.localStorage.setItem(key, value);
+  } catch {
+    pending = true;
+  }
+  sessionStorageFallback.set(key, { value, pending });
+}
+const storage = {
+  getItem(key) {
+    const cached = sessionStorageFallback.get(key);
+    if (cached?.pending) return cached.value;
+    try {
+      const value = window.localStorage.getItem(key);
+      sessionStorageFallback.set(key, { value, pending: false });
+      return value;
+    } catch {
+      return cached?.value ?? null;
+    }
+  },
+  setItem: savePreference,
+  removeItem(key) {
+    savePreference(key, null);
+  },
+};
+
 const els = {
+  startFileButton: document.querySelector("#startFileButton"),
+  startSteamButton: document.querySelector("#startSteamButton"),
+  resultAssumptions: document.querySelector("#resultAssumptions"),
   bundleStatus: document.querySelector("#bundleStatus"),
   stripQ: document.querySelector("#stripQ"),
   stripQDelta: document.querySelector("#stripQDelta"),
@@ -122,9 +155,9 @@ const emptyResultFields = [
 init();
 
 async function init() {
-  applyDensityMode(localStorage.getItem("rd-sim-density") ?? "comfortable");
+  applyDensityMode(storage.getItem("rd-sim-density") ?? "comfortable");
   bindEvents();
-  const savedFunctionTab = localStorage.getItem("rd-sim-function-tab");
+  const savedFunctionTab = storage.getItem("rd-sim-function-tab");
   if (savedFunctionTab) setFunctionTab(savedFunctionTab);
   else setFunctionTab("results");
   setMobileTab("results");
@@ -135,6 +168,8 @@ async function init() {
 }
 
 function bindEvents() {
+  els.startFileButton.addEventListener("click", () => els.saveFile.click());
+  els.startSteamButton.addEventListener("click", () => els.steamSlotButton.click());
   els.importBundleButton.addEventListener("click", importBundle);
   els.analyzeButton.addEventListener("click", analyze);
   els.mobileAnalyzeButton.addEventListener("click", analyze);
@@ -223,7 +258,7 @@ function bindEvents() {
     else await analyze();
   });
   els.clearHistoryButton.addEventListener("click", () => {
-    localStorage.removeItem("rd-sim-history");
+    storage.removeItem("rd-sim-history");
     renderHistory();
   });
 }
@@ -238,6 +273,8 @@ function resetSaveAnalysis() {
   state.hiddenSketchIds.clear();
   state.selectedSketchId = null;
   state.lastAnalysis = null;
+  document.body.classList.remove("has-analysis");
+  els.resultAssumptions.hidden = true;
   document.body.classList.remove("primary-result-only");
   hideMessage();
   renderCurrentSpecs();
@@ -399,7 +436,7 @@ async function analyze({ loadSlot = false, replay = null } = {}) {
     });
     const data = await readAnalysisResponse(response, (primary) => {
       if (generation !== state.analysisGeneration || state.pendingAnalysis || els.saveInput.value !== exportText) return;
-      document.body.classList.add("primary-result-only");
+      document.body.classList.add("primary-result-only", "has-analysis");
       renderBundle(primary.bundle);
       renderCurrentSpecs(primary.finalStats);
       renderResourceStrip(primary);
@@ -429,6 +466,7 @@ async function analyze({ loadSlot = false, replay = null } = {}) {
     document.body.classList.remove("primary-result-only");
     hideMessage();
     state.lastAnalysis = data.analysis;
+    document.body.classList.add("has-analysis");
     renderAnalysis(data.analysis);
     const messages = data.analysis.warnings.map((item) => item.message);
     if (data.slotChanged) messages.unshift(`Switched to Steam ${data.slotName}. Cleared the previous slot's assumed victories, route and hidden sketches.`);
@@ -608,6 +646,9 @@ function renderActiveSketches(items) {
 
 function renderResult(analysis) {
   const result = analysis.result;
+  const assumedCount = analysis.assumedVictoryIds?.length ?? 0;
+  els.resultAssumptions.hidden = assumedCount === 0;
+  els.resultAssumptions.textContent = `Forecast after ${assumedCount} assumed ${assumedCount === 1 ? "victory" : "victories"}.`;
   els.targetLabel.textContent = analysis.target.name;
   els.winRate.textContent = percent(result.winRate);
   els.winRateCi.textContent = `95% CI ${confidenceRange(result.winRateCi95)} | ${result.trials} attempts`;
@@ -1066,7 +1107,7 @@ function pushHistory(analysis, replay) {
     assumedCount: analysis.assumedVictoryIds.length,
     replay,
   });
-  localStorage.setItem("rd-sim-history", JSON.stringify(history.slice(0, 12)));
+  storage.setItem("rd-sim-history", JSON.stringify(history.slice(0, 12)));
 }
 
 function renderHistory() {
@@ -1110,7 +1151,7 @@ function renderHistory() {
 
 function readHistory() {
   try {
-    const stored = JSON.parse(localStorage.getItem("rd-sim-history") ?? "[]");
+    const stored = JSON.parse(storage.getItem("rd-sim-history") ?? "[]");
     return Array.isArray(stored) ? stored.filter((item) => item && typeof item === "object") : [];
   } catch {
     return [];
@@ -1196,7 +1237,7 @@ function setFunctionTab(tab) {
   const validTabs = ["results", "run", "strategy", "diagnostics", "compare-history"];
   const normalized = validTabs.includes(tab) ? tab : "results";
   document.body.dataset.functionTab = normalized;
-  localStorage.setItem("rd-sim-function-tab", normalized);
+  storage.setItem("rd-sim-function-tab", normalized);
   for (const button of els.functionTabBar.querySelectorAll("[data-function-tab]")) {
     const selected = button.dataset.functionTab === normalized;
     button.classList.toggle("selected", selected);
@@ -1209,7 +1250,7 @@ function applyDensityMode(mode) {
   const normalized = ["comfortable", "compact", "dense"].includes(mode) ? mode : "comfortable";
   document.body.dataset.density = normalized;
   els.densityModeSelect.value = normalized;
-  localStorage.setItem("rd-sim-density", normalized);
+  storage.setItem("rd-sim-density", normalized);
 }
 
 function renderUiDiagnostics() {
@@ -1347,6 +1388,8 @@ function setBusy(isBusy) {
   els.analyzeButton.disabled = isBusy;
   els.mobileAnalyzeButton.disabled = isBusy;
   els.steamSlotButton.disabled = isBusy;
+  els.startSteamButton.disabled = isBusy;
+  els.startFileButton.disabled = isBusy;
   els.importBundleButton.disabled = isBusy;
   els.targetSelect.disabled = isBusy;
   els.saveInput.disabled = isBusy;

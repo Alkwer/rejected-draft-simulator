@@ -2,7 +2,7 @@ import { runMonteCarlo } from "./combat.js";
 import { combatAssumptionsFromSave } from "./combat-assumptions.js";
 import { buildSteamEnemy } from "./combat/steam-encounter.js";
 import { currencyFundamentalKey, generatorRates } from "./currency-generators.js";
-import { applyStatReward, steamCurrencyPerkWinsRemaining, steamSketchRewards } from "./rewards.js";
+import { applyStatReward, steamCurrencyPerkWinsRemaining, steamSketchRewards } from "./reward-amounts.js";
 import { createRng } from "./rng.js";
 import { normalizeStats, toNumber } from "./save.js";
 import {
@@ -167,10 +167,11 @@ function creditVictory(ledger, state, sketch, id, boosted) {
     rewardMultiplier: roundObject(rewardMultiplier), statRewards, currencyRewards };
 }
 
-export function projectVictories({ state, baseStats, sketches, ids }) {
-  if (!ids.length) return { state, stats: baseStats };
+export function projectVictories({ state, baseStats, sketches, ids, boostedIds = [] }) {
+  const tools = { boostedApplied: [], boostedSkipped: [] };
+  if (!ids.length) return { state, stats: baseStats, tools };
   const ledger = createRewardLedger(state, baseStats);
-  const boosters = new Set(normalizeList(state.boostedSketchIds));
+  const boosters = applyRequestedBoosters({ requestedIds: boostedIds, sketches, state, ledger, tools });
   let lastReward;
   for (const id of ids) {
     if (sketches[id]) lastReward = creditVictory(ledger, state, sketches[id], id, boosters.has(id));
@@ -178,8 +179,10 @@ export function projectVictories({ state, baseStats, sketches, ids }) {
   const perkWins = Math.min(ledger.newWins, steamCurrencyPerkWinsRemaining(state));
   return {
     stats: ledger.stats,
+    tools,
     lastReward,
-    state: { ...state, ...ledger.projection?.statePatch(), currencies: ledger.currencies, totalEarnedCurrencies: ledger.totalEarnedCurrencies,
+    state: { ...state, ...ledger.projection?.statePatch(), ...(tools.boostedApplied.length && { boostedSketchIds: [...boosters] }),
+      currencies: ledger.currencies, totalEarnedCurrencies: ledger.totalEarnedCurrencies,
       totalBattleEarnedCurrencies: ledger.totalBattleEarnedCurrencies,
       sketchVictories: ledger.victories, sketchRunVictories: ledger.runVictories,
       ...(perkWins && { currentUniverseBoostedCurrencyWins: toNumber(state.currentUniverseBoostedCurrencyWins) + perkWins }) },
@@ -225,20 +228,7 @@ export function simulateRoute({
   const secretStash = createSecretStashState({ state, buySecretStash });
   const shop = { purchased: [], skipped: [], levels: shopLevels };
 
-  const boostedSet = applyRequestedBoosters({
-    requestedIds: normalizeList(boostedIds),
-    existingIds: normalizeList(state.boostedSketchIds),
-    sketches,
-    stats,
-    projection,
-    currencies,
-    totalEarnedCurrencies,
-    totalBattleEarnedCurrencies,
-    victories,
-    fundamentals,
-    state,
-    tools,
-  });
+  const boostedSet = applyRequestedBoosters({ requestedIds: boostedIds, sketches, state, ledger, tools });
 
   const erasedSet = applyRequestedErasers({
     requestedIds: normalizeList(erasedIds),
@@ -390,25 +380,16 @@ export function compareRoutes({
   };
 }
 
-function applyRequestedBoosters({
-  requestedIds,
-  existingIds,
-  sketches,
-  stats,
-  projection,
-  currencies,
-  totalEarnedCurrencies,
-  totalBattleEarnedCurrencies,
-  victories,
-  fundamentals,
-  state,
-  tools,
-}) {
-  const boostedSet = new Set(existingIds);
+function applyRequestedBoosters({ requestedIds, sketches, state, ledger, tools }) {
+  const fundamentals = state.fundamentals ?? {};
+  const boostedSet = new Set(normalizeList(state.boostedSketchIds));
   const maxUses = 1 + toNumber(fundamentals.rewardBoosterUses);
-  let uses = boostedSet.size;
 
-  for (const id of requestedIds) {
+  for (const id of new Set(normalizeList(requestedIds))) {
+    if (!Object.hasOwn(sketches, id)) {
+      tools.boostedSkipped.push({ id, reason: "unknown_sketch" });
+      continue;
+    }
     if (boostedSet.has(id)) {
       tools.boostedApplied.push(id);
       continue;
@@ -417,23 +398,18 @@ function applyRequestedBoosters({
       tools.boostedSkipped.push({ id, reason: "booster_locked" });
       continue;
     }
-    if (uses >= maxUses) {
+    if (boostedSet.size >= maxUses) {
       tools.boostedSkipped.push({ id, reason: "no_booster_uses" });
       continue;
     }
 
     boostedSet.add(id);
-    uses += 1;
     tools.boostedApplied.push(id);
     applyRetroactiveBooster({
       id,
       sketch: sketches[id],
-      stats,
-      projection,
-      currencies,
-      totalEarnedCurrencies,
-      totalBattleEarnedCurrencies,
-      victoriesBefore: toNumber(victories[id]),
+      ...ledger,
+      victoriesBefore: toNumber(ledger.victories[id]),
       fundamentals,
       state,
     });
