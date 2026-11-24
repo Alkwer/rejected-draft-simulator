@@ -190,6 +190,7 @@ if (args.explain) {
 if (args["build-advice"]) {
   const advice = analyzeBuildAdvice({
     sketches,
+    assumptions: combatAssumptions,
     state: save.state,
     targetId,
     baseStats: player,
@@ -1213,6 +1214,8 @@ function printPatchSanity(patchSanity) {
   for (const failure of patchSanity.failures.slice(0, 12)) {
     if (failure.code === "stat_mismatch") {
       console.log(`    ${failure.targetId}.${failure.stat}: expected ${formatNumber(failure.expected)}, got ${formatNumber(failure.actual)}`);
+    } else if (failure.message) {
+      console.log(`    ${failure.code}: ${failure.message}`);
     } else {
       console.log(`    ${failure.code}: ${failure.targetId ?? failure.version ?? "unknown"}`);
     }

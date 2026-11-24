@@ -139,6 +139,17 @@ test("diagnostic user-facing messages are English", () => {
   }
 });
 
+test("observations use the observed outcome's frequency and its own sample uncertainty", () => {
+  for (const [observedOutcome, common] of [["loss", "timeouts"], ["timeout", "losses"], ["win", "timeouts"]]) {
+    for (const [trials, expected] of [[3, "watch"], [1000, "mismatch"]]) {
+      const simulation = { trials, wins: 0, losses: 0, timeouts: 0, [common]: trials };
+      assert.equal(compareObservedOutcome({ observedOutcome, simulation }).status, expected);
+    }
+  }
+  const simulation = { trials: 1000, wins: 0, losses: 1000, timeouts: 0 };
+  assert.equal(compareObservedOutcome({ observedOutcome: "loss", simulation }).status, "aligned");
+});
+
 test("detectExtremeStats reports exported chance interpretation", () => {
   const extremes = detectExtremeStats({
     target: {

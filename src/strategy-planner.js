@@ -142,7 +142,8 @@ export function createStrategyPlan({
   maxSeconds = 300,
   seed = "strategy-plan",
 } = {}) {
-  const stats = normalizeStats(baseStats ?? state.currentRunStats ?? state.battleStats ?? state.playerStats);
+  const savedStats = assumptions.steam ? state.playerStats : state.currentRunStats ?? state.battleStats ?? state.playerStats;
+  const stats = normalizeStats(baseStats ?? savedStats);
   const target = sketches[targetId] ?? { id: targetId, name: targetId, stats: {} };
   const currentRows = normalizeCurrentRows({ currentRun, state, sketches });
   const profileConfig = resolveStrategyProfile(profile ?? strategyProfile, { targetId });
@@ -177,7 +178,7 @@ export function createStrategyPlan({
     }
     return profileWinRates.get(id);
   };
-  const buildAdvice = analyzeBuildAdvice({ sketches, state, targetId, baseStats: stats });
+  const buildAdvice = analyzeBuildAdvice({ sketches, state, assumptions, targetId, baseStats: stats });
   const rawTargetStatWeights = Object.fromEntries(
     buildAdvice.targetPlan.priorityStats.map((item) => [item.stat, item.weight]),
   );

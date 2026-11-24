@@ -3,6 +3,18 @@ import assert from "node:assert/strict";
 
 import { analyzeBuildAdvice } from "../src/build-advisor.js";
 
+test("Steam build advice uses the encounter's universe and Precise Eraser modifiers", () => {
+  const target = { id: "hyena_hulk", name: "Hyena Hulk", rarity: "rough", stats: { maxHp: 1e9, attack: 4e5 } };
+  const state = { saveProfile: "steam", playerStats: { attack: 3e6, maxHp: 3e6 }, erasedSketchIds: [target.id] };
+  const advice = () => analyzeBuildAdvice({ sketches: { [target.id]: target }, targetId: target.id, state });
+  assert.deepEqual(advice().biggestProblems, []);
+  state.multiverse = { currentUniverseId: "mv-brutal-1" };
+  const problems = advice().biggestProblems;
+  assert.equal(problems.find(({ code }) => code === "damage_low").target, 1e9 * 12 / 2 / 200);
+  assert.equal(problems.find(({ code }) => code === "sustain_low").target, 4e5 * 9 * 5);
+  assert.equal(target.stats.maxHp, 1e9);
+});
+
 const sketches = {
   duct_taped_banana: {
     id: "duct_taped_banana",

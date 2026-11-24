@@ -56,7 +56,7 @@ export function createEconomyPlan({
     targetStatWeights,
     rewardWeights,
   });
-  const purchasePlan = createPurchasePlan(shopUpgrades);
+  const purchasePlan = createPurchasePlan(shopUpgrades, currencies);
   const generatorEV = createGeneratorEV({ state, windowSeconds });
   const effectiveSoftcapSeconds = softcap?.secondsToSoftcap ?? resolveSoftcapSeconds(state, softcapSeconds, referenceTimeMs);
   const softcapEV = createSoftcapEV({
@@ -147,7 +147,7 @@ function analyzeShopUpgrades({ state, stats, currencies, targetStatWeights, rewa
         level,
         nextLevel: capped ? null : level + 1,
         maxLevel: upgrade.maxLevel ?? null,
-        cost: cost == null ? null : roundNumber(cost),
+        cost,
         currentCurrency: roundNumber(currentCurrency),
         affordable,
         hidden: Boolean(upgrade.hidden),
@@ -168,15 +168,28 @@ function analyzeShopUpgrades({ state, stats, currencies, targetStatWeights, rewa
     });
 }
 
-function createPurchasePlan(shopUpgrades) {
-  const buyNow = shopUpgrades.filter((item) => item.recommendation === "buy_now");
-  const delay = shopUpgrades.filter((item) => item.recommendation === "delay_until_currency");
+function createPurchasePlan(shopUpgrades, currencies) {
+  const remaining = { ...currencies };
+  const buyNow = [];
+  const delay = [];
+  for (const item of shopUpgrades) {
+    if (item.recommendation !== "buy_now" && item.recommendation !== "delay_until_currency") continue;
+    const currentCurrency = remaining[item.currency] ?? 0;
+    if (currentCurrency < item.cost) {
+      delay.push(item);
+    } else if (item.recommendation === "buy_now") {
+      buyNow.push({ ...item, currentCurrency });
+      remaining[item.currency] = currentCurrency - item.cost;
+    }
+  }
   const locked = shopUpgrades.filter((item) => item.recommendation === "locked_secret_stash");
   const capped = shopUpgrades.filter((item) => item.recommendation === "capped");
   return {
     decision: buyNow.length > 0 ? "buy_now" : delay.length > 0 ? "delay_until_currency" : locked.length > 0 ? "unlock_secret_stash" : "no_purchase",
-    buyNow: buyNow.slice(0, 8),
-    delay: delay.slice(0, 8),
+    buyNow,
+    delay: delay.slice(0, 8).map((item) => ({
+      ...item, currentCurrency: remaining[item.currency] ?? 0, affordable: false, recommendation: "delay_until_currency",
+    })),
     locked: locked.slice(0, 8),
     capped: capped.slice(0, 8),
   };

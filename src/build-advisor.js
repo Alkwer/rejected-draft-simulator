@@ -1,4 +1,6 @@
 import { toNumber } from "./save.js";
+import { sketchForEncounter } from "./combat/steam-encounter.js";
+import { combatAssumptionsFromSave } from "./combat-assumptions.js";
 import { getPreciseEraserEligibility } from "./tool-rules.js";
 import { remainingSketchVictories } from "./victory-limit.js";
 
@@ -122,13 +124,15 @@ const STAT_SCORE_SCALE = {
 export function analyzeBuildAdvice({
   sketches = {},
   state = {},
+  assumptions = combatAssumptionsFromSave(state),
   targetId,
   baseStats = null,
   limit = 8,
 } = {}) {
-  const target = sketches[targetId] ?? { id: targetId, name: targetId, stats: {} };
+  const target = sketchForEncounter(sketches[targetId], assumptions) ?? { id: targetId, name: targetId, stats: {} };
   const profile = getTargetProfile(targetId, target);
-  const stats = numericObject(baseStats ?? state.runStats ?? state.battleStats ?? state.playerStats ?? {});
+  const savedStats = assumptions.steam ? state.playerStats : state.runStats ?? state.battleStats ?? state.playerStats;
+  const stats = numericObject(baseStats ?? savedStats);
   const activeIds = state.availableSketches == null ? Object.keys(sketches) : normalizeList(state.availableSketches);
   const activeItems = getActiveRunItems({ sketches, state, targetId, profile, activeIds });
   const allRanked = rankSketches({

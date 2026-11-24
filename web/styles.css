@@ -799,6 +799,11 @@ button:active {
   font-size: 12px;
 }
 
+.next-action-body button {
+  justify-self: start;
+  margin-top: 4px;
+}
+
 .result-grid {
   display: grid;
   grid-template-columns: 1.2fr 1fr 1.2fr;

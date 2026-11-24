@@ -3,6 +3,7 @@ import { runMonteCarlo } from "./combat.js";
 import { buildSteamEnemy, enemyFromSketch } from "./combat/steam-encounter.js";
 import { extractStats, isFullSteamSave, toNumber } from "./save.js";
 import { validateDataCompatibility } from "./save-analysis.js";
+import { ANALYSIS_MODEL_VERSION } from "./model-version.js";
 
 export function validateSteamFightForecastInput({
   save,
@@ -55,6 +56,7 @@ export function createSteamFightForecast(input) {
   const { winRate: win, losses, timeoutRate: timeout } = result;
 
   return freezeSnapshot(JSON.parse(JSON.stringify({
+    modelVersion: ANALYSIS_MODEL_VERSION,
     target,
     player,
     enemy,

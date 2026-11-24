@@ -211,6 +211,10 @@ test("createWebAnalysis applies requested kill counts and caps them at remaining
   assert.deepEqual(analysis.assumedVictories, { farm_a: 2 });
   assert.deepEqual(analysis.assumedVictoryIds, ["farm_a", "farm_a"]);
   assert.ok(Math.abs(analysis.finalStats.attack - expectedAttack) < 1e-9);
+  assert.ok(analysis.activeSketches.some((row) => row.id === "farm_a"));
+  assert.notEqual(analysis.buildComparison[0].targetId, "farm_a");
+  assert.ok(analysis.targetComparisons.every((row) => row.id !== "farm_a"));
+  assert.ok(analysis.strategicPlan.runEV.sketches.every((row) => row.id !== "farm_a"));
 });
 
 test("legacy assumed victories count each checked sketch once and include its saved booster", () => {

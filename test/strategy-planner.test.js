@@ -13,6 +13,19 @@ import {
   STRATEGY_PROFILES,
 } from "../src/strategy-planner.js";
 
+test("buy-now recommendations share a wallet in priority order", () => {
+  const state = { currencies: { Graphite: 5, Wax: 1e80 }, secretStashUnlocked: true };
+  const { purchasePlan } = createEconomyPlan({ state, targetStatWeights: { poisonChance: 10000 } });
+  assert.ok(purchasePlan.buyNow.some((item) => item.currency === "Wax"));
+  assert.deepEqual(purchasePlan.buyNow.filter((item) => item.currency === "Graphite").map((item) => item.cost), [5]);
+  const hp = purchasePlan.delay.find((item) => item.id === "upgrade_hp_graphite");
+  assert.equal(hp.currentCurrency, 0);
+  assert.equal(hp.affordable, false);
+  state.currencies.Graphite = 7;
+  assert.deepEqual(createEconomyPlan({ state }).purchasePlan.buyNow
+    .filter((item) => item.currency === "Graphite").map((item) => item.cost), [5, 2]);
+});
+
 const sketches = {
   opus_currency: {
     id: "opus_currency",

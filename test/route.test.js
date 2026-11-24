@@ -305,6 +305,8 @@ test("simulateRoute includes passive generator income during the route", () => {
 
   assert.equal(result.generatedCurrencies.Graphite, 300);
   assert.equal(result.currencies.Graphite, 300);
+  assert.equal(result.totalEarnedCurrencies.Graphite, 300);
+  assert.equal(result.totalBattleEarnedCurrencies.Graphite, 0);
 });
 
 test("compareRoutes ranks route options for the same target", () => {

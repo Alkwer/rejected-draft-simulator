@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { runMonteCarlo } from "../src/combat.js";
 import { analyzeSave } from "../src/save-analysis.js";
+import { ANALYSIS_MODEL_VERSION } from "../src/model-version.js";
 import { compareSteamFightObservation, createSteamFightForecast } from "../src/steam-fight-forecast.js";
 
 function forecastInput() {
@@ -45,6 +46,7 @@ test("Steam forecast freezes the effective encounter and reproduces it from the 
   const forecast = createSteamFightForecast(input);
   const replay = JSON.parse(JSON.stringify(forecast));
   assert.deepEqual(forecast, replay);
+  assert.equal(replay.modelVersion, ANALYSIS_MODEL_VERSION);
   assert.deepEqual(createSteamFightForecast(input), forecast);
   assert.deepEqual(forecast.target, { id: "hyena_hulk", name: "Hyena Hulk" });
   assert.deepEqual(forecast.probabilities, { win: 1, loss: 0, timeout: 0 });
