@@ -4,6 +4,43 @@ import os from "node:os";
 import path from "node:path";
 import { chromium } from "playwright-core";
 import { createWebServer } from "../src/web-server.js";
+import { ANALYSIS_MODEL_VERSION } from "../src/model-version.js";
+
+async function checkMoreTrials(browser, url) {
+  const page = await browser.newPage();
+  try {
+    // The analysis seed comes from Date.now(). Keep this borderline encounter reproducible.
+    await page.clock.setFixedTime(new Date(1760000000000));
+    await page.goto(url);
+    await page.getByRole("tab", { name: "Run", exact: true }).click();
+    await page.locator("#targetSelect").selectOption("duct_taped_banana");
+    await page.locator("#trialsSelect").selectOption("500");
+    await page.locator("#maxSecondsInput").fill("5");
+    const save = { version: 86, meta: { profile: "steam" }, state: { availableSketches: ["little_stapler"],
+      playerStats: { maxHp: 1, attack: 15000, attackSpeed: 500, minDamage: 100, maxDamage: 100, critChance: 50, critDmg: 200 } } };
+    const first = page.waitForResponse((r) => r.url().endsWith("/api/analyze"));
+    await page.locator("#saveFile").setInputFiles({ name: "borderline.json", mimeType: "application/json", buffer: Buffer.from(JSON.stringify(save)) });
+    const { analysis } = await (await first).json();
+    assert.equal(analysis.nextAction.targetId, "little_stapler");
+    assert.equal(analysis.nextAction.trials, 100);
+    await page.getByRole("tab", { name: "Battle", exact: true }).click();
+    const button = page.getByRole("button", { name: "Run 500 trials", exact: true });
+    for (const width of [1440, 390]) {
+      await page.setViewportSize({ width, height: 900 });
+      assert.ok(await button.isVisible());
+      assert.equal(await page.evaluate(() => document.documentElement.scrollWidth), width);
+    }
+    const retried = page.waitForResponse((r) => r.url().endsWith("/api/analyze"));
+    await button.press("Enter");
+    const result = (await (await retried).json()).analysis;
+    assert.equal(result.target.id, "little_stapler");
+    assert.equal(result.result.trials, 500);
+    assert.equal(result.activeSketches[0].trials, 500);
+    await page.waitForFunction(() => document.querySelector("#winRateCi").textContent.includes("500 attempts"));
+  } finally {
+    await page.close();
+  }
+}
 
 const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL || "chrome", headless: true });
 const testDir = await mkdtemp(path.join(os.tmpdir(), "rd-browser-"));
@@ -150,6 +187,7 @@ try {
   await page.reload();
   await page.locator("#unreadableFightIds").getByText(unreadableId).waitFor();
   await page.locator("#snapshotDetails summary").click();
+  await page.locator("#snapshotStats").getByText("Simulator model", { exact: true }).waitFor();
   await page.locator("#snapshotStats").getByText(/2× for 0[.,]1 s, then 1×/).waitFor();
   await page.getByText(/but save is version 999/).waitFor();
   assert.equal(await page.locator("#fightPicker option").count(), 1);
@@ -175,6 +213,7 @@ try {
   const retry = page.waitForResponse((response) => response.url().endsWith(resultUrl));
   await submitResult.click();
   const { fight: corrected } = await (await retry).json();
+  assert.equal(corrected.forecast.modelVersion, ANALYSIS_MODEL_VERSION);
   assert.equal(corrected.revision, 2);
   assert.equal(corrected.observation.outcome, "win");
   assert.equal(corrected.observation.elapsedSeconds, 5);
@@ -185,6 +224,7 @@ try {
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth), width, `Archive overflows at ${width}px`);
   }
   assert.deepEqual(errors, []);
+  await checkMoreTrials(browser, `http://127.0.0.1:${server.address().port}/`);
   console.log("Passed save imports, responsive layout, queued changes, history replay, censored times, diagnostics, hidden targets and Steam archive checks.");
 } finally {
   await browser.close();

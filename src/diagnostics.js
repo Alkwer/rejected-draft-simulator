@@ -1,6 +1,7 @@
 import { DEFAULT_COMBAT_ASSUMPTIONS, runMonteCarlo } from "./combat.js";
 import { SELF_BUFF_TO_STAT, STATUS_TO_STAT } from "./combat/statuses.js";
 import { enemyFromSketch } from "./combat/steam-encounter.js";
+import { confidenceInterval95 } from "./combat/math.js";
 import { VERIFIED_STEAM_BUILD } from "./combat/steam-universes.js";
 
 const STATUS_CHANCE_STATS = new Set([...Object.values(STATUS_TO_STAT), "exacerbateChance"]);
@@ -95,36 +96,28 @@ export function compareObservedOutcome({ observedOutcome = null, simulation = {}
     };
   }
 
-  const winRate = Number(simulation.winRate ?? 0);
-  const timeoutRate = Number(simulation.timeoutRate ?? 0);
-  const uncertainty = Number(simulation.winRateCi95?.halfWidth ?? 0);
+  const count = simulation[{ win: "wins", loss: "losses", timeout: "timeouts" }[observed]];
+  const rate = Number.isFinite(count) && simulation.trials > 0 ? count / simulation.trials : {
+    win: simulation.winRate,
+    loss: Math.max(0, 1 - simulation.winRate - (simulation.timeoutRate ?? 0)),
+    timeout: simulation.timeoutRate,
+  }[observed];
+  if (!Number.isFinite(rate) || !(simulation.trials > 0)) return {
+    status: "watch", observedOutcome: observed, code: "insufficient_sample",
+    detail: "Run more trials to compare this outcome with the simulation.",
+  };
+  const interval = confidenceInterval95(rate, simulation.trials);
+  const rareThreshold = observed === "loss" ? 0.25 : 0.15;
   const mechanicsText = likelyMismatchMechanic(diagnostics);
-
-  if (observed === "win" && winRate <= 0.15) {
+  if (interval.upper <= rareThreshold) {
     return {
       status: "mismatch",
       observedOutcome: observed,
-      code: "model_underestimates",
-      detail: `The simulator shows a very low chance, but practice says you win. Check this first: ${mechanicsText}.`,
+      code: { win: "model_underestimates", loss: "model_overestimates", timeout: "timeout_underestimated" }[observed],
+      detail: `Observed ${observed}. This outcome occurred in ${formatPercent(rate)} of ${simulation.trials} trials. Check the fight mechanics (${mechanicsText}).`,
     };
   }
-  if (observed === "loss" && winRate >= 0.75) {
-    return {
-      status: "mismatch",
-      observedOutcome: observed,
-      code: "model_overestimates",
-      detail: `The simulator shows a high chance, but practice says you lose. The most suspicious parts are: ${mechanicsText}.`,
-    };
-  }
-  if (observed === "timeout" && timeoutRate <= 0.15) {
-    return {
-      status: "mismatch",
-      observedOutcome: observed,
-      code: "timeout_underestimated",
-      detail: "In practice the fight stalls, but the model rarely times out. Check regen, armor, remedy/opacity and status scaling.",
-    };
-  }
-  if (uncertainty >= 0.04 || winRate > 0.3 && winRate < 0.7) {
+  if (interval.halfWidth >= 0.04 || interval.lower < 0.7) {
     return {
       status: "watch",
       observedOutcome: observed,

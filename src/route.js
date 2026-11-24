@@ -253,7 +253,6 @@ export function simulateRoute({
       fundamentals,
       currencies,
       totalEarnedCurrencies,
-      totalBattleEarnedCurrencies,
       generatedCurrencies,
     });
   }
@@ -649,7 +648,6 @@ function addGeneratedCurrencies({
   fundamentals,
   currencies,
   totalEarnedCurrencies,
-  totalBattleEarnedCurrencies,
   generatedCurrencies,
 }) {
   const rates = numericObject(
@@ -668,7 +666,6 @@ function addGeneratedCurrencies({
     addCurrency({ bag: generatedCurrencies, name: currency, amount });
     addCurrency({ bag: currencies, name: currency, amount });
     addCurrency({ bag: totalEarnedCurrencies, name: currency, amount });
-    addCurrency({ bag: totalBattleEarnedCurrencies, name: currency, amount });
   }
 }
 

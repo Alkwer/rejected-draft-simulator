@@ -93,7 +93,7 @@ function compareStats(base, current) {
   return comparison;
 }
 
-function analyzeActiveSketches({ state, sketches, targetId }) {
+export function analyzeActiveSketches({ state, sketches, targetId }) {
   const hidden = new Set(normalizeArray(state.hiddenSketches));
   const available = normalizeArray(state.availableSketches);
   const runVictories = state.sketchRunVictories ?? {};

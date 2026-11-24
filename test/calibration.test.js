@@ -132,6 +132,71 @@ test("createCalibrationReport compares observed fights with simulation and flags
   assert.equal(report.patchSanity.version, "v0.874");
 });
 
+test("calibration preserves both combatants' modifiers through external log import", () => {
+  const stats = {
+    maxHp: 10000,
+    attack: 10,
+    attackSpeed: 1000,
+    accuracy: 100,
+    minDamage: 100,
+    maxDamage: 100,
+    burnChance: 100,
+    burnDamage: 10,
+    poisonChance: 100,
+    poisonDamage: 10,
+  };
+  const targetId = "training_target";
+  const fallbackModifiers = { immunities: ["burnChance", "poisonChance"], vulnerability: ["burnChance", 9] };
+  const nestedLog = {
+    targetId,
+    player: {
+      ...fallbackModifiers,
+      stats: { ...stats, immunities: ["poisonChance"], vulnerability: ["burnChance", 3] },
+    },
+    enemy: { ...fallbackModifiers, stats },
+    enemyStats: { ...stats, immunities: ["poisonChance"], vulnerability: ["burnChance", 5] },
+  };
+  const entries = [
+    nestedLog,
+    {
+      ...nestedLog,
+      playerImmunities: [],
+      playerVulnerability: null,
+      immunities: [],
+      vulnerability: [],
+    },
+    {
+      targetId,
+      player: { immunities: ["poisonChance"], vulnerability: ["burnChance", 3] },
+      target: { immunities: ["poisonChance"], vulnerability: ["burnChance", 5] },
+    },
+    { targetId },
+  ];
+  const parsed = parseCombatLogText(JSON.stringify(entries));
+  assert.deepEqual(parsed.map((entry) => [
+    entry.playerImmunities, entry.playerVulnerability, entry.immunities, entry.vulnerability,
+  ]), [
+    [["poisonChance"], ["burnChance", 3], ["poisonChance"], ["burnChance", 5]],
+    [[], null, [], []],
+    [["poisonChance"], ["burnChance", 3], ["poisonChance"], ["burnChance", 5]],
+    [undefined, undefined, undefined, undefined],
+  ]);
+
+  const options = {
+    player: { ...stats, ...fallbackModifiers },
+    sketches: { [targetId]: { stats, ...fallbackModifiers } },
+    maxSeconds: 4,
+    trials: 2,
+  };
+  const imported = createCalibrationReport({ ...options, externalLogs: parsed });
+  const direct = createCalibrationReport({ ...options, externalLogs: entries });
+  assert.deepEqual(imported, direct);
+  assert.deepEqual(imported.comparisons.map(({ simulated }) => {
+    const { player, enemy } = simulated.fight.damageBreakdown;
+    return [player.status, enemy.status];
+  }), [[180, 300], [120, 120], [180, 300], [0, 0]]);
+});
+
 test("calibration excludes censored simulated medians and observed timeouts from duration tuning", () => {
   const log = { targetId: "wall", outcome: "win", seconds: 300, reason: "burn", gameVersion: "v0.874" };
   const report = createCalibrationReport({ save: { state: { combatLog: [log] } },
@@ -290,6 +355,21 @@ test("checkPatchSanity validates versioned Duct, Rose and Mobius snapshots", () 
 
   assert.equal(fail.ok, false);
   assert.ok(fail.failures.some((item) => item.code === "stat_mismatch" && item.targetId === "mobius_strip"));
+});
+
+test("checkPatchSanity detects a conflicting save version when metadata supplies one", () => {
+  const version = "v0.874";
+  const { saveVersion, targets: sketches } = GAME_DATA_VERSIONS[version];
+  const report = checkPatchSanity({ sketches, dataMetadata: { gameVersion: version, saveVersion: saveVersion + 1 } });
+
+  assert.equal(report.ok, false);
+  assert.equal(report.checkedTargets, Object.keys(sketches).length);
+  assert.deepEqual(report.failures.map(({ code, expected, actual }) => ({ code, expected, actual })), [
+    { code: "save_version_mismatch", expected: saveVersion, actual: saveVersion + 1 },
+  ]);
+  assert.equal(checkPatchSanity({ sketches, dataMetadata: { gameVersion: version } }).ok, true);
+  assert.equal(checkPatchSanity({ sketches, version, dataMetadata: { saveVersion: null } }).ok, true);
+  assert.equal(checkPatchSanity({ sketches, version }).ok, true);
 });
 
 test("runKnownRegressionScenarios protects calibrated save-like edge cases", () => {

@@ -713,6 +713,24 @@ function renderNextAction(analysis) {
     <strong>${escapeHtml(action.title)}</strong>
     <span>${escapeHtml(action.detail)}</span>
   `;
+  if (action.type !== "uncertain") return;
+  const selectedTrials = Number(els.trialsSelect.value) || 0;
+  const nextTrials = Array.from(els.trialsSelect.options, (option) => Number(option.value))
+    .find((count) => count > action.trials && count >= selectedTrials);
+  if (!nextTrials) {
+    els.nextActionBody.querySelector("strong").textContent = "Fight odds remain close to 50%";
+    return;
+  }
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "mini-button";
+  button.textContent = `Run ${nextTrials} trials`;
+  button.addEventListener("click", () => {
+    selectTarget(action.targetId);
+    els.trialsSelect.value = String(nextTrials);
+    analyzeIfReady();
+  });
+  els.nextActionBody.append(button);
 }
 
 function renderSketchDelta(analysis) {
@@ -1280,6 +1298,8 @@ async function api(url, options = {}) {
 function setBusy(isBusy) {
   state.isBusy = isBusy;
   for (const button of els.historyList.querySelectorAll("button")) button.disabled = isBusy;
+  const retryTrials = els.nextActionBody.querySelector("button");
+  if (retryTrials) retryTrials.disabled = isBusy;
   els.analyzeButton.disabled = isBusy;
   els.steamSlotButton.disabled = isBusy;
   els.importBundleButton.disabled = isBusy;

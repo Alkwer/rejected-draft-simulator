@@ -448,6 +448,17 @@ export function checkPatchSanity({
     };
   }
 
+  const saveVersion = dataMetadata?.saveVersion ?? null;
+  if (saveVersion !== null && expected.saveVersion != null && saveVersion !== expected.saveVersion) {
+    failures.push({
+      code: "save_version_mismatch",
+      version: selectedVersion,
+      expected: expected.saveVersion,
+      actual: saveVersion,
+      message: `Expected save version ${expected.saveVersion} for ${selectedVersion}, got ${saveVersion}.`,
+    });
+  }
+
   for (const [targetId, target] of Object.entries(expected.targets)) {
     const actual = sketches[targetId];
     if (!actual) {
@@ -477,7 +488,7 @@ export function checkPatchSanity({
     ok: failures.length === 0,
     version: selectedVersion,
     dataVersion: dataMetadata?.gameVersion ?? null,
-    saveVersion: dataMetadata?.saveVersion ?? null,
+    saveVersion,
     checkedTargets: Object.keys(expected.targets).length,
     failures,
   };
@@ -544,11 +555,12 @@ function compareLogToSimulation({
   seed,
 }) {
   const sketch = sketches[log.targetId] ?? null;
-  const player = hasStats(log.playerStats) ? log.playerStats : fallbackPlayer;
-  const targetStats = hasStats(log.targetStats) ? log.targetStats : sketch?.stats;
+  const playerStats = hasStats(log.playerStats) ? log.playerStats : fallbackPlayer;
+  const hasLoggedTargetStats = hasStats(log.targetStats);
+  const targetStats = hasLoggedTargetStats ? log.targetStats : sketch?.stats;
   const deviations = [];
 
-  if (!hasStats(player) || !hasStats(targetStats)) {
+  if (!hasStats(playerStats) || !hasStats(targetStats)) {
     return {
       logIndex: log.index,
       targetId: log.targetId,
@@ -566,12 +578,17 @@ function compareLogToSimulation({
     };
   }
 
+  const player = {
+    ...playerStats,
+    immunities: log.playerImmunities ?? fallbackPlayer?.immunities ?? [],
+    vulnerability: log.playerVulnerability !== undefined ? log.playerVulnerability : fallbackPlayer?.vulnerability ?? null,
+  };
   const enemy = {
     ...targetStats,
     id: log.targetId,
-    ...(hasStats(log.targetStats) ? {} : { source: "catalog", rarity: sketch?.rarity }),
+    ...(hasLoggedTargetStats ? {} : { source: "catalog", rarity: sketch?.rarity }),
     immunities: log.immunities ?? sketch?.immunities ?? [],
-    vulnerability: log.vulnerability ?? sketch?.vulnerability ?? null,
+    vulnerability: log.vulnerability !== undefined ? log.vulnerability : sketch?.vulnerability ?? null,
   };
   const summary = runMonteCarlo({
     assumptions,
@@ -688,8 +705,8 @@ function normalizeLogEntry(raw, sourceKey, index, collectionPatch) {
   const targetName = firstString(raw.targetName, raw.sketchName, raw.enemyName, target.name);
   const outcome = normalizeFightOutcome(raw);
   const seconds = normalizeSeconds(raw);
-  const playerStats = numericObject(raw.playerStats ?? raw.player?.stats ?? raw.attackerStats);
-  const targetStats = numericObject(raw.targetStats ?? raw.enemyStats ?? raw.defenderStats ?? target.stats);
+  const playerStats = raw.playerStats ?? raw.player?.stats ?? raw.attackerStats;
+  const targetStats = raw.targetStats ?? raw.enemyStats ?? raw.defenderStats ?? target.stats;
   const damageBreakdown = normalizeDamageBreakdown(raw.damageBreakdown ?? raw.damage ?? raw.breakdown);
 
   if (!targetId && !targetName && outcome === "unknown" && !Number.isFinite(seconds)) {
@@ -704,12 +721,20 @@ function normalizeLogEntry(raw, sourceKey, index, collectionPatch) {
     outcome,
     seconds,
     reason: firstString(raw.reason, raw.cause, raw.deathCause, raw.resultReason, raw.outcomeReason),
-    playerStats,
-    targetStats,
+    playerStats: numericObject(playerStats),
+    targetStats: numericObject(targetStats),
+    playerImmunities: [raw.playerImmunities, playerStats?.immunities, raw.player?.immunities].find(Array.isArray),
+    playerVulnerability: firstVulnerability(raw.playerVulnerability, playerStats?.vulnerability, raw.player?.vulnerability),
+    immunities: [raw.immunities, targetStats?.immunities, target.immunities].find(Array.isArray),
+    vulnerability: firstVulnerability(raw.vulnerability, targetStats?.vulnerability, target.vulnerability),
     damageBreakdown,
     patchVersion: firstString(raw.patchVersion, raw.gameVersion, raw.version) ?? collectionPatch,
     raw,
   };
+}
+
+function firstVulnerability(...values) {
+  return values.find((value) => value === null || Array.isArray(value));
 }
 
 function normalizeSeconds(raw) {

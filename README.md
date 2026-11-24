@@ -57,7 +57,7 @@ The Steam slot contains recent victory and defeat notifications. Each linked not
 
 The monitor accepts the first matching fight it sees that started after the capture and finished before the next Hyena Hulk capture for that slot. Steam retains up to ten notifications in docked mode and five in basic mode. If the saved history has rolled over or lacks timing, the entry explains how to proceed. **Enter or correct a result manually** also works with exports and other opponents.
 
-Each Steam forecast records its catalog build, simulation seed, trial count and time limit. Keep separate groups of attempts for each build, universe and setup when checking predicted win rates.
+Each Steam forecast records its simulator model version, catalog build, simulation seed, trial count and time limit. Earlier forecasts show “Not recorded” for the model version. Group attempts by model version, game build, universe and setup when checking predicted win rates.
 
 The comparison shows how often the observed outcome occurred in the simulations, the difference from their median duration and whether the time fell between the 10th and 90th percentiles. If you stop timing a fight that is still running, select **Still fighting at cutoff**. A **≥** marks a lower bound wherever the time limit prevents an exact duration.
 

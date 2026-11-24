@@ -7,15 +7,14 @@ import { createCombatReport } from "./report.js";
 import { estimateRedrawOdds, parseMinimums } from "./redraw-planner.js";
 import { projectVictories, simulateRoute } from "./route.js";
 import { parseRouteSpecs } from "./route-options.js";
-import { analyzeSave } from "./save-analysis.js";
+import { analyzeActiveSketches, analyzeSave } from "./save-analysis.js";
 import { decodeSaveText, toNumber } from "./save.js";
 import { enemyFromSketch, sketchForEncounter } from "./combat/steam-encounter.js";
 import { createStrategyPlan, parseStrategyCurrencyGoals } from "./strategy-planner.js";
 import { remainingSketchVictories } from "./victory-limit.js";
 import { RewardProjectionError } from "./rewards.js";
+import { ANALYSIS_MODEL_VERSION } from "./model-version.js";
 
-// Bump when changes to simulation or planner rules affect replayed analyses.
-const ANALYSIS_MODEL_VERSION = "3";
 function sortedJsonKeys(_key, value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return value;
   return Object.fromEntries(Object.keys(value).sort().map((key) => [key, value[key]]));
@@ -144,17 +143,18 @@ export function createWebAnalysis({
     assumptions: combatAssumptions,
   });
   const activeSketches = createActiveSketchRows({
-    analysis, sketches, baseStats, trialsSetting: auxiliaryTrialsSetting, maxSeconds: targetMaxSeconds, seed, assumptions: combatAssumptions,
+    active: analysis.run.active, sketches, baseStats, trialsSetting: auxiliaryTrialsSetting, maxSeconds: targetMaxSeconds, seed, assumptions: combatAssumptions,
     targetId: resolvedTargetId, currentTargetResult: assumedRouteIds.length ? null : result,
   });
-  const recommendation = createRunRecommendation({
-    targetId: resolvedTargetId,
-    currentRun: { targets: activeSketches },
-  });
   const projectedActive = assumedRouteIds.length ? createActiveSketchRows({
-    analysis, sketches, baseStats: finalStats, trialsSetting: auxiliaryTrialsSetting, maxSeconds: targetMaxSeconds,
+    active: analyzeActiveSketches({ state: rewardState, sketches, targetId: resolvedTargetId }),
+    sketches, baseStats: finalStats, trialsSetting: auxiliaryTrialsSetting, maxSeconds: targetMaxSeconds,
     seed, assumptions: combatAssumptions, targetId: resolvedTargetId, currentTargetResult: result,
   }) : activeSketches;
+  const recommendation = createRunRecommendation({
+    targetId: resolvedTargetId,
+    currentRun: { targets: projectedActive },
+  });
   const targetComparisons = createTargetComparisons({
     analyzedId: resolvedTargetId,
     analyzedResult: result,
@@ -243,7 +243,7 @@ export function createWebAnalysis({
     fightTrace,
     activeSketches,
     recommendation,
-    nextAction: describeNextAction(recommendation, activeSketches, strategicPlan?.softcap),
+    nextAction: describeNextAction(recommendation, projectedActive, strategicPlan?.softcap),
     strategicPlan,
     targetComparisons,
     activeDeltas,
@@ -355,10 +355,10 @@ export function createTargetOptions({ sketches = {} } = {}) {
   return [...important, ...rest];
 }
 
-function createActiveSketchRows({ analysis, sketches, baseStats, trialsSetting, maxSeconds, seed, assumptions, targetId, currentTargetResult }) {
+function createActiveSketchRows({ active, sketches, baseStats, trialsSetting, maxSeconds, seed, assumptions, targetId, currentTargetResult }) {
   const remaining = [
-    ...analysis.run.active.remaining,
-    analysis.run.active.target,
+    ...active.remaining,
+    active.target,
   ].filter(Boolean);
   const seen = new Set();
   const rows = [];
@@ -720,7 +720,7 @@ function inferCompanionTargetId({ save, sketches, targetId }) {
 function describeNextAction(recommendation, activeSketches, softcap) {
   const row = activeSketches.find((item) => item.id === recommendation.targetId);
   if (row && recommendation.action === "increase_trials") return {
-    type: "uncertain", title: `Run more trials for ${row.name}`,
+    type: "uncertain", targetId: row.id, trials: row.trials, title: `Run more trials for ${row.name}`,
     detail: "The 95% win-rate interval crosses the 50% fight threshold.",
   };
   if (row) {

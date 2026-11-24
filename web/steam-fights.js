@@ -130,6 +130,7 @@ function showFight(fight, monitorStatus, preserveDraft = false) {
   const fields = [
     ["Game patch", fight.gameVersion ?? "Unknown"],
     ["Save schema", forecast.saveVersion ?? "Unknown"],
+    ["Simulator model", forecast.modelVersion ?? "Not recorded"],
     ["Catalog patch / build", [forecast.dataMetadata?.gameVersion, forecast.dataMetadata?.buildId].filter(Boolean).join(" / ") || "Unknown"],
     ["Player HP", numbers.format(forecast.player.maxHp)],
     ["Player attack", numbers.format(forecast.player.attack)],
