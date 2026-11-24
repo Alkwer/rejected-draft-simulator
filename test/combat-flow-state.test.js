@@ -73,3 +73,30 @@ test("Flow State speeds only the first player attack against known glossary targ
   assert.equal(withFlowState.winner, "player");
   assert.equal(withFlowState.seconds, player.attackSpeed * 0.5 / 1000);
 });
+
+test("Steam first-attack advantage belongs to a confirmed fight or a recent automatic repeat", () => {
+  const state = { autoRetryActive: true, autoRetryUnlocked: true, lastEnemyId: "known_target",
+    glossaryUnlocks: ["known_target", "other"], fundamentals: { flowStateLevel: 40 }, combatState: { lastVictory: null } };
+  const save = { meta: { profile: "steam", savedAt: 10000 }, state };
+  const winner = (id = "known_target") => simulateFight({ rng: () => 0, player,
+    enemy: { ...fastEnemy, id }, maxSeconds: 2, assumptions: combatAssumptionsFromSave(save) }).winner;
+  assert.equal(winner(), "enemy");
+  state.combatState.lastVictory = { enemyId: "known_target", time: 5000 };
+  assert.equal(winner(), "enemy");
+  state.combatState.lastVictory.time++;
+  assert.equal(winner(), "player");
+  assert.equal(winner("other"), "enemy");
+  state.challengeCooldownUntil = 10100;
+  assert.equal(winner(), "enemy");
+  Object.assign(state, { challengeCooldownUntil: 0, autoRetryActive: false, autoChallengeActive: true,
+    autoChallengeUnlocked: true, availableSketches: ["known_target"] });
+  assert.equal(winner(), "player");
+  state.combatState.isPlayerDefeated = true;
+  assert.equal(winner(), "enemy");
+  state.combatState.isPlayerDefeated = false;
+  state.availableSketches = ["other"];
+  assert.equal(winner(), "enemy");
+  Object.assign(state.combatState, { isFighting: true, isInFlowState: true, enemyId: "other" });
+  assert.equal(winner("other"), "player");
+  assert.equal(winner(), "enemy");
+});

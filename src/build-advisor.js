@@ -1,7 +1,7 @@
 import { toNumber } from "./save.js";
 import { sketchForEncounter } from "./combat/steam-encounter.js";
 import { combatAssumptionsFromSave } from "./combat-assumptions.js";
-import { getPreciseEraserEligibility } from "./tool-rules.js";
+import { getPreciseEraserEligibility, isSketchToolUnlocked } from "./tool-rules.js";
 import { remainingSketchVictories } from "./victory-limit.js";
 
 const TARGET_PROFILES = {
@@ -298,6 +298,7 @@ function createGuaranteeAdvice({ ranked, state, limit }) {
 }
 
 function createBoosterAdvice({ activeItems, state, limit }) {
+  if (!isSketchToolUnlocked(state, "booster")) return [];
   const boosted = new Set(normalizeList(state.boostedSketchIds));
   const maxUses = 1 + toNumber(state.fundamentals?.rewardBoosterUses);
   let remainingUses = Math.max(0, maxUses - boosted.size);

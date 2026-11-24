@@ -3,6 +3,7 @@ import test from "node:test";
 import { runMonteCarlo } from "../src/combat.js";
 import { analyzeSave } from "../src/save-analysis.js";
 import { ANALYSIS_MODEL_VERSION } from "../src/model-version.js";
+import { VERIFIED_STEAM_BUILD } from "../src/combat/steam-universes.js";
 import { compareSteamFightObservation, createSteamFightForecast } from "../src/steam-fight-forecast.js";
 
 function forecastInput() {
@@ -35,7 +36,7 @@ function forecastInput() {
         vulnerability: ["bleedChance", 2],
       },
     },
-    dataMetadata: { platform: "steam", buildId: "26823208" },
+    dataMetadata: { platform: "steam", buildId: VERIFIED_STEAM_BUILD },
     trials: 5,
     seed: "hyena-practice",
   };

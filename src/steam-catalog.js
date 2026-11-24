@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { STEAM_APP_ID, findSteamInstall, withGameArchive } from "./steam-install.js";
 import { parseSketches, readGameBundle } from "./sketch-data.js";
+import { parseSteamShop } from "./steam-shop-catalog.js";
 
 function assetName(files, prefix) {
   const matches = Object.keys(files).filter((name) => name.startsWith(`assets/${prefix}-`) && name.endsWith(".js"));
@@ -27,6 +28,7 @@ function readSteamCatalog(install, now) {
     }
     const asset = assetName(manifest.files, "data-sketches");
     const store = assetName(manifest.files, "game-store");
+    const skillTree = assetName(manifest.files, "data-skill-tree");
     function verifiedText(member) {
       const source = read(`dist/${member}`);
       if (createHash("sha256").update(source).digest("hex") !== manifest.files[member]) {
@@ -36,6 +38,7 @@ function readSteamCatalog(install, now) {
     }
     const source = verifiedText(asset);
     const storeSource = verifiedText(store);
+    const shopUpgrades = parseSteamShop(verifiedText(skillTree));
     const gameVersion = [...source.matchAll(/"(v\d+\.\d+(?:\.\d+)*)"/g)].map((match) => match[1])
       .find((v) => pkg.version === v.slice(1) || pkg.version === `${v.slice(1)}.0`) ?? `v${pkg.version}`;
     // The full Steam profile uses the base records. Web/demo overrides live in the same bundle.
@@ -54,9 +57,10 @@ function readSteamCatalog(install, now) {
         platform: "steam", appId: STEAM_APP_ID, buildId: install.buildId, rendererBuildId: manifest.buildId,
         gameVersion, saveVersion: saveVersionFromStore(storeSource), asset: path.posix.basename(asset),
         mainAsset: path.posix.basename(assetName(manifest.files, "main")), storeAsset: path.posix.basename(store),
+        shopAsset: path.posix.basename(skillTree),
         sourceUrl: `https://store.steampowered.com/app/${STEAM_APP_ID}/`, capturedAt: now().toISOString().slice(0, 10),
       },
-      sketches,
+      sketches, shopUpgrades,
     };
   });
 }
@@ -83,9 +87,10 @@ export function syncSteamCatalog({ dataPath, steamDir, roots, check = false, off
   const catalog = readSteamCatalog(install, now);
   const remote = catalog.metadata;
   const stale = local?.platform !== "steam" || local.rendererBuildId !== remote.rendererBuildId ||
-    local.gameVersion !== remote.gameVersion || local.asset !== remote.asset ||
+    local.gameVersion !== remote.gameVersion || local.asset !== remote.asset || local.shopAsset !== remote.shopAsset ||
     local.saveVersion !== remote.saveVersion || (remote.buildId !== null && local.buildId !== remote.buildId) ||
-    JSON.stringify(cached.sketches) !== JSON.stringify(catalog.sketches);
+    JSON.stringify(cached.sketches) !== JSON.stringify(catalog.sketches) ||
+    JSON.stringify(cached.shopUpgrades) !== JSON.stringify(catalog.shopUpgrades);
   if (check) {
     const warnings = stale ? [{ code: "steam_build_changed", message: "The local catalog differs from the installed Steam build." }] : [];
     return { stale, warnings, remote };

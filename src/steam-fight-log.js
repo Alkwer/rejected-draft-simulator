@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 
 import { decodeSaveText, defaultSteamSaveDir, findActiveSteamSave, isFullSteamSave, readSaveFile } from "./save.js";
@@ -274,7 +274,7 @@ function summarizeFight({ id, capturedAt, source, forecast, target }) {
   return { id, capturedAt, source, target: forecast?.target ?? target };
 }
 
-function archiveEntries(root) {
+function archiveEntries(root, visit) {
   if (!fs.existsSync(root)) return [];
   return fs.readdirSync(root, { withFileTypes: true })
     .filter((item) => item.isDirectory() && UUID.test(item.name))
@@ -284,7 +284,9 @@ function archiveEntries(root) {
         const metadata = readFightMetadata(root, id);
         if (!metadata) return { id, unreadable: true };
         summary = summarizeFight(metadata);
-        const { observation } = readFight(root, id, metadata);
+        const fight = readFight(root, id, metadata);
+        visit?.(fight);
+        const { observation } = fight;
         return { ...summary, outcome: observation?.outcome ?? null, ...(!metadata.forecast && { pending: true }) };
       } catch (error) {
         if (error.status !== 422) throw error;
@@ -304,6 +306,37 @@ function archiveEntries(root) {
 
 export function listSteamFights(root) {
   return archiveEntries(root).map((fight) => fight.unreadable ? { id: fight.id, unreadable: true } : fight);
+}
+
+function compareSavedFights(root) {
+  const groups = new Map();
+  let excluded = 0;
+  archiveEntries(root, ({ id, gameVersion, forecast, observation }) => {
+    if (!forecast || !observation) return;
+    const { target, player, enemy, assumptions, maxSeconds, dataMetadata, modelVersion } = forecast;
+    const build = dataMetadata?.buildId;
+    // An observation stopped before the horizon cannot establish its outcome there.
+    if (!gameVersion || !build || !modelVersion ||
+        (observation.outcome === "timeout" && observation.elapsedSeconds < maxSeconds)) {
+      excluded++;
+      return;
+    }
+    const setup = createHash("sha256").update(JSON.stringify({ player, enemy, assumptions }, (key, value) => {
+      if (key === "immunities" && Array.isArray(value)) return [...value].sort();
+      if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+      return Object.fromEntries(Object.keys(value).sort().map((field) => [field, value[field]]));
+    })).digest("hex");
+    const key = JSON.stringify([target.id, gameVersion, build, modelVersion, maxSeconds, setup]);
+    if (!groups.has(key)) groups.set(key, { target, gameVersion, build, modelVersion, maxSeconds,
+      universe: assumptions.steam.universeId, exampleId: id, fights: 0,
+      observed: { win: 0, loss: 0, timeout: 0 }, expected: { win: 0, loss: 0, timeout: 0 } });
+    const group = groups.get(key);
+    const outcome = observation.elapsedSeconds >= maxSeconds ? "timeout" : observation.outcome;
+    group.observed[outcome]++;
+    group.fights++;
+    for (const name of Object.keys(group.expected)) group.expected[name] += forecast.probabilities[name];
+  });
+  return { groups: [...groups.values()].sort((a, b) => b.fights - a.fights || a.target.name.localeCompare(b.target.name)), excluded };
 }
 
 function inspectWatch(root, id, slot, watch) {
@@ -456,6 +489,7 @@ export function handleSteamFightRequest({ root, dataPath, steamSaveDir, pathname
   calculateForecast = createSteamFightForecast, pendingCaptures = new Map(), onCapture = () => {},
 }) {
   const [, , , id, action, ...extra] = pathname.split("/");
+  if (id === "comparisons" && !action && !extra.length && method === "GET") return compareSavedFights(root);
   if (!id && action === undefined) {
     if (method === "GET") return { fights: listSteamFights(root) };
     if (method === "POST") {

@@ -78,6 +78,7 @@ function updateWatch(fight, monitorStatus) {
 }
 
 function showFight(fight, monitorStatus, preserveDraft = false) {
+  const observationChanged = fight.observation && (current?.id !== fight.id || current.revision !== fight.revision);
   const { forecast, observation } = fight;
   const { duration, probabilities, assumptions, enemy, player } = forecast;
   const warnings = forecast.warnings ?? [];
@@ -157,7 +158,62 @@ function showFight(fight, monitorStatus, preserveDraft = false) {
   }
   byId("recordResult").textContent = observation ? "Update result" : "Save result";
   updateWatch(fight, monitorStatus);
+  if (observationChanged && byId("archiveComparison").open) loadComparisons();
 }
+
+let comparisonRequest = 0;
+async function loadComparisons() {
+  const request = ++comparisonRequest;
+  const container = byId("comparisonGroups");
+  container.replaceChildren();
+  status("comparisonStatus", "Loading comparisons…");
+  try {
+    const { groups, excluded } = await api(`${endpoint}/comparisons`);
+    if (request !== comparisonRequest) return;
+    const messages = [];
+    if (!groups.length) messages.push("Record a comparable Steam result to see its group.");
+    if (excluded) messages.push(`${excluded} recorded result(s) excluded due to missing version information or an early cutoff.`);
+    status("comparisonStatus", messages.join(" "));
+    for (const group of groups) {
+      const section = document.createElement("section");
+      const heading = document.createElement("h3");
+      heading.textContent = `${group.target.name} · ${group.fights} ${group.fights === 1 ? "fight" : "fights"}`;
+      const details = document.createElement("p");
+      details.textContent = `${group.universe} · ${seconds(group.maxSeconds)} limit · ${group.gameVersion} · build ${group.build} · model ${group.modelVersion}`;
+      const link = document.createElement("a");
+      link.href = `?fight=${encodeURIComponent(group.exampleId)}`;
+      link.textContent = "View this setup";
+      const table = document.createElement("table");
+      table.className = "log-table";
+      table.setAttribute("aria-label", `Observed and expected outcomes for ${group.target.name}`);
+      const header = table.createTHead().insertRow();
+      for (const title of ["Outcome at limit", "Observed", "Expected"]) {
+        const cell = document.createElement("th");
+        cell.scope = "col";
+        cell.textContent = title;
+        header.append(cell);
+      }
+      const body = table.createTBody();
+      for (const [outcome, label] of Object.entries(outcomeLabels)) {
+        const row = body.insertRow();
+        const name = document.createElement("th");
+        name.scope = "row";
+        name.textContent = label;
+        row.append(name);
+        row.insertCell().textContent = numbers.format(group.observed[outcome]);
+        row.insertCell().textContent = numbers.format(group.expected[outcome]);
+      }
+      section.append(heading, details, table, link);
+      container.append(section);
+    }
+  } catch (error) {
+    if (request === comparisonRequest) status("comparisonStatus", error.message, true);
+  }
+}
+
+byId("archiveComparison").addEventListener("toggle", (event) => {
+  if (event.currentTarget.open) loadComparisons();
+});
 
 async function loadFight(id, preserveDraft = false) {
   const retry = byId("retryForecast");

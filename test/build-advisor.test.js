@@ -168,6 +168,15 @@ test("analyzeBuildAdvice reserves remaining booster uses for new assignments", (
   ]);
 });
 
+test("Steam advisor observes the locked eraser and booster on an otherwise eligible run", () => {
+  const { tools } = analyzeBuildAdvice({ sketches, targetId: "sustain_route", state: {
+    saveProfile: "steam", availableSketches: ["sustain_route", "bleed_route"],
+    preciseEraserUnlocked: false, rewardBoosterUnlocked: false,
+  } });
+  assert.deepEqual(tools.booster, []);
+  assert.equal(tools.eraser[0].reasonCode, "eraser_locked");
+});
+
 test("an explicitly empty run only offers future guarantees", () => {
   const { activeRun, tools } = analyzeBuildAdvice({
     sketches, targetId: "duct_taped_banana", state: { availableSketches: [] },

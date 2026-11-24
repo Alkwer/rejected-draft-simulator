@@ -486,7 +486,7 @@ Started on 2026-05-23 with the observability slice: status deltas, ordered RNG t
 
 ## Best Work Order
 
-1. Collect repeatable Steam fight comparisons for build 26823208 (save schema 86), starting with Hyena Hulk. Capture the pre-fight state and archive the actual outcome and timing source. Follow the [comparison workflow](README.md#compare-a-steam-fight).
+1. Collect repeatable Steam fight comparisons for build 26885190 (save schema 87), starting with Hyena Hulk. Capture the pre-fight state and archive the actual outcome and timing source. Follow the [comparison workflow](README.md#compare-a-steam-fight).
 2. Compare repeated attempts with the seeded forecast for the same build, universe, opponent and setup. Record censored durations and the number of observed fights. Use these observations to prioritize discrepancies in tick and counter timing.
 3. After the next patch, keep the old observations tagged with their build and run a fresh comparison on the new build. Track legacy web reference checks separately in the [accuracy backlog](docs/combat-engine-accuracy-backlog.md).
 

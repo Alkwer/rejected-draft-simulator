@@ -1,6 +1,14 @@
-import { toNumber } from "./save.js";
+import { isFullSteamSave, toNumber } from "./save.js";
+
+export function isSketchToolUnlocked(state, tool) {
+  const key = tool === "eraser" ? "preciseEraserUnlocked" : "rewardBoosterUnlocked";
+  return !isFullSteamSave(state) || state[key] !== false;
+}
 
 export function getPreciseEraserEligibility(sketch, state = {}) {
+  if (!isSketchToolUnlocked(state, "eraser")) {
+    return { eligible: false, reason: "eraser_locked", message: "Precise Eraser is still locked in this save." };
+  }
   const rarity = String(sketch?.rarity ?? "").toLowerCase();
 
   if (rarity === "opus" && !hasOpusEraser(state)) {

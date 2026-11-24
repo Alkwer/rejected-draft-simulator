@@ -26,6 +26,10 @@ test("active Steam slot and uploaded web save select their own catalogs", async 
   assert.equal(native.slotName, "slot-4.json");
   assert.equal(native.analysis.bundle.platform, "steam");
   assert.equal(native.analysis.statSource, "playerStats");
+  const switched = await (await request({ saveSource: "steam", scenarioSlot: "slot-1.json",
+    assumedVictories: { "stick man": 2 }, routeIds: ["stick man"], hiddenSketchIds: ["stick man"] })).json();
+  assert.equal(switched.slotChanged, true);
+  assert.deepEqual(switched.analysis, native.analysis);
   const { saveHash, catalogHash, modelVersion } = native.analysis.replayIdentity;
   assert.match(saveHash, /^[0-9a-f]{64}$/);
   assert.match(catalogHash, /^[0-9a-f]{64}$/);

@@ -186,6 +186,17 @@ function bindEvents() {
     const tab = event.target.closest("[data-function-tab]")?.dataset.functionTab;
     if (tab) setFunctionTab(tab);
   });
+  els.functionTabBar.addEventListener("keydown", (event) => {
+    const tabs = [...els.functionTabBar.querySelectorAll('[role="tab"]')];
+    const index = tabs.indexOf(event.target);
+    if (index < 0) return;
+    const next = { ArrowRight: (index + 1) % tabs.length, ArrowLeft: (index + tabs.length - 1) % tabs.length,
+      Home: 0, End: tabs.length - 1 }[event.key];
+    if (next === undefined) return;
+    event.preventDefault();
+    setFunctionTab(tabs[next].dataset.functionTab);
+    tabs[next].focus();
+  });
   els.mobileTabBar.addEventListener("click", (event) => {
     const tab = event.target.closest("[data-mobile-tab]")?.dataset.mobileTab;
     if (tab) setMobileTab(tab);
@@ -375,6 +386,7 @@ async function analyze({ loadSlot = false, replay = null } = {}) {
     const saveSource = fromSlot ? "steam" : "export";
     const payload = {
       ...settings, saveSource, saveText: fromSlot ? undefined : exportText,
+      scenarioSlot: fromSlot && !loadSlot && !replay ? state.slotName : undefined,
       // Earlier history entries included their analysis time in the generated seed.
       referenceTimeMs: settings.referenceTimeMs ?? Number(/^web-(\d+)$/.exec(settings.seed)?.[1] ?? now),
       expectedSaveHash: replay?.saveHash, expectedCatalogHash: replay?.catalogHash,
@@ -395,7 +407,7 @@ async function analyze({ loadSlot = false, replay = null } = {}) {
       showMessage(["Fight result ready. Calculating strategy and comparisons.", ...primary.warnings.map((item) => item.message)].join(" "), "ok");
     });
     if (generation !== state.analysisGeneration || els.saveInput.value !== exportText) return;
-    if (loadSlot) {
+    if (loadSlot || data.slotChanged) {
       state.assumed.clear();
       state.routeIds = [];
       state.hiddenSketchIds.clear();
@@ -403,6 +415,7 @@ async function analyze({ loadSlot = false, replay = null } = {}) {
       els.saveInput.value = "";
       els.saveFile.value = "";
       els.saveFileLabel.textContent = "Choose save file";
+      if (data.slotChanged) Object.assign(settings, { assumedVictories: {}, routeIds: [], hiddenSketchIds: [] });
     }
     if (data.slotName) {
       state.slotName = data.slotName;
@@ -417,7 +430,9 @@ async function analyze({ loadSlot = false, replay = null } = {}) {
     hideMessage();
     state.lastAnalysis = data.analysis;
     renderAnalysis(data.analysis);
-    if (data.analysis.warnings.length) showMessage(data.analysis.warnings.map((item) => item.message).join(" "));
+    const messages = data.analysis.warnings.map((item) => item.message);
+    if (data.slotChanged) messages.unshift(`Switched to Steam ${data.slotName}. Cleared the previous slot's assumed victories, route and hidden sketches.`);
+    if (messages.length) showMessage(messages.join(" "), data.analysis.warnings.length ? "error" : "ok");
     if (!replay) pushHistory(data.analysis, { ...data.analysis.replayIdentity, settings, saveSource });
     else if (!data.analysis.warnings.length) showMessage("Repeated the saved analysis with its original settings.", "ok");
     renderHistory();
@@ -1186,6 +1201,7 @@ function setFunctionTab(tab) {
     const selected = button.dataset.functionTab === normalized;
     button.classList.toggle("selected", selected);
     button.setAttribute("aria-selected", String(selected));
+    button.tabIndex = selected ? 0 : -1;
   }
 }
 

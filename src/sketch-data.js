@@ -3,8 +3,8 @@ import path from "node:path";
 
 export function readGameBundle(dataPath) {
   if (path.extname(dataPath) === ".json") {
-    const { metadata, sketches } = JSON.parse(fs.readFileSync(dataPath, "utf8"));
-    return { dataMetadata: metadata, sketches };
+    const { metadata, sketches, shopUpgrades } = JSON.parse(fs.readFileSync(dataPath, "utf8"));
+    return { dataMetadata: metadata, sketches, ...(shopUpgrades && { shopUpgrades }) };
   }
   return { sketches: readSketchData(dataPath), dataMetadata: readDataMetadata(dataPath) };
 }

@@ -4,7 +4,7 @@ import { combatAssumptionsFromSave } from "./combat-assumptions.js";
 import { createDiagnosticReport, createModelAssumptionComparisons } from "./diagnostics.js";
 import { createFightTrace } from "./fight-trace.js";
 import { createCombatReport } from "./report.js";
-import { estimateRedrawOdds, parseMinimums } from "./redraw-planner.js";
+import { estimateRedrawOdds, isRedrawRarityEnabled, parseMinimums } from "./redraw-planner.js";
 import { projectVictories, simulateRoute } from "./route.js";
 import { parseRouteSpecs } from "./route-options.js";
 import { analyzeActiveSketches, analyzeSave } from "./save-analysis.js";
@@ -14,6 +14,7 @@ import { createStrategyPlan, parseStrategyCurrencyGoals } from "./strategy-plann
 import { remainingSketchVictories } from "./victory-limit.js";
 import { RewardProjectionError } from "./rewards.js";
 import { ANALYSIS_MODEL_VERSION } from "./model-version.js";
+import { STEAM_SHOP_CATALOG } from "./steam-shop-catalog.js";
 
 function sortedJsonKeys(_key, value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return value;
@@ -41,6 +42,7 @@ export function createWebAnalysis({
   save = decodeSaveText(saveText),
   sketches = {},
   dataMetadata = null,
+  shopUpgrades,
   targetId = "duct_taped_banana",
   assumedVictoryIds = [],
   assumedVictories = null,
@@ -70,7 +72,7 @@ export function createWebAnalysis({
       throw Object.assign(new Error("The save has changed. Load the original save to repeat this analysis."), { status: 409 });
     }
     // Sketch order determines redraw odds, so keep it in the catalog fingerprint.
-    const catalogHash = hash(JSON.stringify({ sketches: Object.entries(sketches), dataMetadata }, sortedJsonKeys));
+    const catalogHash = hash(JSON.stringify({ sketches: Object.entries(sketches), dataMetadata, shopUpgrades }, sortedJsonKeys));
     if (expectedCatalogHash && catalogHash !== expectedCatalogHash) {
       throw Object.assign(new Error("The catalog has changed since this analysis. Run a new analysis instead."), { status: 409 });
     }
@@ -84,6 +86,8 @@ export function createWebAnalysis({
 
   const hidden = new Set([...normalizeIds(save.state.hiddenSketches), ...normalizeIds(hiddenSketchIds)]);
   const state = { ...save.state, hiddenSketches: [...hidden] };
+  if (save.meta?.profile) state.saveProfile = save.meta.profile;
+  if (shopUpgrades) state[STEAM_SHOP_CATALOG] = shopUpgrades;
   const analysis = analyzeSave({ save: { ...save, state }, sketches, targetId: resolvedTargetId, dataMetadata });
   const statSource = analysis.stats.recommendedSource;
   const baseStats = analysis.stats.sources[statSource] ?? {};
@@ -498,7 +502,7 @@ function compareSketchRewards({ state, stats, sketches, pairedOptions, optionalP
     if (!results.has(id)) {
       results.set(id, optionalProjection(id, () => {
         const { stats: next, lastReward } = projectVictories({ baseStats: stats, sketches, state, ids: [id] });
-        const changed = sketches[id].rewards?.some(({ statName }) => next[statName] !== stats[statName]);
+        const changed = lastReward.statRewards?.some(({ statName }) => toNumber(next[statName]) !== toNumber(stats[statName]));
         return { simulation: changed ? simulateTarget({ ...pairedOptions, player: next }) : rewardBaseline, reward: lastReward };
       }));
     }
@@ -551,6 +555,7 @@ function createRollWishlist({
     target: [],
     maxed: [],
     invalid: [],
+    universeRarityDisabled: [],
   };
 
   const candidates = [];
@@ -562,6 +567,10 @@ function createRollWishlist({
     }
     if (!sketch?.stats || !ROLL_WISHLIST_RARITIES.has(sketch.rarity)) {
       if (id) excluded.invalid.push(id);
+      continue;
+    }
+    if (!isRedrawRarityEnabled(state, sketch.rarity)) {
+      excluded.universeRarityDisabled.push(id);
       continue;
     }
     if (guaranteed.has(id)) {

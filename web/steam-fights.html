@@ -88,6 +88,12 @@
           </div>
           <p id="resultStatus" role="status" class="log-status"></p>
           <button id="retryForecast" class="icon-button" type="button" hidden>Retry forecast</button>
+          <details id="archiveComparison">
+            <summary>Compare recorded fights by setup</summary>
+            <p>Each group shares a target, player and enemy stats, combat settings, game patch, catalog build and simulator model. Expected counts add up the forecasts for those attempts.</p>
+            <p id="comparisonStatus" role="status"></p>
+            <div id="comparisonGroups"></div>
+          </details>
         </section>
       </div>
     </main>

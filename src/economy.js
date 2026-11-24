@@ -1,11 +1,16 @@
 import {
-  currencyFundamentalKey,
   projectVictories,
   SECRET_STASH_COST,
   SHOP_UPGRADES,
   upgradeCost,
 } from "./route.js";
+import { currencyGeneratorIncome } from "./currency-generators.js";
+import { RewardProjectionError } from "./rewards.js";
 import { isFullSteamSave, toNumber } from "./save.js";
+import {
+  areStatUpgradesAvailable, missingUpgradeSkill, SECRET_STASH_ID, shopUpgradesForState, spendUpgradeCurrency, upgradeSpend,
+} from "./shop-upgrades.js";
+import { createSteamStatProjection } from "./steam-stat-projection.js";
 
 const SPECIAL_CURRENCIES = ["Photon", "Gold Leaf"];
 const DEFAULT_FARM_SECONDS = 3600;
@@ -56,7 +61,7 @@ export function createEconomyPlan({
     targetStatWeights,
     rewardWeights,
   });
-  const purchasePlan = createPurchasePlan(shopUpgrades, currencies);
+  const purchasePlan = createPurchasePlan(shopUpgrades, currencies, state);
   const generatorEV = createGeneratorEV({ state, windowSeconds });
   const effectiveSoftcapSeconds = softcap?.secondsToSoftcap ?? resolveSoftcapSeconds(state, softcapSeconds, referenceTimeMs);
   const softcapEV = createSoftcapEV({
@@ -118,26 +123,37 @@ function analyzeShopUpgrades({ state, stats, currencies, targetStatWeights, rewa
   const fundamentals = state.fundamentals ?? {};
   const shopLevels = numericObject(state.shopLevels ?? {});
   const secretStashUnlocked = isSecretStashUnlocked(state);
-  return Object.values(SHOP_UPGRADES)
+  const steam = isFullSteamSave(state);
+  const shopAvailable = areStatUpgradesAvailable(state);
+  return Object.values(shopUpgradesForState(state, SHOP_UPGRADES))
     .map((upgrade) => {
       const level = Math.max(0, Math.floor(toNumber(shopLevels[upgrade.id])));
       const capped = upgrade.maxLevel != null && level >= upgrade.maxLevel;
-      const hiddenLocked = Boolean(upgrade.hidden) && !secretStashUnlocked;
-      const cost = capped ? null : upgradeCost({ upgrade, level, fundamentals });
+      const requiredSkillId = missingUpgradeSkill(state, upgrade, secretStashUnlocked);
+      const hiddenLocked = Boolean(requiredSkillId);
+      const nextCost = capped ? null : upgradeCost({ upgrade, level, fundamentals, state });
+      const cost = Number.isFinite(nextCost) ? nextCost : null;
       const currentCurrency = toNumber(currencies[upgrade.currency]);
-      const affordable = cost != null && currentCurrency >= cost && !hiddenLocked && !capped;
       const statWeight = statUpgradeWeight({ statName: upgrade.statName, targetStatWeights, rewardWeights });
-      const marginalEffect = capped ? { multiplier: 1, percent: 0 } : marginalUpgradeEffect({ upgrade, level });
-      const marginalStatGain = marginalUpgradeStatGain({ stats, upgrade, marginalEffect });
-      const score = statWeight * Math.max(0, marginalEffect.percent);
+      const effect = capped ? { multiplier: 1, percent: 0 } : steam
+        ? steamUpgradeEffect({ state, stats, upgrade, level }) : marginalUpgradeEffect({ upgrade, level });
+      const statGain = effect?.statGain;
+      const marginalEffect = { multiplier: effect?.multiplier ?? null, percent: effect?.percent ?? null };
+      const affordable = shopAvailable && cost != null && currentCurrency >= cost && !hiddenLocked && !capped;
+      const marginalStatGain = steam ? statGain ?? null : marginalUpgradeStatGain({ stats, upgrade, marginalEffect });
+      const score = statWeight * Math.max(0, marginalEffect.percent ?? Math.log1p(statGain ?? 0) * 100);
       const roi = cost > 0 ? score / Math.log10(10 + cost) : 0;
       const recommendation = capped
         ? "capped"
+        : !shopAvailable
+          ? "locked_universe"
         : hiddenLocked
-          ? "locked_secret_stash"
+          ? requiredSkillId === SECRET_STASH_ID ? "locked_secret_stash" : "locked_required_skill"
+          : cost == null || !effect
+            ? "outside_numeric_range"
           : affordable && roi >= 0.15
             ? "buy_now"
-            : currentCurrency < toNumber(cost)
+            : currentCurrency < toNumber(cost) && (!steam || score > 0)
               ? "delay_until_currency"
               : "low_roi";
       return {
@@ -148,13 +164,15 @@ function analyzeShopUpgrades({ state, stats, currencies, targetStatWeights, rewa
         nextLevel: capped ? null : level + 1,
         maxLevel: upgrade.maxLevel ?? null,
         cost,
+        ...(cost != null && upgradeSpend(state, cost) !== cost && { spend: upgradeSpend(state, cost) }),
         currentCurrency: roundNumber(currentCurrency),
         affordable,
         hidden: Boolean(upgrade.hidden),
         hiddenLocked,
+        ...(upgrade.requiredSkillId && upgrade.requiredSkillId !== SECRET_STASH_ID && { requiredSkillId: upgrade.requiredSkillId }),
         capped,
         marginalEffect,
-        marginalStatGain: roundNumber(marginalStatGain),
+        marginalStatGain: marginalStatGain == null ? capped ? 0 : null : roundNumber(marginalStatGain),
         score: roundNumber(score),
         roi: roundNumber(roi),
         recommendation,
@@ -168,7 +186,7 @@ function analyzeShopUpgrades({ state, stats, currencies, targetStatWeights, rewa
     });
 }
 
-function createPurchasePlan(shopUpgrades, currencies) {
+function createPurchasePlan(shopUpgrades, currencies, state) {
   const remaining = { ...currencies };
   const buyNow = [];
   const delay = [];
@@ -179,7 +197,7 @@ function createPurchasePlan(shopUpgrades, currencies) {
       delay.push(item);
     } else if (item.recommendation === "buy_now") {
       buyNow.push({ ...item, currentCurrency });
-      remaining[item.currency] = currentCurrency - item.cost;
+      spendUpgradeCurrency(state, remaining, item.currency, item.cost);
     }
   }
   const locked = shopUpgrades.filter((item) => item.recommendation === "locked_secret_stash");
@@ -196,15 +214,8 @@ function createPurchasePlan(shopUpgrades, currencies) {
 }
 
 function createGeneratorEV({ state, windowSeconds }) {
-  const raw = numericObject(state.currencyGeneratorRates ?? state.generatorRates ?? state.generatorsPerSecond ?? {});
-  const fundamentals = state.fundamentals ?? {};
   const currencies = {};
-  for (const [currency, baseRate] of Object.entries(raw)) {
-    const key = currencyFundamentalKey(currency);
-    const globalMultiplier = toNumber(fundamentals.generatorMultiplier, 1);
-    const currencyMultiplier = toNumber(fundamentals[`${key}GeneratorMultiplier`], 1);
-    const multiplier = globalMultiplier * currencyMultiplier;
-    const perSecond = baseRate * multiplier;
+  for (const [currency, { baseRate, multiplier, perSecond }] of Object.entries(currencyGeneratorIncome(state))) {
     currencies[currency] = {
       baseRate: roundNumber(baseRate),
       multiplier: roundNumber(multiplier),
@@ -259,7 +270,7 @@ function createSecretStashEV({ state, shopUpgrades, generatorEV, profile }) {
   const quintessence = toNumber(state.quintessence);
   const missing = Math.max(0, SECRET_STASH_COST - quintessence);
   const hiddenUpgrades = shopUpgrades
-    .filter((item) => item.hidden)
+    .filter((item) => item.hidden && !item.requiredSkillId)
     .map((item) => ({
       ...item,
       materiality: secretUpgradeMateriality({ item, profile, generatorEV }),
@@ -343,13 +354,18 @@ function detectWastedRewards({ sketches, currentRows, state, stats, targetStatWe
     if (row.hidden) continue;
     const sketch = sketches[row.id];
     if (!sketch) continue;
-    const rewards = sketch.rewards ?? [];
-    const effectiveRewards = rewards.some(({ statName }) => statName === "attackSpeed")
-      ? projectVictories({ state, baseStats: stats, sketches, ids: [row.id] }).lastReward?.statRewards
-      : null;
-    for (const [index, reward] of rewards.entries()) {
+    let rewards = sketch.rewards ?? [];
+    if (isFullSteamSave(state)) {
+      try {
+        rewards = projectVictories({ state, baseStats: stats, sketches, ids: [row.id] }).lastReward?.statRewards ?? [];
+      } catch (error) {
+        if (!(error instanceof RewardProjectionError)) throw error;
+        rewards = [];
+      }
+    }
+    for (const reward of rewards) {
       const interval = reward.statName === "attackSpeed";
-      const amount = interval ? toNumber(effectiveRewards?.[index]?.amount) : toNumber(reward.amount);
+      const amount = toNumber(reward.amount);
       const gain = interval ? -amount : amount;
       const statWeight = toNumber(targetStatWeights[reward.statName], DEFAULT_STAT_WEIGHTS[reward.statName] ?? 0.25);
       if (gain <= 0) {
@@ -464,6 +480,26 @@ function marginalUpgradeEffect({ upgrade, level }) {
     multiplier: roundNumber(multiplier),
     percent: roundNumber(percent),
   };
+}
+
+function steamUpgradeEffect({ state, stats, upgrade, level }) {
+  const stat = upgrade.statName;
+  const projected = { [stat]: toNumber(stats[stat]) };
+  const current = projected[stat];
+  const projection = createSteamStatProjection(state, projected, { trackGlossary: false });
+  let delta;
+  try {
+    delta = projection.buyUpgrade(upgrade, level + 1);
+  } catch (error) {
+    if (!(error instanceof RewardProjectionError)) throw error;
+    return null;
+  }
+  const next = projected[stat];
+  const multiplier = current > 0 ? next / current : next === 0 ? 1 : null;
+  const statGain = stat === "attackSpeed" ? -delta : delta;
+  const relativeGain = stat === "attackSpeed" ? (next > 0 ? current / next - 1 : 0) : (current > 0 ? delta / current : null);
+  const percent = relativeGain == null ? null : roundNumber(relativeGain * 100);
+  return { multiplier: multiplier == null ? null : roundNumber(multiplier), percent, statGain };
 }
 
 function marginalUpgradeStatGain({ stats, upgrade, marginalEffect }) {

@@ -3,10 +3,13 @@ import { runMonteCarlo } from "./combat.js";
 import { combatAssumptionsFromSave } from "./combat-assumptions.js";
 import { confidenceInterval95 } from "./combat/math.js";
 import { enemyFromSketch } from "./combat/steam-encounter.js";
+import { generatorRates } from "./currency-generators.js";
 import { createEconomyPlan, resolveSoftcapSeconds } from "./economy.js";
-import { applySketchRewards, steamCurrencyPerkWinsRemaining, steamSketchRewards } from "./rewards.js";
-import { currencyRewardAmount, simulateRoute } from "./route.js";
-import { normalizeStats, toNumber } from "./save.js";
+import { RewardProjectionError, steamCurrencyPerkWinsRemaining, steamSketchRewards } from "./rewards.js";
+import { currencyRewardAmount, projectVictories, simulateRoute } from "./route.js";
+import { isFullSteamSave, normalizeStats, toNumber } from "./save.js";
+import { applySteamVictoryStatChanges, createSteamStatProjection } from "./steam-stat-projection.js";
+import { isSketchToolUnlocked } from "./tool-rules.js";
 import { remainingSketchVictories } from "./victory-limit.js";
 
 const DEFAULT_TARGET_WIN_RATE = 0.5;
@@ -197,6 +200,7 @@ export function createStrategyPlan({
   const opusValues = rankOpusStrategicValue({
     sketches,
     state,
+    baseStats: stats,
     targetStatWeights,
     goalCurrencies: normalizedGoalCurrencies,
     rewardWeights,
@@ -207,6 +211,7 @@ export function createStrategyPlan({
   const runEV = estimateRunEV({
     sketches,
     state,
+    baseStats: stats,
     currentRows,
     targetStatWeights,
     farmSeconds,
@@ -366,6 +371,7 @@ export function createStrategyPlan({
 export function rankOpusStrategicValue({
   sketches = {},
   state = {},
+  baseStats = state.playerStats,
   targetStatWeights = {},
   goalCurrencies = {},
   rewardWeights = DEFAULT_REWARD_WEIGHTS,
@@ -380,7 +386,7 @@ export function rankOpusStrategicValue({
   return Object.values(sketches)
     .filter((sketch) => sketch?.rarity === "opus" && !hiddenIds.has(sketch.id) && remainingSketchVictories(state, sketch.id) > 0)
     .map((sketch) => {
-      const steamRewards = estimateSteamPayout({ sketch, state });
+      const steamRewards = estimateSteamPayout({ sketch, state, baseStats });
       const statRewards = steamRewards?.statRewards ?? sketch.rewards;
       const currencyRewards = steamRewards?.currencyRewards ?? sketch.currencyRewards;
       const statScore = estimateStatRewardValue({ rewards: statRewards, targetStatWeights, steam: Boolean(steamRewards) });
@@ -926,7 +932,7 @@ function createResourceGap({ current, goal }) {
   };
 }
 
-function estimateRunEV({ sketches, state, currentRows, targetStatWeights, farmSeconds }) {
+function estimateRunEV({ sketches, state, baseStats, currentRows, targetStatWeights, farmSeconds }) {
   const currencies = {};
   const sketchesEV = [];
   const windowSeconds = Math.max(1, toNumber(farmSeconds, DEFAULT_FARM_SECONDS));
@@ -953,6 +959,7 @@ function estimateRunEV({ sketches, state, currentRows, targetStatWeights, farmSe
     const steamRewards = estimateSteamPayout({
       sketch,
       state,
+      baseStats,
       perkWinsRemaining,
       perkProbability: priorWinProbabilities.reduce((sum, chance) => sum + chance, 0),
     });
@@ -1119,9 +1126,13 @@ function compareBoosterChoices({
   maxSeconds,
   seed,
 }) {
+  if (!isSketchToolUnlocked(state, "booster")) return { recommendation: null, choices: [] };
   const hiddenIds = new Set(normalizeList(state.hiddenSketches));
+  const existing = new Set(normalizeList(state.boostedSketchIds));
+  const remaining = Math.max(0, 1 + toNumber(state.fundamentals?.rewardBoosterUses) - existing.size);
   const eligibleCandidates = normalizeCandidates(candidates)
-    .filter((candidate) => candidate.ids.every((id) => !hiddenIds.has(id)));
+    .filter((candidate) => candidate.ids.every((id) => !hiddenIds.has(id))
+      && (!isFullSteamSave(state) || new Set(candidate.ids.filter((id) => !existing.has(id))).size <= remaining));
   const choices = eligibleCandidates.map((candidate) => {
     const route = simulateRoute({
       sketches,
@@ -1136,7 +1147,7 @@ function compareBoosterChoices({
       seed: `${seed}:booster`,
     });
     const simulation = route.target?.simulation ?? {};
-    const statValue = estimateStatsObjectValue({ stats: route.finalStats, baseStats, targetStatWeights });
+    const statValue = estimateStatsObjectValue({ stats: route.finalStats, baseStats, targetStatWeights, steam: isFullSteamSave(state) });
     const currencyValue = estimateCurrencyBagValue(route.totalEarnedCurrencies);
     const score = toNumber(simulation.winRate) * 1000 + statValue + currencyValue;
     return {
@@ -1319,16 +1330,21 @@ function createWinRateCurve({
   sketches, state, assumptions, stats, current, currentRows, runEV, targetId, targetWinRate, trials, maxSeconds, seed,
 }) {
   const rowsById = new Map(currentRows.map((row) => [row.id, row]));
+  const glossary = isFullSteamSave(state) && Array.isArray(state.glossaryUnlocks)
+    && state.multiverse?.currentUniverseId !== "mv-easy-2" ? new Set(state.glossaryUnlocks) : null;
+  const resetMode = isFullSteamSave(state)
+    && ["mv-hard-2", "mv-medium-4"].includes(state.multiverse?.currentUniverseId);
   const optionsById = new Map(runEV.sketches.filter((item) => item.id !== targetId).map((item) => [item.id, {
     id: item.id,
     name: item.name,
     remaining: Math.ceil(rowsById.get(item.id).remainingToMax),
     winRate: rowsById.get(item.id).winRate,
-    rewards: (sketches[item.id].rewards ?? []).filter((reward) => toNumber(reward.amount) !== 0),
+    changesPlayer: (sketches[item.id].rewards ?? []).some((reward) => toNumber(reward.amount) !== 0)
+      || Boolean(glossary && !glossary.has(item.id)) || resetMode,
   }]));
   const queue = [...optionsById.values()].filter((item) => item.winRate > 0);
   const curve = [];
-  const rewardingCandidates = queue.filter((item) => item.rewards.length > 0);
+  const rewardingCandidates = queue.filter((item) => item.changesPlayer);
   if (!sketches[targetId]?.stats) {
     return { curve, improvesTarget: false, hasUnverifiedCandidates: rewardingCandidates.length > 0 };
   }
@@ -1339,14 +1355,7 @@ function createWinRateCurve({
   const simulate = (player) => runMonteCarlo({
     player, enemy, assumptions, trials: sampleTrials, maxSeconds, seed: `${seed}:farm-curve`,
   }).winRate;
-  const rewardOptions = {
-    sketches,
-    state,
-    boostedIds: new Set(normalizeList(state.boostedSketchIds)),
-    rewardDecay: toNumber(state.fundamentals?.rewardDecay, 1),
-    rewardBoosterEffect: toNumber(state.fundamentals?.rewardBoosterEffect, 50),
-  };
-  const projectedVictories = numericObject(state.sketchVictories);
+  let projectedState = state;
   let player = stats;
   let baseline;
   let winRate;
@@ -1372,20 +1381,20 @@ function createWinRateCurve({
       continue;
     }
     const previousPlayer = player;
-    if (item.rewards.length > 0) {
-      const nextPlayer = applySketchRewards({
-        ...rewardOptions,
-        baseStats: player,
-        defeatedIds: [item.id],
-        existingVictories: projectedVictories,
-      });
-      if (item.rewards.some(({ statName }) => nextPlayer[statName] !== player[statName])) {
+    try {
+      const result = projectVictories({ state: projectedState, baseStats: player, sketches, ids: [item.id] });
+      projectedState = result.state;
+      if (result.lastReward?.statRewards?.some(({ statName }) =>
+        toNumber(result.stats[statName]) !== toNumber(player[statName]))) {
         baseline ??= simulate(stats);
-        winRate = simulate(nextPlayer);
-        player = nextPlayer;
+        winRate = simulate(result.stats);
+        player = result.stats;
       }
+    } catch (error) {
+      if (!(error instanceof RewardProjectionError)) throw error;
+      unverifiedFight = true;
+      continue;
     }
-    projectedVictories[item.id] = (projectedVictories[item.id] ?? 0) + 1;
     if (item.remaining > 1 && previousPlayer !== player) {
       queue.push({ ...item, remaining: item.remaining - 1 });
     }
@@ -1397,7 +1406,7 @@ function createWinRateCurve({
       step: curve.length + 1,
       id: item.id,
       name: item.name,
-      victoryNumber: projectedVictories[item.id],
+      victoryNumber: projectedState.sketchVictories[item.id],
       projectedWinRate: roundNumber(nextProjected),
       gain: roundNumber(nextProjected - projected),
       reachesTarget: nextProjected >= targetWinRate && winRate > baseline
@@ -1410,9 +1419,9 @@ function createWinRateCurve({
     }
   }
   const hasUnverifiedCandidates = unverifiedFight
-    || queue.slice(nextIndex).some((item) => item.rewards.length > 0)
+    || queue.slice(nextIndex).some((item) => item.changesPlayer)
     || rewardingCandidates.length > 1
-    || (player !== stats && [...optionsById.values()].some((item) => item.winRate <= 0 && item.rewards.length > 0));
+    || (player !== stats && [...optionsById.values()].some((item) => item.winRate <= 0 && item.changesPlayer));
   return { curve, improvesTarget, hasUnverifiedCandidates };
 }
 
@@ -1509,7 +1518,7 @@ function rewardMultiplier({ state, id }) {
   return 1 / (1 + totalVictories * decay) * booster;
 }
 
-function estimateSteamPayout({ sketch, state, perkWinsRemaining = 0, perkProbability = 1 }) {
+function estimateSteamPayout({ sketch, state, baseStats, perkWinsRemaining = 0, perkProbability = 1 }) {
   const id = sketch.id;
   const victoriesBefore = toNumber(state.sketchVictories?.[id]);
   const rewardContext = {
@@ -1524,8 +1533,19 @@ function estimateSteamPayout({ sketch, state, perkWinsRemaining = 0, perkProbabi
   const afterPerk = perkWinsRemaining > 0 && perkProbability < 1
     ? steamSketchRewards({ ...rewardContext, newWins: perkWinsRemaining })
     : null;
+  let statRewards = (sketch.rewards ?? []).map((reward) => ({ ...reward, amount: rewards.statGain(reward) }));
+  if (baseStats && Object.keys(baseStats).length > 0) {
+    try {
+      const projection = createSteamStatProjection(state, { ...baseStats });
+      statRewards = [...applySteamVictoryStatChanges(projection, state, id, sketch, rewards.statGain)]
+        .map(([statName, amount]) => ({ statName, amount }));
+    } catch (error) {
+      if (!(error instanceof RewardProjectionError)) throw error;
+      statRewards = [];
+    }
+  }
   return {
-    statRewards: (sketch.rewards ?? []).map((reward) => ({ ...reward, amount: rewards.statGain(reward) })),
+    statRewards,
     currencyRewards: (sketch.currencyRewards ?? []).map((reward) => ({
       ...reward,
       amount: afterPerk
@@ -1563,19 +1583,6 @@ function totalEVValue({ currencies, quintessence, statValue, amountKey }) {
   return currencyValue + quintessenceValue + statValue;
 }
 
-function generatorRates(state) {
-  const raw = state.currencyGeneratorRates ?? state.generatorRates ?? state.generatorsPerSecond ?? {};
-  const rates = {};
-  const fundamentals = state.fundamentals ?? {};
-  for (const [currency, rate] of Object.entries(raw)) {
-    const key = currencyFundamentalKey(currency);
-    rates[currency] = toNumber(rate)
-      * toNumber(fundamentals.generatorMultiplier, 1)
-      * toNumber(fundamentals[`${key}GeneratorMultiplier`], 1);
-  }
-  return rates;
-}
-
 function quintessencePerSecond(state) {
   return toNumber(
     state.quintessencePerSecond
@@ -1592,12 +1599,12 @@ function estimatePassiveWaitValue({ state, seconds }) {
   return Math.log10(1 + Math.max(0, q)) + currency;
 }
 
-function estimateStatsObjectValue({ stats, baseStats, targetStatWeights }) {
+function estimateStatsObjectValue({ stats, baseStats, targetStatWeights, steam }) {
   let score = 0;
   for (const [stat, weight] of Object.entries(targetStatWeights)) {
     const delta = toNumber(stats[stat]) - toNumber(baseStats?.[stat]);
     if (delta === 0) continue;
-    score += signedLogAmount(delta) * weight;
+    score += signedLogAmount(steam && stat === "attackSpeed" ? -delta : delta) * weight;
   }
   return score;
 }
@@ -1623,19 +1630,6 @@ function secondsToGoal(missing, perSecond) {
 function signedLogAmount(amount) {
   const magnitude = Math.log10(1 + Math.abs(amount));
   return amount >= 0 ? magnitude : -magnitude * 1.5;
-}
-
-function currencyFundamentalKey(name) {
-  const parts = String(name)
-    .split(/[^A-Za-z0-9]+/)
-    .filter(Boolean);
-  return parts
-    .map((part, index) => {
-      const lower = part.charAt(0).toLowerCase() + part.slice(1);
-      if (index === 0) return lower;
-      return lower.charAt(0).toUpperCase() + lower.slice(1);
-    })
-    .join("");
 }
 
 function numericObject(raw = {}) {
