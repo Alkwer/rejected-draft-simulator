@@ -234,6 +234,7 @@ test("checkGameDataFreshness warns when local asset differs from current page", 
       <link rel="modulepreload" href="/rejected_draft/assets/artistLinks-NewHash.js">
       <script type="module" src="/rejected_draft/assets/main-NewHash.js"></script>
     `],
+    [GAME_URL + "assets/main-NewHash.js", ""],
   ]);
 
   const freshness = await checkGameDataFreshness({
@@ -248,24 +249,43 @@ test("checkGameDataFreshness warns when local asset differs from current page", 
   assert.equal(freshness.remote.mainAsset, "main-NewHash.js");
 });
 
+test("web freshness resolves imports from the main bundle and reports missing local data", async (t) => {
+  const cache = cacheWebCatalog(t);
+  const options = webImport(cache.dataPath, WEB_SKETCHES);
+  const current = { asset: "data-sketches-New.js", mainAsset: "main-New.js" };
+  const check = (localMetadata) => checkGameDataFreshness({ ...options, localMetadata });
+  assert.equal((await check(current)).stale, false);
+  assert.equal((await check({ ...current, asset: "data-sketches-Old.js" })).stale, true);
+  assert.equal((await check({ mainAsset: current.mainAsset })).stale, true);
+  fs.writeFileSync(cache.dataPath, "");
+  await assert.rejects(check(current), /Incomplete web sketch catalog/);
+  fs.unlinkSync(cache.dataPath);
+  assert.equal((await check(current)).warnings[0].code, "missing_local_catalog");
+  await assert.rejects(checkGameDataFreshness({ ...options, fetchImpl: createMockFetch(new Map([[GAME_URL, "<html></html>"]])) }), /main-.*asset/);
+});
+
 test("updateGameData uses last local data when offline fallback is enabled", async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rd-offline-"));
   const dataPath = path.join(dir, "artistLinks.js");
-  fs.writeFileSync(dataPath, "cached artist data");
+  fs.writeFileSync(dataPath, WEB_SKETCHES);
   fs.writeFileSync(path.join(dir, "metadata.json"), JSON.stringify({ asset: "artistLinks-Cached.js" }));
 
-  const result = await updateGameData({
+  const options = {
     dataPath,
     gameUrl: "https://example.test/rejected_draft/",
     fetchImpl: async () => {
       throw new Error("network unavailable");
     },
     offlineFallback: true,
-  });
+  };
+  const result = await updateGameData(options);
 
   assert.equal(result.updated, false);
   assert.equal(result.offline, true);
   assert.equal(result.metadata.asset, "artistLinks-Cached.js");
+  assert.equal(fs.readFileSync(dataPath, "utf8"), WEB_SKETCHES);
+  fs.writeFileSync(dataPath, "cached artist data");
+  await assert.rejects(updateGameData(options), /Incomplete web sketch catalog/);
   assert.equal(fs.readFileSync(dataPath, "utf8"), "cached artist data");
 });
 

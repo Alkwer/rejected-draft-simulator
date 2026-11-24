@@ -70,6 +70,27 @@ test("Steam import discovers a secondary library, verifies resources, and replac
   assert.equal(syncSteamCatalog({ ...options, steamDir: install }).updated, false);
   assert.equal(syncSteamCatalog({ ...options, check: true }).stale, false);
   const original = fs.readFileSync(dataPath, "utf8");
+  const cached = JSON.parse(original);
+  cached.sketches.sample.stats = Object.fromEntries(Object.entries(cached.sketches.sample.stats).reverse());
+  fs.writeFileSync(dataPath, JSON.stringify(cached));
+  assert.equal(syncSteamCatalog(options).updated, false, "stat field order does not change a forecast");
+  for (const key of ["storeAsset", "mainAsset", "appId"]) {
+    const changed = { ...cached, metadata: { ...cached.metadata, [key]: "obsolete" } };
+    fs.writeFileSync(dataPath, JSON.stringify(changed));
+    assert.equal(syncSteamCatalog({ ...options, check: true }).stale, true, key);
+    assert.equal(syncSteamCatalog(options).updated, true, key);
+  }
+  for (const unusable of [null, { metadata: cached.metadata, sketches: [null] },
+    { ...cached, sketches: { sample: { id: "sample", name: "Sample", rarity: "rough" } } },
+    { ...cached, shopUpgrades: { upgrade_sample: null } }]) {
+    const contents = JSON.stringify(unusable);
+    fs.writeFileSync(dataPath, contents);
+    assert.throws(() => syncSteamCatalog({ ...options, roots: [] }), /installation not found/);
+    assert.equal(syncSteamCatalog({ ...options, check: true }).stale, true);
+    assert.equal(fs.readFileSync(dataPath, "utf8"), contents);
+    assert.equal(syncSteamCatalog(options).updated, true);
+    assert.equal(fs.readFileSync(dataPath, "utf8"), original);
+  }
   for (const [settings, error] of [
     [{ profile: "steam-demo" }, /full Steam/],
     [{ checksum: "incorrect" }, /differs from/],
