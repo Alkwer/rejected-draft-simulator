@@ -129,7 +129,8 @@ export function analyzeBuildAdvice({
   const target = sketches[targetId] ?? { id: targetId, name: targetId, stats: {} };
   const profile = getTargetProfile(targetId, target);
   const stats = numericObject(baseStats ?? state.runStats ?? state.battleStats ?? state.playerStats ?? {});
-  const activeItems = getActiveRunItems({ sketches, state, targetId, profile });
+  const activeIds = state.availableSketches == null ? Object.keys(sketches) : normalizeList(state.availableSketches);
+  const activeItems = getActiveRunItems({ sketches, state, targetId, profile, activeIds });
   const allRanked = rankSketches({
     sketches: Object.fromEntries(Object.entries(sketches).filter(([id]) => id !== targetId)),
     profile,
@@ -142,8 +143,8 @@ export function analyzeBuildAdvice({
     tools: {
       guarantee: createGuaranteeAdvice({ ranked: allRanked, state, limit }),
       booster: createBoosterAdvice({ activeItems, state, limit }),
-      eraser: createEraserAdvice({ target, state }),
-      meditation: createMeditationAdvice({ sketches, state, targetId, profile, limit }),
+      eraser: activeIds.length || state.availableSketches == null ? createEraserAdvice({ target, state }) : [],
+      meditation: createMeditationAdvice({ sketches, state, targetId, profile, limit, activeIds }),
     },
     activeRun: {
       finish: activeItems.filter((item) => item.score > 0).slice(0, limit),
@@ -222,14 +223,9 @@ function problem(code, stat, current, target, message) {
   };
 }
 
-function getActiveRunItems({ sketches, state, targetId, profile }) {
-  const availableIds = normalizeList(state.availableSketches);
-  const ids = availableIds.length > 0
-    ? availableIds
-    : Object.keys(sketches);
-
+function getActiveRunItems({ sketches, state, targetId, profile, activeIds }) {
   return rankSketches({
-    sketches: Object.fromEntries(ids
+    sketches: Object.fromEntries(activeIds
       .filter((id) => id !== targetId)
       .filter((id) => remainingSketchVictories(state, id) > 0)
       .map((id) => [id, sketches[id]])
@@ -340,11 +336,11 @@ function createEraserAdvice({ target, state }) {
   }];
 }
 
-function createMeditationAdvice({ sketches, state, targetId, profile, limit }) {
+function createMeditationAdvice({ sketches, state, targetId, profile, limit, activeIds }) {
   const hidden = new Set(normalizeList(state.hiddenSketches));
-  const ids = normalizeList(state.availableSketches).length > 0 ? normalizeList(state.availableSketches) : Object.keys(sketches);
-  return ids
+  return activeIds
     .filter((id) => id !== targetId && !hidden.has(id))
+    .filter((id) => remainingSketchVictories(state, id) > 0 || toNumber(state.fundamentals?.beyondMaxVictories) > 0)
     .map((id) => meditationScore({ sketch: sketches[id], profile }))
     .filter((item) => item.score > 0)
     .sort((a, b) => b.score - a.score)

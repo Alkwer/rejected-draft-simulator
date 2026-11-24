@@ -891,6 +891,8 @@ function renderStrategyPlan(plan) {
   );
 
   const bestBooster = plan.boosters?.recommendation;
+  const stop = plan.stopFarming;
+  const farmRoute = stop?.targetStep && stop.curve.slice(0, stop.targetStep).map((step) => step.name).join(" → ");
   renderSimpleList(els.strategyDecisionsList, [
     {
       title: "Profile",
@@ -898,7 +900,7 @@ function renderStrategyPlan(plan) {
     },
     {
       title: "Stop farming",
-      detail: `${compactDecision(plan.stopFarming?.decision)} | ${plan.stopFarming?.reason ?? "--"}`,
+      detail: farmRoute ? `Win in order: ${farmRoute}` : `${compactDecision(stop?.decision)} | ${stop?.reason ?? "--"}`,
     },
     {
       title: "Masterpiece roll",

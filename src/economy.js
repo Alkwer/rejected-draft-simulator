@@ -1,10 +1,11 @@
 import {
   currencyFundamentalKey,
+  projectVictories,
   SECRET_STASH_COST,
   SHOP_UPGRADES,
   upgradeCost,
 } from "./route.js";
-import { toNumber } from "./save.js";
+import { isFullSteamSave, toNumber } from "./save.js";
 
 const SPECIAL_CURRENCIES = ["Photon", "Gold Leaf"];
 const DEFAULT_FARM_SECONDS = 3600;
@@ -31,7 +32,7 @@ const DEFAULT_STAT_WEIGHTS = {
 
 export function createEconomyPlan({
   state = {},
-  baseStats = state.currentRunStats ?? state.battleStats ?? state.playerStats ?? {},
+  baseStats = isFullSteamSave(state) ? state.playerStats : state.currentRunStats ?? state.battleStats ?? state.playerStats,
   sketches = {},
   currentRows = [],
   targetStatWeights = {},
@@ -83,6 +84,8 @@ export function createEconomyPlan({
     generatorEV,
   });
   const wastedRewards = detectWastedRewards({
+    state,
+    stats,
     sketches,
     currentRows,
     targetStatWeights,
@@ -321,17 +324,22 @@ function createCurrencyForecasts({ state, goalCurrencies, runEV, generatorEV }) 
     });
 }
 
-function detectWastedRewards({ sketches, currentRows, targetStatWeights, goalCurrencies }) {
+function detectWastedRewards({ sketches, currentRows, state, stats, targetStatWeights, goalCurrencies }) {
   const wasted = [];
-  const rows = currentRows.length > 0 ? currentRows : Object.values(sketches).map((sketch) => ({ id: sketch.id, winRate: 0 }));
-  for (const row of rows) {
+  for (const row of currentRows) {
     if (row.hidden) continue;
     const sketch = sketches[row.id];
     if (!sketch) continue;
-    for (const reward of sketch.rewards ?? []) {
-      const amount = toNumber(reward.amount);
+    const rewards = sketch.rewards ?? [];
+    const effectiveRewards = rewards.some(({ statName }) => statName === "attackSpeed")
+      ? projectVictories({ state, baseStats: stats, sketches, ids: [row.id] }).lastReward?.statRewards
+      : null;
+    for (const [index, reward] of rewards.entries()) {
+      const interval = reward.statName === "attackSpeed";
+      const amount = interval ? toNumber(effectiveRewards?.[index]?.amount) : toNumber(reward.amount);
+      const gain = interval ? -amount : amount;
       const statWeight = toNumber(targetStatWeights[reward.statName], DEFAULT_STAT_WEIGHTS[reward.statName] ?? 0.25);
-      if (amount <= 0) {
+      if (gain <= 0) {
         wasted.push(wastedReward(row, "zero_or_negative_reward", `${reward.statName} ${roundNumber(amount)}`));
       } else if (statWeight <= 0.05) {
         wasted.push(wastedReward(row, "low_marginal_stat", reward.statName));

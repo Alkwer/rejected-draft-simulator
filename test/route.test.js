@@ -100,6 +100,14 @@ test("one-pass forecasts match each separately simulated prefix, including skipp
   }
 });
 
+test("large finite balances survive route JSON export", () => {
+  const result = simulateRoute({ state: state({ currencies: { Photon: 2e307, Graphite: Number.MAX_VALUE } }),
+    sketches, routeIds: ["warmup"], includeStepForecasts: true });
+  const exported = JSON.parse(JSON.stringify(result));
+  assert.equal(exported.currencies.Photon, 2e307);
+  assert.equal(exported.steps[0].forecast.currencies.Graphite, Number.MAX_VALUE);
+});
+
 test("simulateRoute applies route rewards with decay and respects max victories", () => {
   const capped = simulateRoute({
     sketches,

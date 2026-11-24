@@ -129,6 +129,7 @@ test("farming currency or an irrelevant stat does not cross a nearby target thre
   )), [
     { projectedWinRate: 0.499, gain: 0, reachesTarget: false },
     { projectedWinRate: 0.499, gain: 0, reachesTarget: false },
+    { projectedWinRate: 0.499, gain: 0, reachesTarget: false },
   ]);
 });
 
@@ -253,6 +254,81 @@ test("farming uses the Steam universe for both the target and the next reward", 
   assert.ok(nextWinRate >= 0.7);
   assert.equal(plan.stopFarming.curve[0].reachesTarget, true);
   assert.equal(plan.stopFarming.decision, "farm_until_step");
+});
+
+test("farming checks a second win on the same sketch with decay and the victory cap", () => {
+  const options = {
+    sketches: {
+      ...sketches,
+      target: { ...sketches.target, stats: { ...sketches.target.stats, maxHp: 100 } },
+      opus_attack: { ...sketches.opus_attack, rewards: [{ statName: "attack", amount: 40 }] },
+    },
+    baseStats: { maxHp: 1000, attack: 42, attackSpeed: 1000, accuracy: 100, minDamage: 100, maxDamage: 100 },
+    targetId: "target",
+    targetSimulation: { winRate: 0 },
+    currentRun: { targets: [{ id: "opus_attack", winRate: 1, remainingToMax: 2 }] },
+    trials: 20,
+    maxSeconds: 1.5,
+  };
+  const twoWins = createStrategyPlan({ ...options, state: state() }).stopFarming;
+  assert.equal(twoWins.decision, "farm_until_step");
+  assert.equal(twoWins.targetStep, 2);
+  assert.equal(twoWins.targetSketchId, "opus_attack");
+  assert.deepEqual(twoWins.curve.map(({ id, victoryNumber, projectedWinRate }) => (
+    [id, victoryNumber, projectedWinRate]
+  )), [["opus_attack", 1, 0], ["opus_attack", 2, 1]]);
+
+  const atCap = createStrategyPlan({
+    ...options,
+    state: state({ fundamentals: { maxVictories: 1, rewardDecay: 1 } }),
+  }).stopFarming;
+  assert.equal(atCap.decision, "redraw");
+  assert.equal(atCap.hasUnverifiedCandidates, false);
+  assert.equal(atCap.curve.length, 1);
+
+  const steeperDecay = createStrategyPlan({
+    ...options,
+    state: state({ fundamentals: { maxVictories: 2, rewardDecay: 3 } }),
+  }).stopFarming;
+  assert.equal(steeperDecay.decision, "redraw");
+  assert.deepEqual(steeperDecay.curve.map(({ projectedWinRate }) => projectedWinRate), [0, 0]);
+});
+
+test("farming distinguishes unchecked repeats from a completed search of the visible path", () => {
+  const options = {
+    sketches: {
+      ...sketches,
+      opus_attack: { ...sketches.opus_attack, rewards: [{ statName: "attack", amount: 1 }] },
+    },
+    baseStats: { maxHp: 1000, attack: 42, attackSpeed: 1000, accuracy: 100, minDamage: 100, maxDamage: 100 },
+    targetId: "target",
+    targetSimulation: { winRate: 0 },
+    currentRun: { targets: [{ id: "opus_attack", winRate: 1 }] },
+    state: state({ fundamentals: { maxVictories: 250, rewardDecay: 1 } }),
+    trials: 2,
+    maxSeconds: 1.5,
+  };
+  const capped = createStrategyPlan(options).stopFarming;
+  assert.equal(capped.curve.length, 8);
+  assert.equal(capped.hasUnverifiedCandidates, true);
+  assert.equal(capped.decision, "farm_more");
+  assert.equal(capped.reason, "visible_rewards_need_target_verification");
+
+  const firstRewardWeakensPlayer = createStrategyPlan({
+    ...options,
+    state: state(),
+    sketches: {
+      ...options.sketches,
+      opus_attack: {
+        ...options.sketches.opus_attack,
+        stats: { ...sketches.opus_attack.stats, attack: 100, attackSpeed: 500 },
+        rewards: [{ statName: "maxHp", amount: -990 }, { statName: "attack", amount: 100 }],
+      },
+    },
+  }).stopFarming;
+  assert.equal(firstRewardWeakensPlayer.curve.length, 1);
+  assert.equal(firstRewardWeakensPlayer.hasUnverifiedCandidates, true);
+  assert.equal(firstRewardWeakensPlayer.decision, "farm_more");
 });
 
 test("an explicitly empty current run does not fall back to available sketches", () => {
@@ -651,6 +727,114 @@ test("strategy planner returns profile-specific tools, stop farming advice and p
   assert.equal(plan.profileComparison.length, 3);
   assert.ok(plan.profileComparison.some((item) => item.id === "farm-q" && item.estimatedRuns != null));
   assert.ok(plan.profileComparison.some((item) => item.id === "transcendent-paragon"));
+});
+
+test("the Paragon profile uses its own target's result and the effective threshold", () => {
+  const paragon = "transcendent_paragon";
+  const profile = "transcendent-paragon";
+  const options = {
+    sketches: { ...sketches, [paragon]: { ...sketches.target, id: paragon } },
+    state: state(),
+    targetId: "opus_currency",
+    targetSimulation: { winRate: 1, trials: 20 },
+    currentRun: { targets: [{ id: paragon, winRate: 0, trials: 20 }] },
+    compareProfiles: [profile],
+    trials: 20,
+  };
+  const selected = createStrategyPlan({ ...options, profile });
+  assert.deepEqual(selected.profile.goal, {
+    type: "target_win_rate", current: 0, goal: 0.6, missing: 0.6, targetId: paragon,
+  });
+  assert.notEqual(selected.profileProgress.decision, "goal_reached");
+  assert.deepEqual(selected.profileComparison[0].goal, selected.profile.goal);
+  assert.equal(selected.profileComparison[0].decision, selected.profileProgress.decision);
+
+  const compared = createStrategyPlan(options).profileComparison[0];
+  assert.deepEqual(compared.goal, selected.profile.goal);
+  assert.notEqual(compared.decision, "goal_reached");
+
+  const manual = createStrategyPlan({
+    ...options,
+    profile,
+    targetId: paragon,
+    targetSimulation: { winRate: 0.7, trials: 20 },
+    targetWinRate: 0.9,
+  });
+  assert.equal(manual.profile.goal.current, 0.7);
+  assert.equal(manual.profileProgress.missing, 0.2);
+  assert.notEqual(manual.profileProgress.decision, "goal_reached");
+  assert.deepEqual(manual.profileComparison[0].goal, manual.profile.goal);
+  assert.equal(manual.profileComparison[0].decision, manual.profileProgress.decision);
+
+  const manualComparison = createStrategyPlan({
+    ...options,
+    targetComparisons: [{ id: paragon, winRate: 0.7, trials: 20 }],
+    targetWinRate: 0.9,
+  }).profileComparison[0];
+  assert.deepEqual(manualComparison.goal, manual.profile.goal);
+  assert.equal(manualComparison.decision, manual.profileProgress.decision);
+});
+
+test("the Paragon profile simulates its target when it is absent from the current roll", () => {
+  const paragon = "transcendent_paragon";
+  const options = {
+    state: state(),
+    profile: "transcendent-paragon",
+    targetId: "opus_currency",
+    targetSimulation: { winRate: 1 },
+    currentRun: { targets: [] },
+    trials: 2,
+    maxSeconds: 1.5,
+  };
+  const inactive = createStrategyPlan({
+    ...options,
+    sketches: { ...sketches, [paragon]: { ...sketches.target, id: paragon } },
+  });
+  assert.equal(inactive.profile.goal.current, 0);
+  assert.notEqual(inactive.profileProgress.decision, "goal_reached");
+
+  const missing = createStrategyPlan({ ...options, sketches });
+  assert.equal(missing.profile.goal.current, null);
+  assert.equal(missing.profileProgress.decision, "target_win_rate_unknown");
+});
+
+test("Masterpiece profiles count and estimate only first wins on distinct sketches", () => {
+  const newMasterpiece = { ...sketches.target, id: "new_masterpiece" };
+  const previouslyDefeated = { ...sketches.target, id: "past_masterpiece" };
+  const plan = createStrategyPlan({
+    sketches: { ...sketches, [newMasterpiece.id]: newMasterpiece, [previouslyDefeated.id]: previouslyDefeated },
+    state: state({
+      sketchVictories: { target: 6, opus_attack: 2 },
+      sketchRunVictories: { target: 3, [previouslyDefeated.id]: 2 },
+      defeatedMasterpieceCount: 8,
+      fundamentals: { maxVictories: 10 },
+    }),
+    profile: "3-masterpiece",
+    compareProfiles: ["3-masterpiece", "4-masterpiece"],
+    targetId: "target",
+    targetSimulation: { winRate: 1 },
+    currentRun: { targets: [
+      { id: "target", winRate: 1 },
+      { id: previouslyDefeated.id, winRate: 1 },
+      { id: newMasterpiece.id, winRate: 0.5 },
+      { id: newMasterpiece.id, winRate: 0.5 },
+    ] },
+    trials: 1,
+  });
+
+  assert.deepEqual(plan.profile.goal, { type: "masterpiece_count", current: 2, goal: 3, missing: 1 });
+  assert.equal(plan.profileProgress.expectedPerRun, 0.5);
+  assert.equal(plan.profileProgress.averageRuns, 2);
+  assert.deepEqual(plan.profileComparison[1].goal, { type: "masterpiece_count", current: 2, goal: 4, missing: 2 });
+  assert.equal(plan.profileComparison[1].estimatedRuns, 4);
+});
+
+test("older aggregate Masterpiece counts preserve progress without guessing first clears", () => {
+  const result = createStrategyPlan({ sketches, targetId: "target", profile: "3-masterpiece",
+    state: { defeatedMasterpieceCount: 2 }, currentRun: { targets: [{ id: "target", winRate: 1 }] }, trials: 1 });
+  assert.equal(result.profile.goal.current, 2);
+  assert.equal(result.profileProgress.averageRuns, null);
+  assert.equal(result.profileProgress.decision, "first_clear_history_unknown");
 });
 
 test("strategy planner exposes Priority 17 economy planning", () => {

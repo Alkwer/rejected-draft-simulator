@@ -153,6 +153,33 @@ try {
   await page.locator("#snapshotStats").getByText(/2× for 0[.,]1 s, then 1×/).waitFor();
   await page.getByText(/but save is version 999/).waitFor();
   assert.equal(await page.locator("#fightPicker option").count(), 1);
+
+  const fightId = await page.locator("#fightPicker").inputValue();
+  const resultUrl = `/api/steam-fights/${fightId}/observation`;
+  const outcome = page.locator("#resultOutcome");
+  const elapsed = page.locator("#resultElapsed");
+  const submitResult = page.locator("#recordResult");
+  await outcome.selectOption("win");
+  await elapsed.fill("5");
+  const otherResult = await page.request.put(new URL(resultUrl, page.url()).href, {
+    data: { revision: 0, outcome: "loss", elapsedSeconds: 3 },
+  });
+  assert.equal(otherResult.status(), 200);
+  const conflict = page.waitForResponse((response) => response.url().endsWith(resultUrl));
+  await submitResult.click();
+  assert.equal((await conflict).status(), 409);
+  await page.getByText(/Review it above, then submit again/).waitFor();
+  assert.match(await page.locator("#actualOutcome").textContent(), /^Defeat/);
+  assert.equal(await outcome.inputValue(), "win");
+  assert.equal(await elapsed.inputValue(), "5");
+  const retry = page.waitForResponse((response) => response.url().endsWith(resultUrl));
+  await submitResult.click();
+  const { fight: corrected } = await (await retry).json();
+  assert.equal(corrected.revision, 2);
+  assert.equal(corrected.observation.outcome, "win");
+  assert.equal(corrected.observation.elapsedSeconds, 5);
+  await page.waitForFunction(() => document.querySelector("#actualOutcome").textContent.startsWith("Victory"));
+
   for (const width of [390, 768, 1440]) {
     await page.setViewportSize({ width, height: 900 });
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth), width, `Archive overflows at ${width}px`);

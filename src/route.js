@@ -823,7 +823,8 @@ function roundObject(raw = {}) {
 function roundNumber(value) {
   if (!Number.isFinite(value)) return value;
   if (value === 0) return 0;
-  const magnitude = Math.max(1, Math.abs(value));
-  const digits = magnitude >= 1e12 ? 12 : 1e12;
-  return Math.round(value * digits) / digits;
+  // Values at this scale already have limited fractional precision. Multiplying
+  // by a rounding factor can overflow even when the original balance is finite.
+  if (Math.abs(value) >= 1e12) return value;
+  return Math.round(value * 1e12) / 1e12;
 }
