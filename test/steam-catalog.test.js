@@ -7,16 +7,18 @@ import test from "node:test";
 import { syncSteamCatalog } from "../src/steam-catalog.js";
 import { readGameBundle } from "../src/sketch-data.js";
 
-function writeTestArchive(dir, { profile = "steam", stat = 40, checksum } = {}) {
+function writeTestArchive(dir, { profile = "steam", stat = 40, checksum, shopEffect = "e=>new D(1).plus(new D(.3).times(e))" } = {}) {
   const sketch = `const profiles={steam:{id:"steam",sketchStatOverrides:{},sketchRewardOverrides:{}},"steam-demo":{}};
     const version="v0.99",sketches=[{id:"sample",name:"Sample",rarity:"rough",stats:{maxHp:new D(${stat}),attack:1,attackSpeed:500},rewards:[]}];`;
   const store = "const $v=89,options={version:$v,skipHydration:true};";
+  const shop = `const upgrades=[{id:"upgrade_sample",stat:"attack",currency:"Wax",baseCost:new D("1e40"),costMultiplier:10,multiplier:${shopEffect},maxLevel:25,isHidden:!0}];`;
   const digest = (text) => createHash("sha256").update(text).digest("hex");
   const members = {
     "package.json": JSON.stringify({ name: "rejected-draft", version: "0.99.0" }),
     "dist/steam-build-renderer.json": JSON.stringify({ profile, target: "renderer", buildId: "fixture",
       files: { "assets/data-sketches-A.js": checksum ?? digest(sketch), "assets/game-store-A.js": digest(store),
-        "assets/main-A.js": digest("") } }),
+        "assets/data-skill-tree-A.js": digest(shop), "assets/main-A.js": digest("") } }),
+    "dist/assets/data-skill-tree-A.js": shop,
     "dist/assets/game-store-A.js": store,
     "dist/assets/data-sketches-A.js": sketch,
   };
@@ -61,12 +63,17 @@ test("Steam import discovers a secondary library, verifies resources, and replac
   assert.equal(first.metadata.gameVersion, "v0.99");
   assert.equal(first.metadata.saveVersion, 89);
   assert.equal(readGameBundle(dataPath).sketches.sample.stats.maxHp, 40);
+  assert.deepEqual(readGameBundle(dataPath).shopUpgrades.upgrade_sample, {
+    id: "upgrade_sample", statName: "attack", currency: "Wax", baseCost: 1e40, costMultiplier: 10,
+    perLevel: 0.3, maxLevel: 25, requiredSkillId: "stats-hidden-upgrades", hidden: true,
+  });
   assert.equal(syncSteamCatalog({ ...options, steamDir: install }).updated, false);
   assert.equal(syncSteamCatalog({ ...options, check: true }).stale, false);
   const original = fs.readFileSync(dataPath, "utf8");
   for (const [settings, error] of [
     [{ profile: "steam-demo" }, /full Steam/],
     [{ checksum: "incorrect" }, /differs from/],
+    [{ shopEffect: "e=>e*e" }, /Unsupported Steam shop upgrade/],
     [{ stat: '"1e500"' }, /numeric value/],
     [{ stat: 0 }, /Incomplete/],
   ]) {

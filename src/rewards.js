@@ -1,25 +1,30 @@
 import { steamUniverse } from "./combat/steam-encounter.js";
 import { STEAM_DECAY_IMMUNE_STATS } from "./combat/steam-universes.js";
 import { isFullSteamSave, toNumber } from "./save.js";
+import {
+  applySteamVictoryStatChanges, createSteamStatProjection, isSteamRawStats, RewardProjectionError,
+} from "./steam-stat-projection.js";
+import { isSketchToolUnlocked } from "./tool-rules.js";
 import { remainingSketchVictories } from "./victory-limit.js";
 
-// Final effective player-stat floor in Steam build 26823208.
-const STEAM_MIN_ATTACK_INTERVAL_MS = 500;
-export class RewardProjectionError extends RangeError {}
+export { RewardProjectionError };
 
 export function applySketchRewards({
   baseStats,
   sketches,
   defeatedIds,
   boostedIds = new Set(),
-  rewardDecay = 1,
-  rewardBoosterEffect = 50,
   state = {},
+  rewardDecay = isFullSteamSave(state) ? toNumber(state.fundamentals?.rewardDecay, 1) : 1,
+  rewardBoosterEffect = isFullSteamSave(state) ? toNumber(state.fundamentals?.rewardBoosterEffect, 50) : 50,
   existingVictories = state.sketchVictories ?? {},
 }) {
   const stats = { ...baseStats };
   const localVictories = { ...existingVictories };
-  const activeBoosters = isFullSteamSave(state) ? new Set([...boostedIds, ...(state.boostedSketchIds ?? [])]) : boostedIds;
+  const projection = createSteamStatProjection(state, stats, { raw: isSteamRawStats(state, baseStats) });
+  const activeBoosters = projection
+    ? new Set([...(isSketchToolUnlocked(state, "booster") ? boostedIds : []), ...(state.boostedSketchIds ?? [])])
+    : boostedIds;
 
   for (const id of defeatedIds) {
     const sketch = sketches[id];
@@ -27,7 +32,12 @@ export function applySketchRewards({
 
     const victoriesBefore = toNumber(localVictories[id]);
     if (remainingSketchVictories(state, id, victoriesBefore) <= 0) continue;
-    const steam = steamSketchRewards({ state, id, sketch, victoriesBefore, rewardDecay, rewardBoosterEffect, boosted: activeBoosters.has(id) });
+    if (projection) {
+      const steam = steamSketchRewards({ state, id, sketch, victoriesBefore, rewardDecay, rewardBoosterEffect, boosted: activeBoosters.has(id) });
+      applySteamVictoryStatChanges(projection, state, id, sketch, steam.statGain);
+      localVictories[id] = victoriesBefore + 1;
+      continue;
+    }
     const decayMultiplier = 1 / (1 + victoriesBefore * rewardDecay);
     const boosterMultiplier = boostedIds.has(id) ? 1 + rewardBoosterEffect / 100 : 1;
     const multiplier = decayMultiplier * boosterMultiplier;
@@ -35,8 +45,7 @@ export function applySketchRewards({
     for (const reward of sketch.rewards ?? []) {
       const statName = reward.statName;
       const currentValue = stats[statName] ?? 0;
-      const amount = steam ? steam.statGain(reward) : reward.amount * multiplier;
-      stats[statName] = applyStatReward(statName, currentValue, amount, Boolean(steam));
+      stats[statName] = applyStatReward(statName, currentValue, reward.amount * multiplier);
     }
 
     localVictories[id] = victoriesBefore + 1;
@@ -45,15 +54,10 @@ export function applySketchRewards({
   return stats;
 }
 
-export function applyStatReward(statName, currentValue, amount, steam = false) {
+export function applyStatReward(statName, currentValue, amount) {
   const nextValue = currentValue + amount;
   if (!Number.isFinite(nextValue)) throw new RewardProjectionError(`Projected ${statName} exceeds the numeric range.`);
-  if (statName !== "attackSpeed") return Math.max(0, nextValue);
-  if (!steam) return nextValue;
-  // Accumulated battle rewards are non-positive offsets. Effective player stats are intervals.
-  if (currentValue <= 0) return Math.min(0, nextValue);
-  // Preserve faster imported intervals when modeling a beneficial or zero reward.
-  return Math.max(Math.min(currentValue, STEAM_MIN_ATTACK_INTERVAL_MS), nextValue);
+  return statName === "attackSpeed" ? nextValue : Math.max(0, nextValue);
 }
 
 export function steamSketchRewards({

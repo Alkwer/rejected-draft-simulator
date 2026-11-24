@@ -1,14 +1,19 @@
 import { runMonteCarlo } from "./combat.js";
 import { combatAssumptionsFromSave } from "./combat-assumptions.js";
 import { buildSteamEnemy } from "./combat/steam-encounter.js";
+import { currencyFundamentalKey, generatorRates } from "./currency-generators.js";
 import { applyStatReward, steamCurrencyPerkWinsRemaining, steamSketchRewards } from "./rewards.js";
 import { createRng } from "./rng.js";
 import { normalizeStats, toNumber } from "./save.js";
-import { getPreciseEraserEligibility } from "./tool-rules.js";
+import {
+  areStatUpgradesAvailable, missingUpgradeSkill, SECRET_STASH_COST, SECRET_STASH_ID, shopUpgradesForState,
+  spendUpgradeCurrency, upgradeCost,
+} from "./shop-upgrades.js";
+import { applySteamVictoryStatChanges, createSteamStatProjection, isSteamRawStats } from "./steam-stat-projection.js";
+import { getPreciseEraserEligibility, isSketchToolUnlocked } from "./tool-rules.js";
 import { remainingSketchVictories } from "./victory-limit.js";
 
-const SECRET_STASH_ID = "stats-hidden-upgrades";
-export const SECRET_STASH_COST = 1e222;
+export { currencyFundamentalKey, SECRET_STASH_COST, upgradeCost };
 
 export const SHOP_UPGRADES = {
   upgrade_hp_graphite: {
@@ -127,8 +132,10 @@ const MEDITATION_EXCLUDED_STATS = new Set([
 ]);
 
 function createRewardLedger(state, baseStats) {
+  const stats = normalizeStats(baseStats);
   return {
-    stats: normalizeStats(baseStats),
+    stats,
+    projection: createSteamStatProjection(state, stats, { raw: isSteamRawStats(state, stats) }),
     currencies: numericObject(state.currencies ?? {}),
     totalEarnedCurrencies: numericObject(state.totalEarnedCurrencies ?? {}),
     totalBattleEarnedCurrencies: numericObject(state.totalBattleEarnedCurrencies ?? {}),
@@ -148,7 +155,10 @@ function creditVictory(ledger, state, sketch, id, boosted) {
   const steamRewards = steamSketchRewards({ state, id, sketch, victoriesBefore, boosted, newWins: ledger.newWins });
   const rewardMultiplier = createRewardMultiplier({ victoriesBefore, boosted, fundamentals, steamRewards });
   const multiplier = rewardMultiplier.total;
-  const statRewards = applyRewardsToStats({ stats: ledger.stats, rewards: sketch.rewards, multiplier, steamRewards });
+  const statRewards = ledger.projection
+    ? [...applySteamVictoryStatChanges(ledger.projection, state, id, sketch, steamRewards.statGain)]
+      .map(([statName, amount]) => ({ statName, amount: roundNumber(amount), finalValue: roundNumber(ledger.stats[statName]) }))
+    : applyRewardsToStats({ stats: ledger.stats, rewards: sketch.rewards, multiplier });
   const currencyRewards = applyCurrencyRewards({ ...ledger, rewards: sketch.currencyRewards, multiplier, fundamentals, steamRewards });
   ledger.victories[id] = victoriesBefore + 1;
   ledger.runVictories[id] = runVictoriesBefore + 1;
@@ -169,7 +179,7 @@ export function projectVictories({ state, baseStats, sketches, ids }) {
   return {
     stats: ledger.stats,
     lastReward,
-    state: { ...state, currencies: ledger.currencies, totalEarnedCurrencies: ledger.totalEarnedCurrencies,
+    state: { ...state, ...ledger.projection?.statePatch(), currencies: ledger.currencies, totalEarnedCurrencies: ledger.totalEarnedCurrencies,
       totalBattleEarnedCurrencies: ledger.totalBattleEarnedCurrencies,
       sketchVictories: ledger.victories, sketchRunVictories: ledger.runVictories,
       ...(perkWins && { currentUniverseBoostedCurrencyWins: toNumber(state.currentUniverseBoostedCurrencyWins) + perkWins }) },
@@ -199,7 +209,7 @@ export function simulateRoute({
   const fundamentals = numericObject(state.fundamentals ?? {});
   const savedStats = assumptions.steam ? state.playerStats : state.runStats ?? state.battleStats ?? state.playerStats;
   const ledger = createRewardLedger(state, baseStats ?? savedStats);
-  const { stats, currencies, totalEarnedCurrencies, totalBattleEarnedCurrencies, victories, runVictories } = ledger;
+  const { stats, projection, currencies, totalEarnedCurrencies, totalBattleEarnedCurrencies, victories, runVictories } = ledger;
   const generatedCurrencies = {};
   const shopLevels = numericObject(state.shopLevels ?? {});
   const steps = [];
@@ -220,6 +230,7 @@ export function simulateRoute({
     existingIds: normalizeList(state.boostedSketchIds),
     sketches,
     stats,
+    projection,
     currencies,
     totalEarnedCurrencies,
     totalBattleEarnedCurrencies,
@@ -240,6 +251,7 @@ export function simulateRoute({
 
   const meditationResult = applyMeditation({
     stats,
+    projection,
     sketch: meditation?.sketchId ? sketches[meditation.sketchId] : null,
     meditation,
     fundamentals,
@@ -250,7 +262,6 @@ export function simulateRoute({
     addGeneratedCurrencies({
       seconds: toNumber(routeSeconds),
       state,
-      fundamentals,
       currencies,
       totalEarnedCurrencies,
       generatedCurrencies,
@@ -261,9 +272,11 @@ export function simulateRoute({
     enabled: buyUpgrades,
     upgradeIds: normalizeList(buyUpgradeIds),
     stats,
+    projection,
     currencies,
     shop,
     fundamentals,
+    state,
     secretStash,
   });
 
@@ -280,7 +293,7 @@ export function simulateRoute({
       : { originalId, id, status: "missing" };
     if (step.status === "defeated") {
       buyAffordableUpgrades({ enabled: buyUpgrades, upgradeIds: normalizeList(buyUpgradeIds),
-        stats, currencies, shop, fundamentals, secretStash });
+        stats, projection, currencies, shop, fundamentals, state, secretStash });
     }
     if (includeStepForecasts) {
       if (target && trials > 0 && (!lastForecast || step.status === "defeated")) lastForecast = forecast();
@@ -382,6 +395,7 @@ function applyRequestedBoosters({
   existingIds,
   sketches,
   stats,
+  projection,
   currencies,
   totalEarnedCurrencies,
   totalBattleEarnedCurrencies,
@@ -399,6 +413,10 @@ function applyRequestedBoosters({
       tools.boostedApplied.push(id);
       continue;
     }
+    if (!isSketchToolUnlocked(state, "booster")) {
+      tools.boostedSkipped.push({ id, reason: "booster_locked" });
+      continue;
+    }
     if (uses >= maxUses) {
       tools.boostedSkipped.push({ id, reason: "no_booster_uses" });
       continue;
@@ -411,6 +429,7 @@ function applyRequestedBoosters({
       id,
       sketch: sketches[id],
       stats,
+      projection,
       currencies,
       totalEarnedCurrencies,
       totalBattleEarnedCurrencies,
@@ -427,6 +446,7 @@ function applyRetroactiveBooster({
   id,
   sketch,
   stats,
+  projection,
   currencies,
   totalEarnedCurrencies,
   totalBattleEarnedCurrencies,
@@ -440,7 +460,7 @@ function applyRetroactiveBooster({
   const decay = toNumber(fundamentals.rewardDecay, 1);
   const multiplier = boosterBonus * cumulativeRewardMultiplier(0, victoriesBefore, decay);
   const steamRewards = steamSketchRewards({ state, id, sketch, victoriesBefore, retroactive: true });
-  applyRewardsToStats({ stats, rewards: sketch.rewards, multiplier, steamRewards });
+  applyRewardsToStats({ stats, rewards: sketch.rewards, multiplier, steamRewards, projection });
   applyCurrencyRewards({
     currencies,
     totalEarnedCurrencies,
@@ -510,7 +530,7 @@ function resolveSwap({ originalId, sketches, swapState, tools }) {
   return { id: replacementId, swapped };
 }
 
-function applyMeditation({ stats, sketch, meditation, fundamentals, state }) {
+function applyMeditation({ stats, projection, sketch, meditation, fundamentals, state }) {
   if (!meditation?.sketchId || !sketch || (
     remainingSketchVictories(state, meditation.sketchId) <= 0 && toNumber(fundamentals.beyondMaxVictories) <= 0
   )) {
@@ -535,7 +555,8 @@ function applyMeditation({ stats, sketch, meditation, fundamentals, state }) {
   const multiplier = meditationMultiplier({ fundamentals, zone: meditation.zone });
 
   for (const statName of selectedStats) {
-    if (statName === "attackSpeed") stats[statName] = toNumber(stats[statName]) / multiplier;
+    if (projection) projection.addMeditation(statName, multiplier);
+    else if (statName === "attackSpeed") stats[statName] = toNumber(stats[statName]) / multiplier;
     else stats[statName] = toNumber(stats[statName]) * multiplier;
   }
 
@@ -596,39 +617,40 @@ function createSecretStashState({ state, buySecretStash }) {
   };
 }
 
-function buyAffordableUpgrades({ enabled, upgradeIds, stats, currencies, shop, fundamentals, secretStash }) {
+function buyAffordableUpgrades({ enabled, upgradeIds, stats, projection, currencies, shop, fundamentals, state, secretStash }) {
   if (!enabled || upgradeIds.length === 0) return;
 
   for (const id of upgradeIds) {
-    const upgrade = SHOP_UPGRADES[id];
+    const upgrade = shopUpgradesForState(state, SHOP_UPGRADES)[id];
     if (!upgrade) {
       shop.skipped.push({ id, reason: "unknown_upgrade" });
       continue;
     }
-    if (upgrade.hidden && !secretStash.unlocked) {
-      shop.skipped.push({ id, reason: "secret_stash_locked" });
+    if (!areStatUpgradesAvailable(state)) {
+      shop.skipped.push({ id, reason: "stat_upgrades_disabled" });
+      continue;
+    }
+    const missingSkill = missingUpgradeSkill(state, upgrade, secretStash.unlocked);
+    if (missingSkill) {
+      shop.skipped.push({ id, reason: missingSkill === SECRET_STASH_ID ? "secret_stash_locked" : "required_skill_locked",
+        ...(missingSkill !== SECRET_STASH_ID && { requiredSkillId: missingSkill }) });
       continue;
     }
 
-    let level = toNumber(shop.levels[id]);
+    let level = Math.max(0, Math.floor(toNumber(shop.levels[id])));
     while (upgrade.maxLevel == null || level < upgrade.maxLevel) {
-      const cost = upgradeCost({ upgrade, level, fundamentals });
+      const cost = upgradeCost({ upgrade, level, fundamentals, state });
       const currency = toNumber(currencies[upgrade.currency]);
-      if (currency < cost) break;
+      if (!Number.isFinite(cost) || level >= Number.MAX_SAFE_INTEGER || currency < cost) break;
 
-      currencies[upgrade.currency] = currency - cost;
-      applyUpgradeStat({ stats, upgrade, oldLevel: level, newLevel: level + 1 });
+      if (projection) projection.buyUpgrade(upgrade, level + 1);
+      else applyUpgradeStat({ stats, upgrade, oldLevel: level, newLevel: level + 1 });
+      spendUpgradeCurrency(state, currencies, upgrade.currency, cost);
       level += 1;
       shop.levels[id] = level;
       shop.purchased.push({ id, level, currency: upgrade.currency, cost: roundNumber(cost) });
     }
   }
-}
-
-export function upgradeCost({ upgrade, level, fundamentals }) {
-  const currencyKey = currencyFundamentalKey(upgrade.currency);
-  const discount = Math.max(0, 1 - toNumber(fundamentals[`${currencyKey}UpgradeCost`]) / 100);
-  return upgrade.baseCost * upgrade.costMultiplier ** level * discount;
 }
 
 function applyUpgradeStat({ stats, upgrade, oldLevel, newLevel }) {
@@ -645,24 +667,12 @@ function applyUpgradeStat({ stats, upgrade, oldLevel, newLevel }) {
 function addGeneratedCurrencies({
   seconds,
   state,
-  fundamentals,
   currencies,
   totalEarnedCurrencies,
   generatedCurrencies,
 }) {
-  const rates = numericObject(
-    state.currencyGeneratorRates
-      ?? state.generatorRates
-      ?? state.generatorsPerSecond
-      ?? {},
-  );
-  for (const [currency, rate] of Object.entries(rates)) {
-    if (rate <= 0) continue;
-    const key = currencyFundamentalKey(currency);
-    const amount = rate
-      * seconds
-      * toNumber(fundamentals.generatorMultiplier, 1)
-      * toNumber(fundamentals[`${key}GeneratorMultiplier`], 1);
+  for (const [currency, rate] of Object.entries(generatorRates(state))) {
+    const amount = rate * seconds;
     addCurrency({ bag: generatedCurrencies, name: currency, amount });
     addCurrency({ bag: currencies, name: currency, amount });
     addCurrency({ bag: totalEarnedCurrencies, name: currency, amount });
@@ -717,15 +727,16 @@ function cumulativeRewardMultiplier(start, count, rewardDecay) {
   return total;
 }
 
-function applyRewardsToStats({ stats, rewards = [], multiplier, steamRewards }) {
+function applyRewardsToStats({ stats, rewards = [], multiplier, steamRewards, projection }) {
   const applied = [];
   for (const reward of rewards ?? []) {
     const statName = reward.statName;
+    if (projection && (statName === "immunities" || statName === "vulnerability")) continue;
     const amount = steamRewards ? steamRewards.statGain(reward) : toNumber(reward.amount) * multiplier;
     const before = toNumber(stats[statName]);
-    stats[statName] = applyStatReward(statName, before, amount, Boolean(steamRewards));
-    const effectiveGain = steamRewards && statName === "attackSpeed" ? stats[statName] - before : amount;
-    applied.push({ statName, amount: roundNumber(effectiveGain), finalValue: roundNumber(stats[statName]) });
+    const effectiveGain = projection ? (amount === 0 ? 0 : projection.applyReward(statName, amount)) : amount;
+    if (!projection) stats[statName] = applyStatReward(statName, before, amount);
+    applied.push({ statName, amount: roundNumber(effectiveGain), finalValue: roundNumber(toNumber(stats[statName])) });
   }
   return applied;
 }
@@ -775,20 +786,6 @@ export function currencyRewardAmount({ name, amount, fundamentals }) {
 
 function addCurrency({ bag, name, amount }) {
   bag[name] = toNumber(bag[name]) + amount;
-}
-
-export function currencyFundamentalKey(name) {
-  const parts = String(name)
-    .split(/[^A-Za-z0-9]+/)
-    .filter(Boolean);
-  if (parts.length === 0) return "";
-  return parts
-    .map((part, index) => {
-      const lower = part.charAt(0).toLowerCase() + part.slice(1);
-      if (index === 0) return lower;
-      return lower.charAt(0).toUpperCase() + lower.slice(1);
-    })
-    .join("");
 }
 
 function numericObject(raw = {}) {

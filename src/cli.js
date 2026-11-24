@@ -49,6 +49,7 @@ import {
   exportMarkdownReport,
 } from "./report.js";
 import { readGameBundle } from "./sketch-data.js";
+import { STEAM_SHOP_CATALOG } from "./steam-shop-catalog.js";
 import { enemyFromSketch, sketchForEncounter, sketchWithEnemyStats } from "./combat/steam-encounter.js";
 import { createStrategyPlan, parseStrategyCurrencyGoals } from "./strategy-planner.js";
 
@@ -62,7 +63,8 @@ if (args.help || !args.save && !args["list-targets"] && !args["patch-sanity"]) {
 const needsSave = !args["list-targets"] && !args["patch-sanity"];
 const save = needsSave ? readSaveFile(resolveSavePath(args.save, { downloadsDir: args["downloads-dir"] })) : null;
 const dataPath = args.data ?? (save && !isSteamSave(save) ? LEGACY_DATA_PATH : DEFAULT_DATA_PATH);
-const { sketches, dataMetadata } = readGameBundle(dataPath);
+const { sketches, dataMetadata, shopUpgrades } = readGameBundle(dataPath);
+if (save && shopUpgrades) save.state[STEAM_SHOP_CATALOG] = shopUpgrades;
 
 if (args["list-targets"]) {
   const rarity = args.rarity;
@@ -973,7 +975,9 @@ function printThresholds(thresholds = []) {
 
 function printRedrawPlan({ target, redrawPlan }) {
   if (redrawPlan.mode === "find_new_sketches") {
+    const { exactRarity, newSketchPool } = redrawPlan.estimate;
     console.log("Mode: Find New Sketches");
+    if (exactRarity) console.log(`Exploratory rarity: ${exactRarity} (exact)`);
     console.log(`Trials: ${redrawPlan.estimate.trials}`);
     console.log(`Seed: ${redrawPlan.estimate.seed}`);
     console.log(`Total slots: ${redrawPlan.estimate.totalSlots}`);
@@ -983,10 +987,8 @@ function printRedrawPlan({ target, redrawPlan }) {
     console.log(`Within max redraws: ${(redrawPlan.estimate.probabilities.withinMaxRedraws * 100).toFixed(2)}%`);
     console.log(`Average redraws to new: ${redrawPlan.estimate.averageRedrawsToNew ?? "n/a"}`);
     console.log("");
-    console.log(`New-sketch pool: ${redrawPlan.estimate.newSketchPool.total} rough+ sketches`);
-    console.log(`Pool by rarity: ${formatMinimums(redrawPlan.estimate.newSketchPool.byRarity)}`);
-    console.log("");
-    console.log("Note: Find New Sketches is separate from Targeted Redraw minimums.");
+    console.log(`New-sketch pool: ${newSketchPool.total} sketches`);
+    console.log(`Pool by rarity: ${Object.entries(newSketchPool.byRarity).map(([rarity, count]) => `${rarity} ${count}`).join(", ")}`);
     return;
   }
 

@@ -30,6 +30,32 @@ const archivedForecast = {
   enemy: { maxHp: 1000 },
 };
 
+test("archive comparisons use one forecast per observed fight at the same horizon and setup", (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-group-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  function write(outcome, elapsedSeconds, overrides = {}) {
+    const id = randomUUID();
+    const dir = path.join(root, id);
+    fs.mkdirSync(path.join(dir, "result-1"), { recursive: true });
+    const forecast = { ...archivedForecast, modelVersion: "6", dataMetadata: { buildId: "build" }, ...overrides };
+    fs.writeFileSync(path.join(dir, "forecast.json"), JSON.stringify({
+      id, gameVersion: "patch", source: "export", capturedAt: "2026-11-24T00:00:00Z", forecast,
+    }));
+    fs.writeFileSync(path.join(dir, "result-1", "observation.json"), JSON.stringify({ outcome, elapsedSeconds }));
+  }
+  write("win", 1);
+  write("loss", 3, { trials: 20, player: { attack: 20, maxHp: 100 } });
+  write("timeout", 1);
+  write("loss", 1, { player: { attack: 21, maxHp: 100 } });
+  write("win", 1, { modelVersion: null });
+  const { groups, excluded } = handleSteamFightRequest({ root, pathname: "/api/steam-fights/comparisons", method: "GET" });
+  assert.equal(excluded, 2);
+  assert.equal(groups.length, 2);
+  assert.equal(groups[0].fights, 2);
+  assert.deepEqual(groups[0].observed, { win: 1, loss: 0, timeout: 1 });
+  assert.deepEqual(groups[0].expected, { win: 0.5, loss: 1.5, timeout: 0 });
+});
+
 async function startServer(options) {
   const server = createWebServer(options);
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));

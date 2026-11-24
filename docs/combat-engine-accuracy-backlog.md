@@ -4,7 +4,7 @@ Priority 26 is a parity backlog for moving the simulator closer to the current g
 
 ## Full Steam edition
 
-The catalog shipped here covers build 26823208, game v0.9771 and save schema 86. The next verification task is to capture observed Hyena Hulk fights using the [Steam fight log](../README.md#compare-a-steam-fight). Each completed entry pairs a pre-fight save with its target, catalog metadata, universe, seed, trial count, horizon and observed result. Compare repeated attempts within a single build and setup. Keep exports and local observations private unless deliberately prepared for sharing.
+The catalog shipped here covers build 26885190, game v0.9772 and save schema 87. The next verification task is to capture observed Hyena Hulk fights using the [Steam fight log](../README.md#compare-a-steam-fight). Each completed entry pairs a pre-fight save with its target, catalog metadata, universe, seed, trial count, horizon and observed result. The archive groups repeated attempts with matching setups and shows the expected and observed counts. Keep exports and local observations private unless deliberately prepared for sharing.
 
 ## Archived web reference
 

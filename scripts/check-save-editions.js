@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { chromium } from "playwright-core";
@@ -100,6 +100,45 @@ async function checkMoreTrials(browser, url) {
   }
 }
 
+async function checkSteamSlotSwitch(browser, url, dir) {
+  const page = await browser.newPage();
+  try {
+    for (const slot of [1, 2]) {
+      await writeFile(path.join(dir, `slot-${slot}.json`), JSON.stringify({ version: 87, meta: { profile: "steam", slot },
+        state: { availableSketches: ["little_stapler", "rorschach_bat"],
+          playerStats: { maxHp: 45000, attack: slot * 100, attackSpeed: 800, berserk: 0 } } }));
+    }
+    const marker = path.join(dir, "last-slot.txt");
+    await writeFile(marker, "1");
+    await page.goto(url);
+    await page.getByRole("tab", { name: "Run", exact: true }).click();
+    await page.locator("#targetSelect").selectOption("little_stapler");
+    await page.locator("#trialsSelect").selectOption("100");
+    await page.locator("#maxSecondsInput").fill("5");
+    async function analyze(button) {
+      const response = page.waitForResponse((r) => r.url().endsWith("/api/analyze"));
+      await button.click();
+      const data = await completedAnalysis(response);
+      await page.waitForFunction(() => !document.querySelector("#analyzeButton").disabled);
+      return data;
+    }
+    await analyze(page.getByRole("button", { name: "Use active Steam slot" }));
+    const assumed = page.locator('[data-sketch-id="little_stapler"] .assume-one-button');
+    assert.equal((await analyze(assumed)).analysis.finalStats.berserk, 0.7);
+    await writeFile(marker, "2");
+    const switched = await analyze(page.locator("#analyzeButton"));
+    assert.equal(switched.slotName, "slot-2.json");
+    assert.equal(switched.analysis.finalStats.attack, 200);
+    assert.equal(switched.analysis.finalStats.berserk, 0);
+    assert.deepEqual(switched.analysis.assumedVictories, {});
+    await page.getByText(/Switched to Steam slot-2.json/).waitFor();
+    assert.deepEqual(await page.evaluate(() => JSON.parse(localStorage.getItem("rd-sim-history"))[0].replay.settings.assumedVictories), {});
+    assert.equal((await analyze(page.locator("#analyzeButton"))).analysis.finalStats.berserk, 0);
+  } finally {
+    await page.close();
+  }
+}
+
 const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL || "chrome", headless: true });
 const testDir = await mkdtemp(path.join(os.tmpdir(), "rd-browser-"));
 const server = createWebServer({ updateDataOnImport: false, fightLogDir: path.join(testDir, "fights"), steamSaveDir: testDir });
@@ -109,6 +148,16 @@ try {
   const errors = [];
   page.on("pageerror", (error) => errors.push(error.message));
   await page.goto(`http://127.0.0.1:${server.address().port}/`);
+  const battleTab = page.getByRole("tab", { name: "Battle", exact: true });
+  await battleTab.press("ArrowRight");
+  const runTab = page.getByRole("tab", { name: "Run", exact: true });
+  assert.equal(await runTab.getAttribute("aria-selected"), "true");
+  await runTab.press("End");
+  await page.getByRole("tab", { name: "Compare", exact: true }).press("ArrowRight");
+  assert.equal(await battleTab.evaluate((tab) => tab === document.activeElement && tab.tabIndex === 0), true);
+  await battleTab.press("ArrowLeft");
+  await page.getByRole("tab", { name: "Compare", exact: true }).press("Home");
+  assert.equal(await battleTab.getAttribute("aria-selected"), "true");
   await page.getByRole("tab", { name: "Run", exact: true }).press("Enter");
   const target = page.locator("#targetSelect");
   await target.selectOption("little_stapler");
@@ -235,7 +284,7 @@ try {
   state.activeBattleSpeedupRemainingSeconds = 0.1;
   state.fundamentals = { ...state.fundamentals, timeAcceleration: 1, battleSpeedupRate: 2 };
   await page.locator("#logFile").setInputFiles({ name: "test-slot.json", mimeType: "application/json",
-    buffer: Buffer.from(JSON.stringify({ meta: { profile: "steam" }, version: 999, state })) });
+    buffer: Buffer.from(JSON.stringify({ meta: { profile: "steam", gameVersion: "v0.9772" }, version: 999, state })) });
   await page.getByText("Forecast settings", { exact: true }).click();
   await page.locator("#logTrials").fill("1");
   await page.locator("#captureForm button[type=submit]").click();
@@ -276,6 +325,9 @@ try {
   assert.equal(corrected.observation.outcome, "win");
   assert.equal(corrected.observation.elapsedSeconds, 5);
   await page.waitForFunction(() => document.querySelector("#actualOutcome").textContent.startsWith("Victory"));
+  await page.getByText("Compare recorded fights by setup").click();
+  await page.locator("#comparisonGroups").getByRole("heading", { name: "Hyena Hulk · 1 fight" }).waitFor();
+  assert.equal(await page.locator("#comparisonGroups tbody tr").first().locator("td").first().textContent(), "1");
 
   for (const width of [390, 768, 1440]) {
     await page.setViewportSize({ width, height: 900 });
@@ -284,6 +336,7 @@ try {
   assert.deepEqual(errors, []);
   await checkMobileImport(browser, server, `http://127.0.0.1:${server.address().port}/`);
   await checkMoreTrials(browser, `http://127.0.0.1:${server.address().port}/`);
+  await checkSteamSlotSwitch(browser, `http://127.0.0.1:${server.address().port}/`, testDir);
   console.log("Passed save imports, responsive layout, queued changes, history replay, censored times, diagnostics, hidden targets and Steam archive checks.");
 } finally {
   await browser.close();

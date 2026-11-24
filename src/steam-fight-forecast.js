@@ -80,6 +80,7 @@ export function steamFightSetup(save, targetId) {
   const assumptions = combatAssumptionsFromSave(save);
   // Only the requested target's memberships affect this encounter.
   assumptions.flowStateKnownTargetIds = assumptions.flowStateKnownTargetIds.filter((id) => id === targetId);
+  assumptions.flowStateActive = assumptions.flowStateActive && assumptions.flowStateKnownTargetIds.length > 0;
   assumptions.steam.erasedSketchIds = assumptions.steam.erasedSketchIds.filter((id) => id === targetId);
   return { player, assumptions };
 }

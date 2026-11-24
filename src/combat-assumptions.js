@@ -5,14 +5,36 @@ export function combatAssumptionsFromSave(save = {}) {
   const state = save?.state ?? save ?? {};
   const steam = isFullSteamSave(save);
   const battleSpeedup = steam && battleSpeedupFromState(state);
+  const flowTarget = steam ? steamFlowTarget(state, save.meta?.savedAt ?? state.lastSaveTime) : null;
+  const knownTargets = normalizeStringList(state.glossaryUnlocks);
   return {
     combatSpeedMultiplier: steam ? baseCombatSpeedMultiplier(state) : combatSpeedMultiplierFromState(state),
     ...(battleSpeedup && { battleSpeedup }),
-    flowStateActive: flowStateActiveFromState(state),
+    flowStateActive: steam ? Boolean(flowTarget) : flowStateActiveFromState(state),
     flowStateLevel: positiveFiniteOrDefault(state.fundamentals?.flowStateLevel, 0),
-    flowStateKnownTargetIds: normalizeStringList(state.glossaryUnlocks),
+    flowStateKnownTargetIds: steam ? knownTargets.filter((id) => id === flowTarget) : knownTargets,
     ...(steam && { steam: steamEncounterContext(state) }),
   };
+}
+
+// A manual Steam challenge starts without Flow State. Use the snapshot clock so
+// an exported fight and a history replay keep the same first-attack timing.
+function steamFlowTarget(state, savedAt) {
+  const combat = state.combatState;
+  if (combat?.isFighting) return combat.isInFlowState ? combat.enemyId : null;
+  const victory = combat?.lastVictory;
+  if (!victory || !Number.isFinite(victory.time) || !Number.isFinite(savedAt)
+      || savedAt < victory.time || savedAt - victory.time >= 5000
+      || state.queuedChallenge || state.trainingState?.isActive || state.combatDiscoveryAnimation?.blocking) return null;
+  if (Math.max(savedAt, toNumber(state.challengeCooldownUntil)) - victory.time >= 5000) return null;
+  // The next target can differ with randomizer/advance. Only credit a known start.
+  const retry = state.autoRetryActive && state.autoRetryUnlocked;
+  const challenge = state.autoChallengeActive && state.autoChallengeUnlocked;
+  const target = retry ? state.lastEnemyId : challenge ? victory.enemyId : null;
+  if (!target || (retry && state.randomizerActive && state.randomizerUnlocked)) return null;
+  const limit = state.reviewAuditUnlocked && state.autoAdvanceActive && state.autoAdvanceUnlocked
+    ? state.reviewAuditLimit : state.fundamentals?.maxVictories;
+  return toNumber(state.sketchVictories?.[target]) < toNumber(limit, 250) ? target : null;
 }
 
 export function combatSpeedMultiplierFromState(state = {}) {

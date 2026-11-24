@@ -176,6 +176,115 @@ test("Find New Sketches respects effective Steam rarity chances and a caller's w
   assert.equal(targeted.targetRates.duct, 1);
 });
 
+test("Steam Exploratory Exclusion counts exactly the selected rarity", () => {
+  const options = {
+    sketches: { rough_a: sketches.rough_a, opus_a: sketches.opus_a, duct: sketches.duct },
+    state: {
+      saveProfile: "steam",
+      selectedExploratoryRarity: "opus",
+      fundamentals: { exploratoryExclusion: 1, roughRarity: 100, opusRarity: 100, masterpieceRarity: 100 },
+      rarityChances: { rough: 100, opus: 100, masterpiece: 100 },
+      glossaryUnlocks: ["opus_a"],
+    },
+    trials: 10,
+    maxRedraws: 2,
+  };
+  const known = estimateFindNewSketchOdds(options);
+  assert.equal(known.exactRarity, "opus");
+  assert.equal(known.newSketchPool.total, 0);
+  assert.equal(known.probabilities.withinMaxRedraws, 0);
+
+  const unknown = estimateFindNewSketchOdds({ ...options, state: { ...options.state, glossaryUnlocks: [] } });
+  assert.equal(unknown.newSketchPool.total, 1);
+  assert.equal(unknown.newSketchPool.byRarity.opus, 1);
+  assert.equal(unknown.probabilities.singleRedrawNewSketch, 1);
+
+  const unfiltered = estimateFindNewSketchOdds({
+    ...options,
+    state: { ...options.state, fundamentals: { ...options.state.fundamentals, exploratoryExclusion: 0 } },
+  });
+  assert.equal(unfiltered.exactRarity, null);
+  assert.equal(unfiltered.probabilities.singleRedrawNewSketch, 1);
+});
+
+test("Steam Exploratory Exclusion falls back to an enabled rarity and can select Scrap", () => {
+  const state = {
+    saveProfile: "steam",
+    selectedExploratoryRarity: "opus",
+    multiverse: { currentUniverseId: "mv-easy-3" },
+    fundamentals: { exploratoryExclusion: 1, roughRarity: 100, opusRarity: 100 },
+    rarityChances: { rough: 100, opus: 100 },
+    glossaryUnlocks: ["rough_a", "rough_b"],
+  };
+  const options = {
+    sketches: { ...sketches, scrap_a: { id: "scrap_a", rarity: "scrap" } },
+    trials: 2000,
+    maxRedraws: 2,
+    seed: "scrap-selection",
+  };
+  const fallback = estimateFindNewSketchOdds({ ...options, state });
+  assert.equal(fallback.exactRarity, "rough");
+  assert.equal(fallback.poolSummary.byRarity.opus, 0);
+  assert.equal(fallback.probabilities.withinMaxRedraws, 0);
+
+  const scrap = estimateFindNewSketchOdds({ ...options, state: { ...state, selectedExploratoryRarity: "scrap" } });
+  assert.equal(scrap.exactRarity, "scrap");
+  assert.equal(scrap.newSketchPool.total, 1);
+  assert.equal(scrap.newSketchPool.byRarity.scrap, 1);
+  assert.ok(Math.abs(scrap.probabilities.singleRedrawNewSketch - 0.75) < 0.04);
+
+  const scrapFallback = estimateFindNewSketchOdds({
+    ...options,
+    state: { ...state, fundamentals: { ...state.fundamentals, roughRarity: 0 } },
+  });
+  assert.equal(scrapFallback.exactRarity, "scrap");
+
+  const unavailableScrap = estimateFindNewSketchOdds({
+    ...options,
+    state: { ...state, selectedExploratoryRarity: "scrap", multiverse: { currentUniverseId: "mv-easy-1" } },
+  });
+  assert.equal(unavailableScrap.exactRarity, "rough");
+  assert.equal(unavailableScrap.newSketchPool.total, 0);
+});
+
+test("Steam Targeted Redraw blocks unavailable rarities, including explicit guarantees and weight overrides", () => {
+  const state = {
+    saveProfile: "steam",
+    multiverse: { currentUniverseId: "mv-easy-1" },
+    targetedRedrawMins: { opus: 1 },
+    rarityChances: { rough: 100, opus: 100 },
+  };
+  const options = { sketches, state, minimums: { opus: 1 }, targetIds: ["opus_a"], trials: 10 };
+  const result = estimateRedrawOdds({ ...options, guaranteedIds: ["opus_a"], rarityWeights: { opus: 1 } });
+  assert.equal(result.poolSummary.byRarity.opus, 0);
+  assert.equal(result.targetRates.opus_a, 0);
+  assert.equal(result.probabilities.rarityMinimums, 0);
+  assert.equal(result.targetedRedraw.minimumChance, 0);
+  assert.equal(result.targetedRedraw.rarityChances.opus, 0);
+  assert.deepEqual(result.excludedTargets, [{ id: "opus_a", reason: "universe_rarity_disabled" }]);
+  assert.deepEqual(result.targetedRedraw.infeasibleReasons.map(({ code }) => code), [
+    "targeted_redraw_guarantee_unavailable", "targeted_redraw_insufficient_pool",
+  ]);
+
+  const ranking = recommendTargetedRedrawSettings(options);
+  assert.deepEqual(ranking.blockedCandidates.map(({ name }) => name), ["save_current"]);
+  assert.equal(ranking.recommendations[0].name, "rough_minimum");
+  assert.equal(ranking.recommendations[0].targetProbability, 0);
+});
+
+test("Steam Targeted Redraw cannot force a zero-chance rarity unless manually guaranteed", () => {
+  const options = {
+    sketches,
+    state: { saveProfile: "steam", rarityChances: { opus: 0 } },
+    minimums: { opus: 1 },
+    targetIds: ["opus_a"],
+    totalSlots: 1,
+    trials: 10,
+  };
+  assert.equal(estimateRedrawOdds(options).probabilities.rarityMinimums, 0);
+  assert.equal(estimateRedrawOdds({ ...options, guaranteedIds: ["opus_a"] }).targetRates.opus_a, 1);
+});
+
 test("Targeted Redraw respects the slot limit when guarantees or minimums overfill a draw", () => {
   const guaranteeOverflow = estimateRedrawOdds({
     sketches,

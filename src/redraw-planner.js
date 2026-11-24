@@ -1,7 +1,9 @@
+import { steamUniverse } from "./combat/steam-encounter.js";
 import { createRng } from "./rng.js";
 import { isFullSteamSave, toNumber } from "./save.js";
 
 const RARITIES = ["rough", "framed", "opus", "masterpiece"];
+const EXPLORATORY_RARITIES = ["scrap", ...RARITIES];
 const DEFAULT_RARITY_WEIGHTS = {
   rough: 65,
   framed: 25,
@@ -44,6 +46,7 @@ export function estimateRedrawOdds({
   }
   const normalizedTargets = unique(normalizeList(targetIds));
   const normalizedMinimums = normalizeMinimums(minimums);
+  const forcedIds = getForcedDrawIds({ state, guaranteedIds, unscrambledGuaranteeIds });
   const pool = buildRedrawPool({
     sketches,
     state,
@@ -52,12 +55,13 @@ export function estimateRedrawOdds({
     includeStarMasterpieces,
     starMasterpieceWeight,
     paragonWeightMultiplier,
+    excludeZeroChance: rarityWeights == null,
+    forcedIds,
   });
   const sketchChances = rarityWeights == null ? getSavedSketchChances({ sketches, state, pool }) : null;
   const slots = normalizeSlotCount(totalSlots == null
     ? savedSlotCount(state) || (sketchChances ? pool.items.length : sumMinimums(normalizedMinimums))
     : toNumber(totalSlots, sumMinimums(normalizedMinimums)));
-  const forcedIds = getForcedDrawIds({ state, guaranteedIds, unscrambledGuaranteeIds });
   const targetedRedraw = analyzeTargetedRedrawLimits({
     sketches,
     state,
@@ -65,6 +69,7 @@ export function estimateRedrawOdds({
     guaranteedIds,
     unscrambledGuaranteeIds,
     includeStarMasterpieces,
+    rarityWeights,
     totalSlots: slots,
   });
   const excludedTargets = normalizedTargets
@@ -130,7 +135,7 @@ export function estimateFindNewSketchOdds({
   sketches = {},
   state = {},
   totalSlots = null,
-  minimumRarity = "rough",
+  minimumRarity = null,
   maxRedraws = 100,
   includeStarMasterpieces = false,
   starMasterpieceWeight = 0.001,
@@ -139,6 +144,9 @@ export function estimateFindNewSketchOdds({
   trials = 5000,
   seed = "find-new-sketches",
 } = {}) {
+  const steam = isFullSteamSave(state);
+  const exactRarity = getExploratoryRarity(state);
+  const minimum = normalizeRarity(minimumRarity ?? "rough");
   const pool = buildRedrawPool({
     sketches,
     state,
@@ -147,24 +155,35 @@ export function estimateFindNewSketchOdds({
     includeStarMasterpieces,
     starMasterpieceWeight,
     paragonWeightMultiplier,
-    minimumRarity,
+    minimumRarity: steam ? "rough" : minimum,
+    excludeZeroChance: rarityWeights == null,
   });
+  const scrapChance = steam ? getSteamScrapChance(state) / 100 : 1;
+  const scrapPool = scrapChance < 1
+    ? Object.values(sketches).filter(({ id, rarity }) => rarity === "scrap" && !id.startsWith("training_dummy_"))
+    : [];
   const sketchChances = rarityWeights == null ? getSavedSketchChances({ sketches, state, pool }) : null;
   const slots = normalizeSlotCount(totalSlots == null
     ? savedSlotCount(state) || (sketchChances ? pool.items.length : 10)
     : toNumber(totalSlots, 10));
   const glossary = getGlossaryUnlocks(state);
-  const newSketchIds = new Set(
-    pool.items
-      .filter(({ id }) => glossary ? !glossary.has(id) : toNumber(state.sketchVictories?.[id]) <= 0)
-      .map((item) => item.id),
-  );
-  const newSketchPool = summarizePool({ items: pool.items.filter((item) => newSketchIds.has(item.id)), excludedIds: {} });
+  const isNew = ({ id, rarity }) => {
+    if (exactRarity ? rarity !== exactRarity : minimumRarity != null && rarityRank(rarity) < rarityRank(minimum)) {
+      return false;
+    }
+    return glossary ? !glossary.has(id) : toNumber(state.sketchVictories?.[id]) <= 0;
+  };
+  const newItems = [...pool.items, ...scrapPool].filter(isNew);
+  const newSketchIds = new Set(newItems.map(({ id }) => id));
+  const newSketchPool = summarizePool({ items: newItems, excludedIds: {} });
+  // Steam rolls Scrap independently of the Rough+ slot estimate.
+  const newScrapCount = newSketchPool.byRarity.scrap ?? 0;
+  const newScrapChance = 1 - (1 - scrapChance) ** newScrapCount;
   let singleRedrawHits = 0;
   let withinMaxRedrawHits = 0;
   let redrawsToNewTotal = 0;
 
-  for (let trial = 0; trial < trials; trial += 1) {
+  for (let trial = 0; newSketchIds.size > 0 && trial < trials; trial += 1) {
     let firstHit = null;
     for (let redraw = 1; redraw <= maxRedraws; redraw += 1) {
       const rng = createRng(`${seed}:${trial}:${redraw}`);
@@ -177,7 +196,7 @@ export function estimateFindNewSketchOdds({
         sketchChances,
         rng,
       });
-      const hit = run.ids.some((id) => newSketchIds.has(id));
+      const hit = run.ids.some((id) => newSketchIds.has(id)) || (newScrapChance > 0 && rng() < newScrapChance);
       if (redraw === 1 && hit) singleRedrawHits += 1;
       if (hit) {
         firstHit = redraw;
@@ -197,18 +216,21 @@ export function estimateFindNewSketchOdds({
     seed,
     totalSlots: slots,
     maxRedraws,
-    minimumRarity: normalizeRarity(minimumRarity),
+    minimumRarity: exactRarity ?? (minimumRarity == null && scrapChance < 1 ? "scrap" : minimum),
+    exactRarity,
     probabilities: {
       singleRedrawNewSketch: round(singleRedrawHits / safeTrials),
       withinMaxRedraws: round(withinMaxRedrawHits / safeTrials),
     },
     averageRedrawsToNew: withinMaxRedrawHits > 0 ? round(redrawsToNewTotal / withinMaxRedrawHits) : null,
     newSketchPool,
-    poolSummary: summarizePool(pool),
+    poolSummary: summarizePool({ ...pool, items: [...pool.items, ...scrapPool] }),
     warnings: [
       {
         code: "find_new_separate_mode",
-        message: "Find New Sketches ignores Targeted Redraw minimums and searches for any unseen Rough+ sketch.",
+        message: exactRarity
+          ? `Find New Sketches searches for unseen sketches of exactly ${exactRarity} rarity.`
+          : "Find New Sketches searches for any eligible unseen sketch.",
       },
     ],
   };
@@ -221,6 +243,7 @@ export function analyzeTargetedRedrawLimits({
   guaranteedIds = [],
   unscrambledGuaranteeIds = [],
   includeStarMasterpieces = false,
+  rarityWeights = null,
   totalSlots = null,
 } = {}) {
   const currentMinimums = normalizeMinimums(minimums ?? state.targetedRedrawMins ?? {});
@@ -252,15 +275,20 @@ export function analyzeTargetedRedrawLimits({
       guaranteeSlotDetails[rarity].reduce((sum, item) => sum + item.cost, 0),
     ]),
   );
-  const minimumChance = estimateTargetedMinimumChance({
-    sketches,
-    state,
-    minimums: currentMinimums,
-    guaranteedSelections: selectedByRarity,
+  const pool = buildRedrawPool({
+    sketches, state, includeStarMasterpieces, excludeZeroChance: rarityWeights == null, forcedIds,
   });
+  const poolCounts = summarizePool(pool).byRarity;
+  const infeasibleReasons = analyzeDrawFeasibility({ pool, poolCounts, forcedIds, minimums: currentMinimums, totalSlots: slots });
+  const minimumChance = RARITIES.some((rarity) => currentMinimums[rarity] > poolCounts[rarity])
+    ? 0
+    : estimateTargetedMinimumChance({
+        sketches,
+        state,
+        minimums: currentMinimums,
+        guaranteedSelections: selectedByRarity,
+      });
   const minimumChanceThreshold = toNumber(state.fundamentals?.targetedRedrawMinChance, 0);
-  const pool = buildRedrawPool({ sketches, includeStarMasterpieces });
-  const infeasibleReasons = analyzeDrawFeasibility({ pool, forcedIds, minimums: currentMinimums, totalSlots: slots });
   const overCapacity = RARITIES.filter((rarity) => capacityByRarity[rarity] != null
     && usedGuaranteeSlots[rarity] > capacityByRarity[rarity]);
   if (overCapacity.length > 0) {
@@ -355,14 +383,23 @@ export function recommendTargetedRedrawSettings({
   let resolvedCandidates = candidates;
   if (!resolvedCandidates) {
     const useSavedChances = options.rarityWeights == null && Object.keys(getSavedRarityChances(state)).length > 0;
-    const slots = totalSlots ?? (savedSlotCount(state) || (useSavedChances ? buildRedrawPool({ sketches, state, ...options }).items.length : null));
+    const hasUniverseRestrictions = RARITIES.some((rarity) => !isRedrawRarityEnabled(state, rarity));
+    const forcedIds = getForcedDrawIds({ state, guaranteedIds: options.guaranteedIds, unscrambledGuaranteeIds: options.unscrambledGuaranteeIds });
+    const pool = useSavedChances || hasUniverseRestrictions
+      ? buildRedrawPool({ sketches, state, ...options, forcedIds, excludeZeroChance: useSavedChances })
+      : null;
+    const slots = totalSlots ?? (savedSlotCount(state) || pool?.items.length || null);
     resolvedCandidates = buildTargetedRedrawCandidates({ state, totalSlots: slots });
+    if (hasUniverseRestrictions) {
+      resolvedCandidates = adaptUniverseCandidates({ candidates: resolvedCandidates, state, pool, slots });
+    }
   }
   const recommendations = [];
   const blockedCandidates = [];
   for (const candidate of resolvedCandidates) {
     const name = candidate.name ?? formatMinimums(candidate.minimums);
     const estimate = estimateRedrawOdds({
+      ...options,
       sketches,
       state,
       targetIds,
@@ -370,7 +407,6 @@ export function recommendTargetedRedrawSettings({
       totalSlots: totalSlots ?? candidate.totalSlots,
       trials,
       seed,
-      ...options,
     });
     const farmScore = estimateFarmScore({ sketches, minimums: candidate.minimums });
     const targetProbability = estimate.probabilities.anyTarget;
@@ -404,6 +440,39 @@ export function recommendTargetedRedrawSettings({
     recommendations,
     blockedCandidates,
   };
+}
+
+function adaptUniverseCandidates({ candidates, state, pool, slots }) {
+  const poolCounts = summarizePool(pool).byRarity;
+  const seen = new Set();
+  const results = [];
+  const savedMinimums = normalizeMinimums(state.targetedRedrawMins);
+  if (sumMinimums(savedMinimums) > 0) {
+    results.push({ name: "save_current", minimums: savedMinimums, totalSlots: slots });
+    seen.add(formatMinimums(savedMinimums));
+  }
+  for (const candidate of candidates) {
+    if (candidate.name === "save_current") continue;
+    const minimums = Object.fromEntries(
+      RARITIES.map((rarity) => [rarity, Math.min(candidate.minimums[rarity] ?? 0, poolCounts[rarity])]),
+    );
+    const key = formatMinimums(minimums);
+    const required = sumMinimums(minimums);
+    if (seen.has(key) || required <= 0 || (slots != null && required > slots)) continue;
+    seen.add(key);
+    const name = candidate.name === formatMinimums(candidate.minimums) ? key : candidate.name;
+    results.push({ name, minimums, totalSlots: slots });
+  }
+  if (slots > 0) {
+    for (const rarity of RARITIES) {
+      if (poolCounts[rarity] <= 0) continue;
+      const minimums = { [rarity]: 1 };
+      if (!seen.has(formatMinimums(minimums))) {
+        results.push({ name: `${rarity}_minimum`, minimums, totalSlots: slots });
+      }
+    }
+  }
+  return results;
 }
 
 export function evaluateCurrentRun({
@@ -575,10 +644,34 @@ function getRarityChances(state = {}) {
   ]));
 }
 
+export function isRedrawRarityEnabled(state, rarity) {
+  return !isFullSteamSave(state)
+    || !steamUniverse(state.multiverse?.currentUniverseId).disabledRarities?.includes(rarity);
+}
+
+function getSteamScrapChance(state) {
+  const universe = steamUniverse(state.multiverse?.currentUniverseId);
+  return Math.max(0, Math.min(100, universe.scrapRarityChance ?? toNumber(state.rarityChances?.scrap, 100)));
+}
+
+function getExploratoryRarity(state) {
+  if (!isFullSteamSave(state) || toNumber(state.fundamentals?.exploratoryExclusion) <= 0) return null;
+  const eligible = (rarity) => isRedrawRarityEnabled(state, rarity)
+    && (rarity === "scrap" ? getSteamScrapChance(state) < 100 : toNumber(state.fundamentals?.[`${rarity}Rarity`]) > 0);
+  const saved = state.selectedExploratoryRarity;
+  const selected = EXPLORATORY_RARITIES.includes(saved) ? saved : "rough";
+  if (eligible(selected)) return selected;
+  return RARITIES.find(eligible) ?? (eligible("scrap") ? "scrap" : null);
+}
+
 function getSavedRarityChances(state) {
   const steam = isFullSteamSave(state);
   const chances = {};
   for (const rarity of RARITIES) {
+    if (!isRedrawRarityEnabled(state, rarity)) {
+      chances[rarity] = 0;
+      continue;
+    }
     const fundamental = state.fundamentals?.[`${rarity}Rarity`];
     const effective = state.rarityChances?.[rarity];
     const preferred = toNumber(steam ? effective : fundamental, NaN);
@@ -655,9 +748,8 @@ function getForcedDrawIds({ state, guaranteedIds, unscrambledGuaranteeIds }) {
   ]);
 }
 
-function analyzeDrawFeasibility({ pool, forcedIds, minimums, totalSlots }) {
+function analyzeDrawFeasibility({ pool, poolCounts, forcedIds, minimums, totalSlots }) {
   const itemsById = Object.fromEntries(pool.items.map((item) => [item.id, item]));
-  const poolCounts = summarizePool(pool).byRarity;
   const forcedCounts = countRarities({ sketches: itemsById, ids: forcedIds });
   const requiredSlots = RARITIES.reduce((sum, rarity) => sum + Math.max(minimums[rarity], forcedCounts[rarity]), 0);
   const reasons = [];
@@ -768,17 +860,29 @@ function buildRedrawPool({
   starMasterpieceWeight = 0.001,
   paragonWeightMultiplier = 0.25,
   minimumRarity = "rough",
+  excludeZeroChance = false,
+  forcedIds = [],
 }) {
   const victories = state.sketchVictories ?? {};
   const excludedIds = {};
   const items = [];
+  const chances = excludeZeroChance && isFullSteamSave(state) ? getSavedRarityChances(state) : {};
+  const forced = new Set(forcedIds);
 
   for (const sketch of Object.values(sketches)) {
     if (sketch.id.startsWith("training_dummy_")) continue;
     if (!RARITIES.includes(sketch.rarity)) continue;
     if (rarityRank(sketch.rarity) < rarityRank(minimumRarity)) continue;
+    if (!isRedrawRarityEnabled(state, sketch.rarity)) {
+      excludedIds[sketch.id] = "universe_rarity_disabled";
+      continue;
+    }
     if (isStarMasterpiece(sketch) && !includeStarMasterpieces) {
       excludedIds[sketch.id] = "star_masterpiece_excluded";
+      continue;
+    }
+    if (chances[sketch.rarity] <= 0 && !forced.has(sketch.id)) {
+      excludedIds[sketch.id] = "zero_rarity_chance";
       continue;
     }
 
@@ -805,7 +909,7 @@ function summarizePool(pool) {
   let starMasterpieces = 0;
   let paragons = 0;
   for (const item of pool.items) {
-    byRarity[item.rarity] += 1;
+    byRarity[item.rarity] = (byRarity[item.rarity] ?? 0) + 1;
     if (item.starMasterpiece) starMasterpieces += 1;
     if (item.paragon) paragons += 1;
   }
@@ -844,10 +948,22 @@ function sketchFarmValue(sketch) {
 
 function createPlannerWarnings({ excludedTargets, includeStarMasterpieces, searchNew }) {
   const warnings = [];
-  if (excludedTargets.length > 0) {
+  if (excludedTargets.some(({ reason }) => reason === "star_masterpiece_excluded")) {
     warnings.push({
       code: "excluded_star_masterpiece_target",
       message: "One or more target ids are (*) Masterpieces and are excluded by default.",
+    });
+  }
+  if (excludedTargets.some(({ reason }) => reason === "universe_rarity_disabled")) {
+    warnings.push({
+      code: "excluded_universe_rarity_target",
+      message: "One or more targets have a rarity disabled in this universe.",
+    });
+  }
+  if (excludedTargets.some(({ reason }) => reason === "zero_rarity_chance")) {
+    warnings.push({
+      code: "excluded_zero_rarity_chance_target",
+      message: "One or more targets have a 0% rarity chance in this save and are not guaranteed.",
     });
   }
   if (includeStarMasterpieces) {
@@ -910,7 +1026,8 @@ function normalizeSlotCount(value) {
 
 function savedSlotCount(state) {
   const counts = state.runTotalSketchCountsByRarity ?? state.availableSketchCountsByRarity;
-  const total = RARITIES.reduce((sum, rarity) => sum + toNumber(counts?.[rarity]), 0);
+  const total = RARITIES.filter((rarity) => isRedrawRarityEnabled(state, rarity))
+    .reduce((sum, rarity) => sum + toNumber(counts?.[rarity]), 0);
   return Math.max(0, total);
 }
 
@@ -919,8 +1036,8 @@ function inferTargetedRedrawTotalSlotsFromState(state = {}, minimums = {}) {
 }
 
 function rarityRank(rarity) {
-  const index = RARITIES.indexOf(normalizeRarity(rarity));
-  return index < 0 ? 0 : index;
+  const index = EXPLORATORY_RARITIES.indexOf(normalizeRarity(rarity));
+  return index < 0 ? 1 : index;
 }
 
 function normalizeList(value) {

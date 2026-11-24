@@ -33,6 +33,40 @@ test("CLI runs a JSON simulation against a fixture save", () => {
   assert.equal(parsed.appliedIds.length, 0);
 });
 
+test("CLI reports exact Steam Exploratory Redraw when only a different rarity is new", () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "rejected-draft-redraw-"));
+  const file = path.join(directory, "save.json");
+  try {
+    const catalog = JSON.parse(fs.readFileSync(path.join(projectRoot, "data", "steam-catalog.json"), "utf8"));
+    const state = {
+      saveProfile: "steam",
+      playerStats: { maxHp: 100, attack: 10, attackSpeed: 1000 },
+      selectedExploratoryRarity: "opus",
+      fundamentals: { exploratoryExclusion: 1, roughRarity: 100, opusRarity: 100 },
+      rarityChances: { rough: 100, framed: 0, opus: 100, masterpiece: 0 },
+      glossaryUnlocks: Object.values(catalog.sketches).filter(({ rarity }) => rarity === "opus").map(({ id }) => id),
+    };
+    fs.writeFileSync(file, JSON.stringify({ version: catalog.metadata.saveVersion, state }));
+    const args = ["src/cli.js", "--save", file, "--target", "duct", "--plan-redraw", "--find-new-sketches",
+      "--trials", "10", "--max-redraws", "2", "--seed", "exact-exploratory"];
+    const options = { cwd: projectRoot, encoding: "utf8" };
+
+    const json = spawnSync(process.execPath, [...args, "--json"], options);
+    assert.equal(json.status, 0, json.stderr);
+    const { estimate } = JSON.parse(json.stdout).redrawPlan;
+    assert.equal(estimate.exactRarity, "opus");
+    assert.equal(estimate.newSketchPool.total, 0);
+    assert.equal(estimate.probabilities.withinMaxRedraws, 0);
+
+    const plain = spawnSync(process.execPath, args, options);
+    assert.equal(plain.status, 0, plain.stderr);
+    assert.match(plain.stdout, /Exploratory rarity: opus \(exact\)/);
+  } finally {
+    fs.rmSync(file, { force: true });
+    fs.rmdirSync(directory);
+  }
+});
+
 test("CLI route reports use the erased enemy's HP for the DPS threshold", () => {
   const result = spawnSync(process.execPath, ["src/cli.js", "--save", fixtureSave, "--target", "rorschach_bat",
     "--route", "mariline", "--erase", "rorschach_bat", "--trials", "1", "--max-seconds", "10", "--json"],

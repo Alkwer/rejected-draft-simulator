@@ -86,6 +86,23 @@ test("Steam reward forecasts preserve a fast imported player and the verified ef
   }
 });
 
+test("Steam analysis uses imported shop effects for rewards, recommendations and replay identity", () => {
+  const state = { availableSketches: ["farm_a"], shopLevels: { upgrade_test: 2 },
+    playerStats: { attack: 100, maxHp: 100, attackSpeed: 1000 } };
+  const upgrade = { id: "upgrade_test", statName: "attack", currency: "Wax", baseCost: 10, costMultiplier: 2,
+    perLevel: 0.5, maxLevel: 10, hidden: false };
+  const options = { save: { meta: { profile: "steam" }, state }, sketches, shopUpgrades: { upgrade_test: upgrade }, identifyInputs: true,
+    targetId: "duct", trials: 1, maxSeconds: 5, assumedVictories: { farm_a: 1 } };
+  const result = createWebAnalysis(options);
+  assert.equal(result.finalStats.attack, 2100);
+  const [row] = result.strategicPlan.economy.shopUpgrades;
+  assert.equal(row.id, "upgrade_test");
+  assert.equal(row.cost, 40);
+  assert.throws(() => createWebAnalysis({ ...options, expectedCatalogHash: result.replayIdentity.catalogHash,
+    expectedModelVersion: result.replayIdentity.modelVersion,
+    shopUpgrades: { upgrade_test: { ...upgrade, perLevel: 0.25 } } }), /catalog has changed/);
+});
+
 test("web route previews serialize finite late-game currency balances", () => {
   const state = { saveProfile: "steam", playerStats: { maxHp: 1000, attack: 100, attackSpeed: 1000 },
     availableSketches: ["farm_a"], currencies: { Photon: 2e307 } };
@@ -153,6 +170,19 @@ test("wishlist uses per-sketch redraw probabilities with saved rarity chances, c
   assert.equal(share(), 1);
   state.targetedRedrawMins = { opus: 2 };
   assert.equal(share(), null);
+});
+
+test("wishlist excludes sketches with a rarity disabled by the current Steam universe", () => {
+  const state = {
+    saveProfile: "steam",
+    multiverse: { currentUniverseId: "mv-easy-1" },
+    playerStats: { maxHp: 100, attack: 10, attackSpeed: 1000 },
+    availableSketches: ["farm_a"],
+    rarityChances: { opus: 100 },
+  };
+  const { rollWishlist } = createWebAnalysis({ sketches, save: { state }, targetId: "duct", trials: 1, maxSeconds: 5 });
+  assert.ok(rollWishlist.excluded.universeRarityDisabled.includes("farm_a"));
+  assert.ok(!rollWishlist.items.some(({ id }) => id === "farm_a"));
 });
 
 test("createWebAnalysis decodes save text, applies checked route sketches and returns UI sections", () => {
@@ -393,7 +423,7 @@ test("a precise sample still reports an unverified Steam build", () => {
   assert.equal(diagnostics.sample.trials, 1000);
   assert.equal(diagnostics.modelBuild.status, "unverified");
   assert.notEqual(diagnostics.confidence.level, "high");
-  const matched = createWebAnalysis({ ...input, dataMetadata: { ...dataMetadata, buildId: "26823208" } });
+  const matched = createWebAnalysis({ ...input, dataMetadata: { ...dataMetadata, buildId: "26885190" } });
   assert.equal(matched.diagnostics.modelBuild.status, "verified");
   assert.deepEqual(matched.diagnostics.sample, diagnostics.sample);
 });

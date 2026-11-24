@@ -1,6 +1,6 @@
 # Rejected Draft Simulator
 
-Local Monte Carlo combat simulator for the full Steam edition of Rejected Draft. The included catalog covers **v0.9771, Steam build 26823208, save schema 86**. It contains 232 sketches and four training dummies.
+Local Monte Carlo combat simulator for the full Steam edition of Rejected Draft. The included catalog covers **v0.9772, Steam build 26885190, save schema 87**. It contains 232 sketches, four training dummies and 53 stat upgrades.
 
 ## Requirements
 
@@ -28,7 +28,7 @@ To open the browser automatically from the command line:
 npm.cmd run dev:open
 ```
 
-Open the printed local URL, usually `http://127.0.0.1:5173`. Under **Run**, choose a target and click **Use active Steam slot**. Further simulations read that slot from disk. You can also open a specific `slot-N.json`, choose an exported `.txt` file, or paste an export. The simulator reads saves locally. Each fight starts at full health.
+Open the printed local URL, usually `http://127.0.0.1:5173`. Under **Run**, choose a target and click **Use active Steam slot**. Further simulations follow the active slot on disk. Changing slots in Steam clears the previous slot’s assumed victories, route and manually hidden sketches on the next analysis. You can also open a specific `slot-N.json`, choose an exported `.txt` file, or paste an export. The simulator reads saves locally. Each fight starts at full health.
 
 Loading a new export clears the previous save's assumed victories, route and hidden sketches. On a phone, use **Run simulation** below the pasted export. The battle result appears as soon as it is ready. Strategy and comparisons follow when their simulations finish.
 
@@ -41,7 +41,7 @@ npm.cmd run simulate -- --save latest --target mega_pan --trials 500
 
 Under **Compare**, **Repeat analysis** restores a history entry's target, seed, trial count, time limit and planner settings. Softcap deadlines use the original analysis time. Replay checks the saved model version and fingerprints of the save and catalog. JSON object keys in a save can appear in any order. Array order and the sketch order in the catalog affect the simulation and are checked. For an export, load the original file first. For a changed Steam slot, you can also use an exported copy of the original save. History keeps the last 12 entries locally. Entries from unknown or different model versions remain available for viewing.
 
-After a Steam patch, use **Refresh Steam data** or run `npm.cmd run update-data`. The import reads the installed game's renderer manifest, verifies the sketch and store assets, and refreshes the local catalog. It works offline. To select a custom installation:
+After a Steam patch, use **Refresh Steam data** or run `npm.cmd run update-data`. The import checks the sketch, store and skill-tree assets against the installed renderer manifest and refreshes the local catalog. It works offline. To select a custom installation:
 
 ```powershell
 npm.cmd run update-data -- --steam-dir "D:\SteamLibrary\steamapps\common\Rejected Draft"
@@ -64,6 +64,8 @@ Each Steam forecast records its simulator model version, catalog build, simulati
 The comparison shows how often the observed outcome occurred in the simulations, the difference from their median duration and whether the time fell between the 10th and 90th percentiles. If you stop timing a fight that is still running, select **Still fighting at cutoff**. A **≥** marks a lower bound wherever the time limit prevents an exact duration.
 
 Reopen the entry under **Saved fights** to review it, correct the observed result or download the original pre-fight save. The local archive lives in `.local/steam-fights/` and survives server restarts and slot changes. Capturing another fight creates a separate entry. If an entry is unreadable, the archive shows its ID and you can still open the other fights.
+
+Open **Compare recorded fights by setup** to compare observed and expected counts across repeated attempts. Each fight contributes one observation and its forecast probabilities. Groups share a target, effective combat setup, game patch, catalog build, model version and time limit. Fights that reach the limit count as timeouts. A fight stopped earlier with an unknown outcome cannot contribute. Correcting a result updates its group.
 
 ## Legacy web companion
 
@@ -163,7 +165,7 @@ Estimate Find New Sketches mode:
 npm.cmd run simulate -- --save "C:\path\to\save.txt" --target duct_taped_banana --plan-redraw --find-new-sketches --trials 5000
 ```
 
-When a save supplies rarity chances, the planner rolls each eligible sketch using the chance for its rarity and its distance from the last glossary unlock. The Steam edition uses effective rarity chances when present. Guaranteed sketches, requested minimums, slot caps and special-sketch weights remain planner approximations.
+When a save supplies rarity chances, the planner rolls each eligible sketch using the chance for its rarity and its distance from the last glossary unlock. Steam estimates respect universe exclusions and use effective rarity chances when present. Find New Sketches follows the saved Exploratory Exclusion rarity, including Scrap, when unlocked. Guaranteed sketches, requested minimums, slot caps and special-sketch weights remain planner approximations.
 
 Useful redraw planner options:
 
@@ -192,6 +194,8 @@ npm.cmd run simulate -- --save "C:\path\to\save.txt" --target duct_taped_banana 
 `--strategy-plan` combines target readiness, missing Q/currency, wait-vs-redraw at softcap, farm plan, Opus currency-vs-stat value, run EV over `--farm-seconds`, economy planning, booster set comparison by route simulation, Masterpiece keep/redraw and finish-run/redraw decisions. Use `--goal-q`, `--goal-currency`, `--softcap-seconds`, `--farm-seconds`, `--booster-candidates`, `--masterpiece-targets` and `--strategy-trials` to make the assumptions explicit.
 
 Farm window earnings include passive generation for the entire window and payouts from fights projected to finish within it. Full-route earnings cover one attempt per eligible sketch in planner order. The planner budgets the p90 duration of each fight, using its median when p90 is absent. A missing or censored time makes subsequent finish times uncertain. The report marks incomplete window totals and shows battle-only full-route earnings when it cannot time passive generation.
+
+Steam saves supply generator unlocks and accumulated battle income. The planner uses these values for flat and income-based generators and applies the active speed and generator multipliers.
 
 The strategy output also includes an economy section: shop upgrade ROI, buy-now vs delay recommendations, softcap wait EV, generator income split by currency, Secret Stash EV, Photon/Gold Leaf forecasts, wasted rewards and current currency bottlenecks.
 
@@ -272,7 +276,7 @@ Implemented:
 - Route simulation with `--route`: ordered sketch rewards, victory caps, reward decay, Reward Booster including retroactive rewards, Precise Eraser, Sketch Swapper/Pivot, meditation, Secret Stash hidden upgrades, currency multipliers, passive generator income and stat upgrade purchases.
 - Route comparison with `--compare-routes` for checking "what if I beat X/Y/Z before target?" decisions.
 - Targeted Redraw planner with `--plan-redraw`: rarity minimum estimates, target Masterpiece hit rate, Paragon weighting, Unscrambled Guarantee, `(*)` Masterpiece low-weight handling, settings recommendations and keep/redraw current-run decisions.
-- Find New Sketches planner with `--find-new-sketches`: separate estimate for finding any unseen Rough+ sketch within the mode's redraw limit.
+- Find New Sketches planner with `--find-new-sketches` estimates the chance of finding an unseen sketch that matches the active rarity filter within the redraw limit.
 - Build advisor with `--build-advice`: target-specific priorities, build bottlenecks, tool suggestions and active-run reward recommendations for Duct, Rose, Mobius and Transcendent Paragon.
 - Strategic planner with `--strategy-plan`: target resource gaps, softcap/redraw advice, goal farm planning, Opus value ranking, run EV, economy planning, booster route comparisons and keep/redraw decisions for Masterpiece rolls and active Opus runs.
 - Combat reports: 95% win-rate confidence interval, p10/p90 fight times, timeout rate, victory/failure breakdowns, target interactions, stat thresholds, `--explain`, `--compare`, JSON and Markdown report export.
@@ -284,7 +288,7 @@ Implemented:
 
 Known approximations:
 
-- On Steam, direct fights use the effective `playerStats` saved by the game, including existing upgrades. Encounter stats include the current universe and Precise Eraser. Reward projections account for cards and reward multipliers, then estimate the resulting effective player stats. The game recalculates these from accumulated battle rewards and upgrades.
+- Steam fights use the effective `playerStats` saved by the game. Reward projections use accumulated battle stats, shop levels, glossary progress, fundamentals, meditation and universe modifiers when the save provides them. Partial saves use the available effective stats. A Flow State opening requires evidence of an active Flow State encounter or an eligible automatic challenge within five seconds of victory at the time of the save.
 - The model covers individual sketch fights. Full counterattack ordering, Overkill and Victory Lap reward batches, and resuming a partially completed fight remain approximate or outside its scope. Refreshing a catalog after a patch updates data; changes to combat rules require independent verification. The full-game catalog also differs from the Steam demo.
 - Calculations use JavaScript finite numbers. The importer reports out-of-range player stats and the analysis warns when a saved currency exceeds that range.
 - Calibration uses historical fights for tuning when they explicitly match the catalog's game patch and record the player's health, attack and attack interval. Other logs can still provide diagnostic comparisons using the supplied player stats. The report lists the number eligible and the reasons for exclusions.

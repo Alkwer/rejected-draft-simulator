@@ -2,15 +2,16 @@
   "metadata": {
     "platform": "steam",
     "appId": "4574820",
-    "buildId": "26823208",
-    "rendererBuildId": "c1232f078e2aea158759e0368689ee6fcc6b72ac:44828175329:1",
-    "gameVersion": "v0.9771",
-    "saveVersion": 86,
-    "asset": "data-sketches-C5dyhzqN.js",
-    "mainAsset": "main-DW0WKTU6.js",
-    "storeAsset": "game-store-B5JMAtsA.js",
+    "buildId": "26885190",
+    "rendererBuildId": "1251a545ef764112376a8fa1d7980b8b72a34cd3:45328558623:1",
+    "gameVersion": "v0.9772",
+    "saveVersion": 87,
+    "asset": "data-sketches-p3CipYSf.js",
+    "mainAsset": "main-C8jKhEiF.js",
+    "storeAsset": "game-store-BX3gavfL.js",
+    "shopAsset": "data-skill-tree-Dc8Ect5l.js",
     "sourceUrl": "https://store.steampowered.com/app/4574820/",
-    "capturedAt": "2026-11-21"
+    "capturedAt": "2026-11-24"
   },
   "sketches": {
     "stick man": {
@@ -9358,6 +9359,534 @@
       ],
       "rewards": [],
       "currencyRewards": []
+    }
+  },
+  "shopUpgrades": {
+    "upgrade_hp_graphite": {
+      "id": "upgrade_hp_graphite",
+      "statName": "maxHp",
+      "currency": "Graphite",
+      "baseCost": 2,
+      "costMultiplier": 1.625,
+      "perLevel": 0.06,
+      "hidden": false
+    },
+    "upgrade_atk_graphite": {
+      "id": "upgrade_atk_graphite",
+      "statName": "attack",
+      "currency": "Graphite",
+      "baseCost": 5,
+      "costMultiplier": 1.5,
+      "perLevel": 0.05,
+      "hidden": false
+    },
+    "upgrade_spd_graphite": {
+      "id": "upgrade_spd_graphite",
+      "statName": "attackSpeed",
+      "currency": "Graphite",
+      "baseCost": 10,
+      "costMultiplier": 2500,
+      "perLevel": 0.01,
+      "maxLevel": 25,
+      "hidden": false
+    },
+    "upgrade_critdmg_wax": {
+      "id": "upgrade_critdmg_wax",
+      "statName": "critDmg",
+      "currency": "Wax",
+      "baseCost": 200,
+      "costMultiplier": 25,
+      "perLevel": 0.01,
+      "maxLevel": 50,
+      "hidden": false
+    },
+    "upgrade_atk_wax": {
+      "id": "upgrade_atk_wax",
+      "statName": "attack",
+      "currency": "Wax",
+      "baseCost": 4,
+      "costMultiplier": 2.9,
+      "perLevel": 0.08,
+      "hidden": false
+    },
+    "upgrade_dodge_wax": {
+      "id": "upgrade_dodge_wax",
+      "statName": "dodge",
+      "currency": "Wax",
+      "baseCost": 1500,
+      "costMultiplier": 1300,
+      "perLevel": 0.01,
+      "maxLevel": 50,
+      "hidden": false
+    },
+    "upgrade_hp_charcoal": {
+      "id": "upgrade_hp_charcoal",
+      "statName": "maxHp",
+      "currency": "Charcoal",
+      "baseCost": 2,
+      "costMultiplier": 2,
+      "perLevel": 0.05,
+      "hidden": false
+    },
+    "upgrade_armor_charcoal": {
+      "id": "upgrade_armor_charcoal",
+      "statName": "armor",
+      "currency": "Charcoal",
+      "baseCost": 4,
+      "costMultiplier": 5.5,
+      "perLevel": 0.04,
+      "hidden": false
+    },
+    "upgrade_glancing_charcoal": {
+      "id": "upgrade_glancing_charcoal",
+      "statName": "glancingBlow",
+      "currency": "Charcoal",
+      "baseCost": 2000,
+      "costMultiplier": 31.3,
+      "perLevel": 0.01,
+      "maxLevel": 100,
+      "hidden": false
+    },
+    "upgrade_maxdamage_coffee": {
+      "id": "upgrade_maxdamage_coffee",
+      "statName": "maxDamage",
+      "currency": "Coffee",
+      "baseCost": 4,
+      "costMultiplier": 200,
+      "perLevel": 0.02,
+      "hidden": false
+    },
+    "upgrade_counter_coffee": {
+      "id": "upgrade_counter_coffee",
+      "statName": "counter",
+      "currency": "Coffee",
+      "baseCost": 50,
+      "costMultiplier": 50625,
+      "perLevel": 0.02,
+      "maxLevel": 50,
+      "hidden": false
+    },
+    "upgrade_parrydmg_coffee": {
+      "id": "upgrade_parrydmg_coffee",
+      "statName": "parryDmg",
+      "currency": "Coffee",
+      "baseCost": 2500,
+      "costMultiplier": 900,
+      "perLevel": 0.01,
+      "maxLevel": 100,
+      "hidden": false
+    },
+    "upgrade_mindmg_ink": {
+      "id": "upgrade_mindmg_ink",
+      "statName": "minDamage",
+      "currency": "Ink",
+      "baseCost": 3,
+      "costMultiplier": 500,
+      "perLevel": 0.015,
+      "hidden": false
+    },
+    "upgrade_critchance_ink": {
+      "id": "upgrade_critchance_ink",
+      "statName": "critChance",
+      "currency": "Ink",
+      "baseCost": 500,
+      "costMultiplier": 23730,
+      "perLevel": 0.01,
+      "maxLevel": 25,
+      "hidden": false
+    },
+    "upgrade_execute_ink": {
+      "id": "upgrade_execute_ink",
+      "statName": "execute",
+      "currency": "Ink",
+      "baseCost": 3000,
+      "costMultiplier": 3.5e+29,
+      "perLevel": 0.04,
+      "hidden": false
+    },
+    "upgrade_lifesteal_marker": {
+      "id": "upgrade_lifesteal_marker",
+      "statName": "lifesteal",
+      "currency": "Marker",
+      "baseCost": 2,
+      "costMultiplier": 1300,
+      "perLevel": 0.01,
+      "hidden": false
+    },
+    "upgrade_armorpen_marker": {
+      "id": "upgrade_armorpen_marker",
+      "statName": "armorPen",
+      "currency": "Marker",
+      "baseCost": 5,
+      "costMultiplier": 2,
+      "perLevel": 0.05,
+      "hidden": false
+    },
+    "upgrade_blockamount_marker": {
+      "id": "upgrade_blockamount_marker",
+      "statName": "blockAmount",
+      "currency": "Marker",
+      "baseCost": 2500,
+      "costMultiplier": 4,
+      "perLevel": 0.05,
+      "hidden": false
+    },
+    "upgrade_bleed_acrylic": {
+      "id": "upgrade_bleed_acrylic",
+      "statName": "bleedChance",
+      "currency": "Acrylic",
+      "baseCost": 3,
+      "costMultiplier": 8000,
+      "perLevel": 0.01,
+      "hidden": false
+    },
+    "upgrade_plague_acrylic": {
+      "id": "upgrade_plague_acrylic",
+      "statName": "plagueChance",
+      "currency": "Acrylic",
+      "baseCost": 5,
+      "costMultiplier": 60000000,
+      "perLevel": 0.02,
+      "maxLevel": 25,
+      "hidden": false
+    },
+    "upgrade_hypnotize_acrylic": {
+      "id": "upgrade_hypnotize_acrylic",
+      "statName": "hypnotizeChance",
+      "currency": "Acrylic",
+      "baseCost": 200,
+      "costMultiplier": 1000000000,
+      "perLevel": 0.01,
+      "maxLevel": 100,
+      "hidden": false
+    },
+    "upgrade_atk_spray": {
+      "id": "upgrade_atk_spray",
+      "statName": "attack",
+      "currency": "Spray",
+      "baseCost": 3,
+      "costMultiplier": 1.8,
+      "perLevel": 0.03,
+      "hidden": false
+    },
+    "upgrade_accuracy_spray": {
+      "id": "upgrade_accuracy_spray",
+      "statName": "accuracy",
+      "currency": "Spray",
+      "baseCost": 5,
+      "costMultiplier": 5,
+      "perLevel": 0.01,
+      "maxLevel": 100,
+      "hidden": false
+    },
+    "upgrade_hinder_spray": {
+      "id": "upgrade_hinder_spray",
+      "statName": "hinderChance",
+      "currency": "Spray",
+      "baseCost": 500,
+      "costMultiplier": 250,
+      "perLevel": 0.01,
+      "maxLevel": 200,
+      "hidden": false
+    },
+    "upgrade_hp_photon": {
+      "id": "upgrade_hp_photon",
+      "statName": "maxHp",
+      "currency": "Photon",
+      "baseCost": 20,
+      "costMultiplier": 1.6,
+      "perLevel": 0.05,
+      "hidden": false
+    },
+    "upgrade_burnchance_photon": {
+      "id": "upgrade_burnchance_photon",
+      "statName": "burnChance",
+      "currency": "Photon",
+      "baseCost": 200,
+      "costMultiplier": 1000,
+      "perLevel": 0.02,
+      "maxLevel": 100,
+      "hidden": false
+    },
+    "upgrade_electrocutechance_photon": {
+      "id": "upgrade_electrocutechance_photon",
+      "statName": "electrocuteChance",
+      "currency": "Photon",
+      "baseCost": 2000,
+      "costMultiplier": 10000000,
+      "perLevel": 0.01,
+      "maxLevel": 100,
+      "hidden": false
+    },
+    "upgrade_parry_gold_leaf": {
+      "id": "upgrade_parry_gold_leaf",
+      "statName": "parry",
+      "currency": "Gold Leaf",
+      "baseCost": 10,
+      "costMultiplier": 5,
+      "perLevel": 0.001,
+      "maxLevel": 250,
+      "hidden": false
+    },
+    "upgrade_multistrike_gold_leaf": {
+      "id": "upgrade_multistrike_gold_leaf",
+      "statName": "multiStrikeChance",
+      "currency": "Gold Leaf",
+      "baseCost": 25,
+      "costMultiplier": 25,
+      "perLevel": 0.01,
+      "maxLevel": 50,
+      "hidden": false
+    },
+    "upgrade_absorb_gold_leaf": {
+      "id": "upgrade_absorb_gold_leaf",
+      "statName": "absorb",
+      "currency": "Gold Leaf",
+      "baseCost": 1,
+      "costMultiplier": 100,
+      "perLevel": 0.001,
+      "maxLevel": 250,
+      "hidden": false
+    },
+    "upgrade_opacity_gold_leaf": {
+      "id": "upgrade_opacity_gold_leaf",
+      "statName": "opacity",
+      "currency": "Gold Leaf",
+      "baseCost": 5,
+      "costMultiplier": 50,
+      "perLevel": 0.001,
+      "maxLevel": 250,
+      "hidden": false
+    },
+    "upgrade_goldenluckchance_gold_leaf": {
+      "id": "upgrade_goldenluckchance_gold_leaf",
+      "statName": "goldenLuckChance",
+      "currency": "Gold Leaf",
+      "baseCost": 25000,
+      "costMultiplier": 250,
+      "perLevel": 0.001,
+      "maxLevel": 100,
+      "hidden": false
+    },
+    "upgrade_goldenluckdmg_gold_leaf": {
+      "id": "upgrade_goldenluckdmg_gold_leaf",
+      "statName": "goldenLuckDamage",
+      "currency": "Gold Leaf",
+      "baseCost": 50000,
+      "costMultiplier": 200,
+      "perLevel": 0.005,
+      "maxLevel": 100,
+      "hidden": false
+    },
+    "upgrade_secret_burn_damage_graphite": {
+      "id": "upgrade_secret_burn_damage_graphite",
+      "statName": "burnDamage",
+      "currency": "Graphite",
+      "baseCost": 1e+40,
+      "costMultiplier": 10,
+      "perLevel": 0.2,
+      "maxLevel": 2500,
+      "requiredSkillId": "stats-hidden-upgrades",
+      "hidden": true
+    },
+    "upgrade_secret_poison_wax": {
+      "id": "upgrade_secret_poison_wax",
+      "statName": "poisonChance",
+      "currency": "Wax",
+      "baseCost": 1e+80,
+      "costMultiplier": 12,
+      "perLevel": 0.005,
+      "maxLevel": 50,
+      "requiredSkillId": "stats-hidden-upgrades",
+      "hidden": true
+    },
+    "upgrade_secret_slow_charcoal": {
+      "id": "upgrade_secret_slow_charcoal",
+      "statName": "slowChance",
+      "currency": "Charcoal",
+      "baseCost": 1e+100,
+      "costMultiplier": 15,
+      "perLevel": 0.025,
+      "maxLevel": 50,
+      "requiredSkillId": "stats-hidden-upgrades",
+      "hidden": true
+    },
+    "upgrade_secret_frailty_coffee": {
+      "id": "upgrade_secret_frailty_coffee",
+      "statName": "frailtyChance",
+      "currency": "Coffee",
+      "baseCost": 1e+80,
+      "costMultiplier": 18,
+      "perLevel": 0.005,
+      "maxLevel": 50,
+      "requiredSkillId": "stats-hidden-upgrades",
+      "hidden": true
+    },
+    "upgrade_secret_freeze_ink": {
+      "id": "upgrade_secret_freeze_ink",
+      "statName": "freezeChance",
+      "currency": "Ink",
+      "baseCost": 1e+60,
+      "costMultiplier": 20,
+      "perLevel": 0.005,
+      "maxLevel": 50,
+      "requiredSkillId": "stats-hidden-upgrades",
+      "hidden": true
+    },
+    "upgrade_secret_block_marker": {
+      "id": "upgrade_secret_block_marker",
+      "statName": "blockChance",
+      "currency": "Marker",
+      "baseCost": 1e+60,
+      "costMultiplier": 22,
+      "perLevel": 0.005,
+      "maxLevel": 50,
+      "requiredSkillId": "stats-hidden-upgrades",
+      "hidden": true
+    },
+    "upgrade_secret_haste_acrylic": {
+      "id": "upgrade_secret_haste_acrylic",
+      "statName": "hasteChance",
+      "currency": "Acrylic",
+      "baseCost": 1e+50,
+      "costMultiplier": 25,
+      "perLevel": 0.005,
+      "maxLevel": 50,
+      "requiredSkillId": "stats-hidden-upgrades",
+      "hidden": true
+    },
+    "upgrade_secret_energywave_spray": {
+      "id": "upgrade_secret_energywave_spray",
+      "statName": "energyWaveChance",
+      "currency": "Spray",
+      "baseCost": 1e+45,
+      "costMultiplier": 30,
+      "perLevel": 0.01,
+      "maxLevel": 50,
+      "requiredSkillId": "stats-hidden-upgrades",
+      "hidden": true
+    },
+    "upgrade_secret_remedy_photon": {
+      "id": "upgrade_secret_remedy_photon",
+      "statName": "remedy",
+      "currency": "Photon",
+      "baseCost": 1e+30,
+      "costMultiplier": 40,
+      "perLevel": 0.002,
+      "maxLevel": 50,
+      "requiredSkillId": "stats-hidden-upgrades",
+      "hidden": true
+    },
+    "upgrade_secret_curse_gold_leaf": {
+      "id": "upgrade_secret_curse_gold_leaf",
+      "statName": "curseChance",
+      "currency": "Gold Leaf",
+      "baseCost": 1000000000000000,
+      "costMultiplier": 50,
+      "perLevel": 0.004,
+      "maxLevel": 50,
+      "requiredSkillId": "stats-hidden-upgrades",
+      "hidden": true
+    },
+    "upgrade_masterpiece_thorns_graphite": {
+      "id": "upgrade_masterpiece_thorns_graphite",
+      "statName": "thornsChance",
+      "currency": "Graphite",
+      "baseCost": 1e+105,
+      "costMultiplier": 20,
+      "perLevel": 0.05,
+      "requiredSkillId": "stats-masterpiece-hunter",
+      "hidden": true
+    },
+    "upgrade_masterpiece_banana_peel_wax": {
+      "id": "upgrade_masterpiece_banana_peel_wax",
+      "statName": "bananaPeelChance",
+      "currency": "Wax",
+      "baseCost": 1e+110,
+      "costMultiplier": 50,
+      "perLevel": 0.005,
+      "requiredSkillId": "stats-masterpiece-hunter",
+      "hidden": true
+    },
+    "upgrade_masterpiece_leap_charcoal": {
+      "id": "upgrade_masterpiece_leap_charcoal",
+      "statName": "leapChance",
+      "currency": "Charcoal",
+      "baseCost": 1e+105,
+      "costMultiplier": 60,
+      "perLevel": 0.005,
+      "requiredSkillId": "stats-masterpiece-hunter",
+      "hidden": true
+    },
+    "upgrade_masterpiece_inspiration_coffee": {
+      "id": "upgrade_masterpiece_inspiration_coffee",
+      "statName": "inspirationChance",
+      "currency": "Coffee",
+      "baseCost": 1e+100,
+      "costMultiplier": 24,
+      "perLevel": 0.03,
+      "requiredSkillId": "stats-masterpiece-hunter",
+      "hidden": true
+    },
+    "upgrade_masterpiece_purge_ink": {
+      "id": "upgrade_masterpiece_purge_ink",
+      "statName": "purgeChance",
+      "currency": "Ink",
+      "baseCost": 1e+110,
+      "costMultiplier": 80,
+      "perLevel": 0.005,
+      "requiredSkillId": "stats-masterpiece-hunter",
+      "hidden": true
+    },
+    "upgrade_masterpiece_exacerbate_marker": {
+      "id": "upgrade_masterpiece_exacerbate_marker",
+      "statName": "exacerbateChance",
+      "currency": "Marker",
+      "baseCost": 1e+105,
+      "costMultiplier": 70,
+      "perLevel": 0.005,
+      "requiredSkillId": "stats-masterpiece-hunter",
+      "hidden": true
+    },
+    "upgrade_masterpiece_balloon_acrylic": {
+      "id": "upgrade_masterpiece_balloon_acrylic",
+      "statName": "balloonChance",
+      "currency": "Acrylic",
+      "baseCost": 1e+100,
+      "costMultiplier": 30,
+      "perLevel": 0.05,
+      "requiredSkillId": "stats-masterpiece-hunter",
+      "hidden": true
+    },
+    "upgrade_masterpiece_surrealism_spray": {
+      "id": "upgrade_masterpiece_surrealism_spray",
+      "statName": "surrealism",
+      "currency": "Spray",
+      "baseCost": 1e+110,
+      "costMultiplier": 200,
+      "perLevel": 0.001,
+      "requiredSkillId": "stats-masterpiece-hunter",
+      "hidden": true
+    },
+    "upgrade_masterpiece_hp_photon": {
+      "id": "upgrade_masterpiece_hp_photon",
+      "statName": "maxHp",
+      "currency": "Photon",
+      "baseCost": 1e+100,
+      "costMultiplier": 40,
+      "perLevel": 0.05,
+      "requiredSkillId": "stats-masterpiece-hunter",
+      "hidden": true
+    },
+    "upgrade_masterpiece_atk_gold_leaf": {
+      "id": "upgrade_masterpiece_atk_gold_leaf",
+      "statName": "attack",
+      "currency": "Gold Leaf",
+      "baseCost": 1e+100,
+      "costMultiplier": 50,
+      "perLevel": 0.05,
+      "requiredSkillId": "stats-masterpiece-hunter",
+      "hidden": true
     }
   }
 }
