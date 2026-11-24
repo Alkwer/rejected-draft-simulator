@@ -27,6 +27,14 @@
         </div>
       </header>
 
+      <section class="start-import" aria-label="Import a save">
+        <h2>Start with your save</h2>
+        <div class="start-import-actions">
+          <button id="startSteamButton" type="button" class="icon-button primary">Use active Steam slot</button>
+          <button id="startFileButton" type="button" class="icon-button secondary start-file-picker">Choose save file</button>
+        </div>
+      </section>
+
       <section id="resourceStrip" class="resource-strip" aria-label="Run resources">
         <div class="resource-tile accent-violet">
           <span>Quintessence</span>
@@ -252,6 +260,7 @@
               <h2>Result</h2>
               <span id="targetLabel" class="counter">none</span>
             </div>
+            <p id="resultAssumptions" class="result-assumptions" hidden></p>
             <div class="result-grid">
               <div class="metric primary-metric">
                 <span>Win rate</span>

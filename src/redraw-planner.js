@@ -1,6 +1,8 @@
 import { steamUniverse } from "./combat/steam-encounter.js";
 import { createRng } from "./rng.js";
+import { steamSketchRewards } from "./reward-amounts.js";
 import { isFullSteamSave, toNumber } from "./save.js";
+import { remainingSketchVictories } from "./victory-limit.js";
 
 const RARITIES = ["rough", "framed", "opus", "masterpiece"];
 const EXPLORATORY_RARITIES = ["scrap", ...RARITIES];
@@ -408,7 +410,7 @@ export function recommendTargetedRedrawSettings({
       trials,
       seed,
     });
-    const farmScore = estimateFarmScore({ sketches, minimums: candidate.minimums });
+    const farmScore = minimumFarmScore(candidate.minimums);
     const targetProbability = estimate.probabilities.anyTarget;
     const { enabled, validMinimumChance, infeasibleReasons } = estimate.targetedRedraw;
     const result = {
@@ -480,27 +482,31 @@ export function evaluateCurrentRun({
   state = {},
   targetIds = [],
   minimums = {},
-  farmKeepThreshold = 0,
+  farmKeepThreshold = 2,
 } = {}) {
-  const ids = normalizeList(state.availableSketches);
+  const ids = unique(normalizeList(state.availableSketches));
   const idSet = new Set(ids);
+  const hidden = new Set(normalizeList(state.hiddenSketches));
+  const eligible = new Set(ids.filter((id) => sketches[id] && !hidden.has(id) && remainingSketchVictories(state, id) > 0));
   const normalizedTargets = unique(normalizeList(targetIds));
   const normalizedMinimums = normalizeMinimums(minimums);
   const countsByRarity = countRarities({ sketches, ids });
   const presentTargets = normalizedTargets.filter((id) => idSet.has(id));
+  const eligibleTargets = presentTargets.filter((id) => eligible.has(id));
   const missingTargets = normalizedTargets.filter((id) => !idSet.has(id));
   const minimumsMet = meetsMinimums(countsByRarity, normalizedMinimums);
-  const farmScore = estimateFarmScore({ sketches, ids });
+  const farmScore = [...eligible].reduce((score, id) => score + sketchFarmValue(sketches[id], state, id), 0);
   const reasons = [];
 
-  if (presentTargets.length > 0) reasons.push("target_present");
+  if (eligibleTargets.length > 0) reasons.push("target_present");
+  else if (presentTargets.length > 0) reasons.push("target_hidden_or_completed");
   else if (normalizedTargets.length > 0) reasons.push("missing_target");
   if (minimumsMet) reasons.push("minimums_met");
   else reasons.push("minimums_not_met");
   if (farmScore >= farmKeepThreshold && farmKeepThreshold > 0) reasons.push("farm_score_met");
 
   let decision = "redraw";
-  if (presentTargets.length > 0) decision = "keep";
+  if (eligibleTargets.length > 0) decision = "keep";
   else if (minimumsMet && farmKeepThreshold > 0 && farmScore >= farmKeepThreshold) decision = "keep_farm";
 
   return {
@@ -508,11 +514,13 @@ export function evaluateCurrentRun({
     reasons,
     targetIds: normalizedTargets,
     presentTargets,
+    eligibleTargets,
     missingTargets,
     countsByRarity,
     minimums: normalizedMinimums,
     minimumsMet,
     farmScore: round(farmScore),
+    farmKeepThreshold,
   };
 }
 
@@ -931,18 +939,22 @@ function countRarities({ sketches, ids }) {
   return counts;
 }
 
-function estimateFarmScore({ sketches, minimums = null, ids = null }) {
-  if (ids) {
-    return ids.reduce((score, id) => score + sketchFarmValue(sketches[id]), 0);
-  }
+function minimumFarmScore(minimums) {
   const normalized = normalizeMinimums(minimums ?? {});
   return normalized.rough * 0.1 + normalized.framed * 0.5 + normalized.opus * 2 + normalized.masterpiece * 0.25;
 }
 
-function sketchFarmValue(sketch) {
-  if (!sketch) return 0;
+function sketchFarmValue(sketch, state, id) {
+  const rewards = steamSketchRewards({ state, id, sketch, victoriesBefore: toNumber(state.sketchVictories?.[id]),
+    boosted: normalizeList(state.boostedSketchIds).includes(id) });
+  const gains = (sketch.currencyRewards ?? []).map((reward) => rewards ? rewards.currencyGain(reward) : toNumber(reward.amount));
+  const improvesStat = (sketch.rewards ?? []).some((reward) => {
+    const amount = rewards ? rewards.statGain(reward) : toNumber(reward.amount);
+    return reward.statName === "attackSpeed" ? amount < 0 : amount > 0;
+  });
+  if (!improvesStat && !gains.some((amount) => amount > 0)) return 0;
   let score = sketch.rarity === "opus" ? 2 : sketch.rarity === "framed" ? 0.5 : sketch.rarity === "rough" ? 0.1 : 0.25;
-  for (const reward of sketch.currencyRewards ?? []) score += Math.log10(Math.max(1, toNumber(reward.amount))) / 10;
+  for (const amount of gains) score += Math.log10(Math.max(1, amount)) / 10;
   return score;
 }
 

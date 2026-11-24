@@ -533,3 +533,18 @@ test("evaluateCurrentRun returns keep/redraw decisions from active save sketches
   assert.ok(redraw.reasons.includes("missing_target"));
   assert.ok(redraw.reasons.includes("minimums_not_met"));
 });
+
+test("keep_farm uses available rewards and distinguishes an exhausted or hidden target", () => {
+  const options = { sketches, state: { availableSketches: ["opus_a", "duct", "rose"],
+    sketchVictories: { duct: 250 }, hiddenSketches: ["rose"] }, targetIds: ["duct", "rose"], minimums: { opus: 1 } };
+  const farm = evaluateCurrentRun(options);
+  assert.equal(farm.decision, "keep_farm");
+  assert.deepEqual(farm.presentTargets, ["duct", "rose"]);
+  assert.deepEqual(farm.eligibleTargets, []);
+  assert.deepEqual(farm.missingTargets, []);
+  assert.ok(farm.reasons.includes("target_hidden_or_completed"));
+  assert.equal(farm.farmScore, 2.2);
+  assert.equal(evaluateCurrentRun({ ...options, farmKeepThreshold: 3 }).decision, "redraw");
+  assert.equal(evaluateCurrentRun({ ...options, farmKeepThreshold: 0 }).decision, "redraw");
+  assert.equal(evaluateCurrentRun({ ...options, state: { ...options.state, hiddenSketches: ["rose", "opus_a"] } }).decision, "redraw");
+});

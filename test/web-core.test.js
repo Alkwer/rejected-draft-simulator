@@ -139,6 +139,24 @@ test("route preview and compared Opuses use the selected hypothetical build", ()
   }
 });
 
+test("Best next click keeps the current odds while the target result credits assumed victories", () => {
+  const boss = { ...sketches.duct_taped_banana, id: "boss" };
+  const farm = { ...sketches.farm_a, stats: { ...sketches.farm_a.stats, maxHp: 1 } };
+  const state = { saveProfile: "steam", availableSketches: ["farm_a", "boss"],
+    playerStats: { maxHp: 100, attack: 1, attackSpeed: 1000, minDamage: 100, maxDamage: 100 } };
+  const options = { save: { state }, sketches: { boss, farm_a: farm }, targetId: "boss", trials: 120,
+    maxSeconds: 5, seed: "current-vs-projected" };
+  const current = createWebAnalysis(options);
+  let primary;
+  const projected = createWebAnalysis({ ...options, assumedVictories: { farm_a: 1 } }, (record) => { primary = record; });
+  assert.equal(current.result.winRate, 0);
+  assert.equal(projected.result.winRate, 1);
+  assert.deepEqual(primary.assumedVictoryIds, ["farm_a"]);
+  assert.deepEqual(projected.activeSketches, current.activeSketches);
+  assert.deepEqual(projected.nextAction, current.nextAction);
+  assert.equal(projected.recommendation.targetId, "farm_a");
+});
+
 test("assumed victories credit the strategy wallet, boosters and perk wins just like a route", () => {
   const state = { saveProfile: "steam", playerStats: { maxHp: 100, attack: 10, attackSpeed: 1000 },
     currencies: { Graphite: 20 }, availableSketches: ["farm_a"], boostedSketchIds: ["farm_a"],

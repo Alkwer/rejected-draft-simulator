@@ -35,7 +35,7 @@ import {
   parseMinimums,
   recommendTargetedRedrawSettings,
 } from "./redraw-planner.js";
-import { applySketchRewards, parseIdList } from "./rewards.js";
+import { projectSketchRewards, parseIdList } from "./rewards.js";
 import { parseRouteSpecs, parseSwapMap } from "./route-options.js";
 import { compareRoutes, simulateRoute } from "./route.js";
 import { analyzeSave, getStatsBySource } from "./save-analysis.js";
@@ -254,7 +254,14 @@ if (args["strategy-plan"] || args.strategy) {
 }
 
 if (args["plan-redraw"]) {
+  const threshold = args["farm-keep-threshold"];
+  const farmKeepThreshold = threshold === undefined ? undefined : Number(threshold);
+  if (threshold !== undefined && (threshold === true || !Number.isFinite(farmKeepThreshold) || farmKeepThreshold < 0)) {
+    console.error("--farm-keep-threshold must be a finite, non-negative score.");
+    process.exit(1);
+  }
   const redrawPlan = createRedrawPlan({
+    farmKeepThreshold,
     sketches,
     save,
     targetId,
@@ -277,6 +284,7 @@ if (args["compare-routes"] || args.compare) {
   const comparison = compareRoutes({
     sketches,
     state: save.state,
+    assumptions: combatAssumptions,
     baseStats: player,
     targetId,
     routes: parseRouteSpecs(compareSpec),
@@ -295,6 +303,7 @@ if (args.route) {
   const routeResult = simulateRoute({
     sketches,
     state: save.state,
+    assumptions: combatAssumptions,
     baseStats: player,
     targetId,
     routeIds: parseIdList(args.route),
@@ -344,7 +353,7 @@ if (args.route) {
 
 const appliedIds = parseIdList(args.apply);
 if (appliedIds.length > 0) {
-  player = applySketchRewards({
+  const projection = projectSketchRewards({
     state: save.state,
     baseStats: player,
     sketches,
@@ -354,6 +363,14 @@ if (appliedIds.length > 0) {
     rewardBoosterEffect: Number(args["booster-effect"] ?? save.state?.fundamentals?.rewardBoosterEffect ?? 50),
     existingVictories: save.state?.sketchVictories ?? {},
   });
+  player = projection.stats;
+  for (const { id, reason } of projection.tools.boostedSkipped) {
+    const warning = { code: reason, message: `Skipped Reward Booster for ${id}: ${reason}.` };
+    analysis.warnings.push(warning);
+    if (wantsMarkdownOutput(args) || !wantsJsonOutput(args) && (args["trace-fight"] || args["fight-fixture"])) {
+      console.error(warning.message);
+    }
+  }
 }
 const enemy = enemyFromSketch(target);
 
@@ -536,6 +553,7 @@ Options:
   --redraw-minimums <x>  Rarity minimums, for example 38/15/7/1 or rough=38,opus=7.
   --redraw-candidates <x> Candidate settings separated by ~, for example target:38/15/7/1~farm:39/18/10/0.
   --redraw-total <n>     Total slots to draw. Default: current save run total for Targeted Redraw.
+  --farm-keep-threshold <n>  Keep a run meeting the rarity minimums when its farm score reaches n (default 2, 0 disables).
   --search-new           Alias for --find-new-sketches.
   --include-star-masterpieces Include (*) Masterpieces with a very low weight.
   --star-weight <n>      Weight multiplier for (*) Masterpieces. Default: 0.001.
@@ -903,6 +921,9 @@ function printRouteResult({
   if (routeResult.tools.boostedApplied.length > 0) {
     console.log(`Boosted: ${routeResult.tools.boostedApplied.join(", ")}`);
   }
+  for (const { id, reason } of routeResult.tools.boostedSkipped) {
+    console.log(`Skipped Reward Booster for ${id}: ${reason}.`);
+  }
   if (routeResult.tools.erasedApplied.length > 0) {
     console.log(`Erased: ${routeResult.tools.erasedApplied.join(", ")}`);
   }
@@ -1012,6 +1033,7 @@ function printRedrawPlan({ target, redrawPlan }) {
   console.log(`  Decision: ${redrawPlan.currentRun.decision}`);
   console.log(`  Reasons: ${redrawPlan.currentRun.reasons.join(", ")}`);
   console.log(`  Counts: ${formatMinimums(redrawPlan.currentRun.countsByRarity)}`);
+  console.log(`  Eligible farm score: ${redrawPlan.currentRun.farmScore} (threshold ${redrawPlan.currentRun.farmKeepThreshold})`);
   console.log("");
 
   console.log("Odds:");
@@ -1311,7 +1333,7 @@ function routeOptionsFromArgs(args) {
   };
 }
 
-function createRedrawPlan({ sketches, save, targetId, args, trials, seed }) {
+function createRedrawPlan({ sketches, save, targetId, args, trials, seed, farmKeepThreshold }) {
   const targetIds = [...new Set(parseIdList(args.targets ?? targetId))];
   const findNewMode = Boolean(args["find-new-sketches"] || args["search-new"]);
   if (findNewMode) {
@@ -1364,6 +1386,7 @@ function createRedrawPlan({ sketches, save, targetId, args, trials, seed }) {
     state: save.state,
     targetIds,
     minimums,
+    farmKeepThreshold,
   });
 
   return {

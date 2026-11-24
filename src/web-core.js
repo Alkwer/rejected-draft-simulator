@@ -119,7 +119,7 @@ export function createWebAnalysis({
   const targetMaxSeconds = targetSimulation.effectiveMaxSeconds;
   const report = createCombatReport({ target, player: finalStats, simulation: result });
   onPrimary?.({
-    target: targetSummary(target), finalStats, result, report,
+    target: targetSummary(target), finalStats, result, report, assumedVictoryIds: assumedRouteIds,
     bundle: summarizeGameBundle({ sketches, dataMetadata }), warnings: analysis.warnings,
   });
   const assumptionComparisons = createModelAssumptionComparisons({
@@ -150,9 +150,16 @@ export function createWebAnalysis({
     seed: `${seed}:${resolvedTargetId}:trace`,
     assumptions: combatAssumptions,
   });
+  const currentTarget = analysis.run.active.target;
+  const currentTargetVisible = currentTarget && !currentTarget.hidden && !currentTarget.defeatedThisRun;
+  const currentSimulation = assumedRouteIds.length && currentTargetVisible
+    ? simulateTargetWithAdaptiveLimit({ target, player: baseStats, trialsSetting, maxSeconds,
+      seed: `${seed}:${resolvedTargetId}`, assumptions: combatAssumptions })
+    : targetSimulation;
   const activeSketches = createActiveSketchRows({
-    active: analysis.run.active, sketches, baseStats, trialsSetting: auxiliaryTrialsSetting, maxSeconds: targetMaxSeconds, seed, assumptions: combatAssumptions,
-    targetId: resolvedTargetId, currentTargetResult: assumedRouteIds.length ? null : result,
+    active: analysis.run.active, sketches, baseStats, trialsSetting: auxiliaryTrialsSetting,
+    maxSeconds: currentTargetVisible ? currentSimulation.effectiveMaxSeconds : normalizeMaxSeconds(maxSeconds),
+    seed, assumptions: combatAssumptions, targetId: resolvedTargetId, currentTargetResult: currentSimulation.result,
   });
   const projectedActive = assumedRouteIds.length ? createActiveSketchRows({
     active: analyzeActiveSketches({ state: rewardState, sketches, targetId: resolvedTargetId }),
@@ -161,7 +168,7 @@ export function createWebAnalysis({
   }) : activeSketches;
   const recommendation = createRunRecommendation({
     targetId: resolvedTargetId,
-    currentRun: { targets: projectedActive },
+    currentRun: { targets: activeSketches },
   });
   const targetComparisons = createTargetComparisons({
     analyzedId: resolvedTargetId,
@@ -251,7 +258,7 @@ export function createWebAnalysis({
     fightTrace,
     activeSketches,
     recommendation,
-    nextAction: describeNextAction(recommendation, projectedActive, strategicPlan?.softcap),
+    nextAction: describeNextAction(recommendation, activeSketches, strategicPlan?.softcap),
     strategicPlan,
     targetComparisons,
     activeDeltas,

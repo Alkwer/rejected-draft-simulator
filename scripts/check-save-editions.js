@@ -7,6 +7,52 @@ import { createWebServer } from "../src/web-server.js";
 import { ANALYSIS_MODEL_VERSION } from "../src/model-version.js";
 import { completedAnalysis } from "./browser-analysis.js";
 
+async function checkFirstRunAndStorage(browser, url) {
+  for (const mode of ["blocked", "quota"]) {
+    for (const width of [390, 1440]) {
+      const page = await browser.newPage({ viewport: { width, height: 900 } });
+      const errors = [];
+      page.on("pageerror", (error) => errors.push(error.message));
+      await page.addInitScript((storageMode) => {
+        if (storageMode === "blocked") {
+          Object.defineProperty(window, "localStorage", { get() { throw new DOMException("Blocked", "SecurityError"); } });
+        } else {
+          Storage.prototype.setItem = () => { throw new DOMException("Full", "QuotaExceededError"); };
+          Storage.prototype.removeItem = () => { throw new DOMException("Blocked", "SecurityError"); };
+        }
+      }, mode);
+      try {
+        await page.goto(url);
+        const steam = page.locator("#startSteamButton");
+        const file = page.locator("#startFileButton");
+        assert.ok(await steam.isVisible());
+        assert.ok(await file.isVisible());
+        const bounds = await file.boundingBox();
+        assert.ok(bounds.y + bounds.height <= 900);
+        assert.equal(await page.evaluate(() => document.documentElement.scrollWidth), width);
+        const chooser = page.waitForEvent("filechooser");
+        await file.click();
+        const saveText = await readFile(new URL("../fixtures/synthetic-save.txt", import.meta.url));
+        const response = page.waitForResponse((r) => r.url().endsWith("/api/analyze"));
+        await (await chooser).setFiles({ name: "save.txt", mimeType: "text/plain", buffer: saveText });
+        await completedAnalysis(response);
+        await page.waitForFunction(() => !document.querySelector("#analyzeButton").disabled);
+        assert.equal(await steam.isVisible(), false);
+        if (width === 390) await page.getByRole("button", { name: "Run", exact: true }).click();
+        else await page.getByRole("tab", { name: "Run", exact: true }).click();
+        await page.locator("#densityModeSelect").selectOption("compact");
+        assert.equal(await page.locator("body").getAttribute("data-density"), "compact");
+        if (width === 390) await page.getByRole("button", { name: "Results", exact: true }).click();
+        else await page.getByRole("tab", { name: "Compare", exact: true }).click();
+        assert.ok(await page.locator("#historyList .history-item").count() > 0);
+        await page.locator("#clearHistoryButton").evaluate((button) => button.click());
+        assert.equal(await page.locator("#historyList").textContent(), "No history");
+        assert.deepEqual(errors, []);
+      } finally { await page.close(); }
+    }
+  }
+}
+
 async function checkMobileImport(browser, server, url) {
   const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
   let releaseCompletion;
@@ -33,6 +79,10 @@ async function checkMobileImport(browser, server, url) {
     await page.locator('[data-sketch-id="little_stapler"] .assume-one-button').click();
     assert.equal((await completedAnalysis(selected)).analysis.finalStats.berserk, 0.7);
     await ready();
+    await page.getByRole("button", { name: "Results", exact: true }).click();
+    assert.equal(await page.locator("#resultAssumptions").textContent(), "Forecast after 1 assumed victory.");
+    assert.ok(await page.locator("#resultAssumptions").isVisible());
+    await page.getByRole("button", { name: "Run", exact: true }).click();
 
     // Keep the real primary record flowing, but hold the final response until the UI displays it.
     const gate = new Promise((resolve) => { releaseCompletion = resolve; });
@@ -144,6 +194,7 @@ const testDir = await mkdtemp(path.join(os.tmpdir(), "rd-browser-"));
 const server = createWebServer({ updateDataOnImport: false, fightLogDir: path.join(testDir, "fights"), steamSaveDir: testDir });
 try {
   await new Promise((resolve, reject) => server.once("error", reject).listen(0, "127.0.0.1", resolve));
+  await checkFirstRunAndStorage(browser, `http://127.0.0.1:${server.address().port}/`);
   const page = await browser.newPage();
   const errors = [];
   page.on("pageerror", (error) => errors.push(error.message));

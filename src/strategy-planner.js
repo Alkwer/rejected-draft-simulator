@@ -612,9 +612,8 @@ function estimateProfileProgress({ profileGoal, approach, runEV, currentRows, sk
       };
     }
   } else {
-    missing = approach.ready ? 0 : toNumber(approach.winRate.missing);
-    expectedPerRun = estimateWinRateGainPerRun({ currentRows, runEV });
-    unit = "custom";
+    const limiting = limitingCustomGoal(approach, runEV, currentRows);
+    ({ missing, expectedPerRun, unit } = limiting);
   }
 
   if (profileGoal.needsMoreTrials || type === "custom" && approach.winRate.decision === "increase_trials") {
@@ -639,7 +638,8 @@ function estimateProfileProgress({ profileGoal, approach, runEV, currentRows, sk
     };
   }
 
-  const averageRuns = expectedPerRun > 0 ? missing / expectedPerRun : null;
+  const runs = missing / expectedPerRun;
+  const averageRuns = expectedPerRun > 0 && Number.isFinite(runs) ? runs : null;
   const usefulRunRate = estimateUsefulRunRate(currentRows);
   return {
     decision: averageRuns == null ? "need_better_income_source" : usefulRunRate < 0.2 ? "redraw_for_profile" : "farm_current_run",
@@ -650,6 +650,23 @@ function estimateProfileProgress({ profileGoal, approach, runEV, currentRows, sk
     averageRuns: averageRuns == null ? null : roundNumber(averageRuns),
     averageRedraws: averageRuns == null ? null : roundNumber(averageRuns / Math.max(0.05, usefulRunRate)),
   };
+}
+
+function limitingCustomGoal({ winRate, resources }, runEV, currentRows) {
+  // All goals progress during the same run. The last one reached sets the ETA.
+  const goals = [{ unit: "win_rate", missing: winRate.missing,
+    expectedPerRun: estimateWinRateGainPerRun({ currentRows, runEV }) },
+    { unit: "Q", missing: resources.quintessence.missing, expectedPerRun: runEV.quintessence.expectedPerRun }];
+  for (const [unit, gap] of Object.entries(resources.currencies)) {
+    const income = runEV.currencies[unit];
+    goals.push({ unit, missing: gap.missing,
+      expectedPerRun: income?.passiveExpectedPerRun === null ? null : income?.expectedPerRun ?? 0 });
+  }
+  const runsNeeded = ({ missing, expectedPerRun }) => {
+    if (missing <= 0) return 0;
+    return expectedPerRun > 0 ? missing / expectedPerRun : Infinity;
+  };
+  return goals.reduce((slowest, goal) => runsNeeded(goal) > runsNeeded(slowest) ? goal : slowest);
 }
 
 function createProfileModes({ currentRows, runEV, opusValues, targetId, profile, rewardWeights }) {

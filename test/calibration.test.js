@@ -12,6 +12,18 @@ import {
   suggestCalibrationTuning,
 } from "../src/calibration.js";
 
+const legacyCombatAssumptions = { combatSpeedMultiplier: 1, flowStateActive: false };
+const steamCombatAssumptions = {
+  ...legacyCombatAssumptions,
+  steam: {
+    universeId: "mv-original",
+    erasedSketchIds: [],
+    eraserDivisor: 2,
+    buffStackCapBonuses: { Haste: 0, Inspiration: 0 },
+    seppukuRules: [],
+  },
+};
+
 test("extractCombatLogs normalizes save combat logs and external JSON logs", () => {
   const save = {
     version: 52,
@@ -199,7 +211,8 @@ test("calibration preserves both combatants' modifiers through external log impo
 
 test("calibration excludes censored simulated medians and observed timeouts from duration tuning", () => {
   const playerStats = { maxHp: 100, attack: 1, attackSpeed: 1000 };
-  const log = { targetId: "wall", outcome: "win", seconds: 300, reason: "burn", gameVersion: "v0.874", playerStats };
+  const log = { targetId: "wall", outcome: "win", seconds: 300, reason: "burn", gameVersion: "v0.874", playerStats,
+    combatAssumptions: legacyCombatAssumptions };
   const report = createCalibrationReport({ save: { state: { combatLog: [log] } },
     sketches: { wall: { stats: { maxHp: 1000, attack: 0, attackSpeed: 1000 } } },
     trials: 5, maxSeconds: 5,
@@ -216,7 +229,8 @@ test("calibration excludes censored simulated medians and observed timeouts from
 test("calibration keeps a completed median just below the horizon when half the trials time out", () => {
   const playerStats = { maxHp: 100, attack: 10, attackSpeed: 999.9999, critChance: 50, minDamage: 100, maxDamage: 100 };
   const report = createCalibrationReport({
-    save: { state: { combatLog: [{ targetId: "wall", outcome: "win", seconds: 5, gameVersion: "v0.874", playerStats }] } },
+    save: { state: { combatLog: [{ targetId: "wall", outcome: "win", seconds: 5, gameVersion: "v0.874", playerStats,
+      combatAssumptions: legacyCombatAssumptions }] } },
     sketches: { wall: { stats: { maxHp: 15, attack: 0, attackSpeed: 8000 } } },
     trials: 2,
     maxSeconds: 1,
@@ -232,7 +246,8 @@ test("calibration keeps a completed median just below the horizon when half the 
 });
 
 test("calibration keeps missing and incomplete player snapshots in diagnostics without using them for tuning", () => {
-  const fight = { targetId: "wall", outcome: "win", seconds: 2, gameVersion: "v0.881" };
+  const fight = { targetId: "wall", outcome: "win", seconds: 2, gameVersion: "v0.881",
+    combatAssumptions: legacyCombatAssumptions };
   const playerStats = { maxHp: 100, attack: 10, attackSpeed: 1000, critChance: 50 };
   const options = {
     dataMetadata: { gameVersion: fight.gameVersion },
@@ -261,7 +276,8 @@ test("calibration keeps missing and incomplete player snapshots in diagnostics w
 
 test("an invalid Steam attack interval does not interrupt calibration of other fights", () => {
   const stats = { maxHp: 100, attack: 5, attackSpeed: 1000 };
-  const log = { targetId: "wall", gameVersion: "v0.881", targetStats: stats, outcome: "loss" };
+  const log = { targetId: "wall", gameVersion: checkPatchSanity().version, targetStats: stats, outcome: "loss",
+    combatAssumptions: steamCombatAssumptions };
   const options = {
     save: { meta: { profile: "steam" }, state: {} },
     externalLogs: [{ ...log, playerStats: { ...stats, attackSpeed: 0 } }, { ...log, playerStats: stats }],
@@ -286,6 +302,7 @@ test("calibration tunes only matching patches after importing mixed external and
     seconds: 3,
     playerStats: { maxHp: 100, attack: 10, attackSpeed: 1000, minDamage: 100, maxDamage: 100, critChance: 50 },
     targetStats: { maxHp: 15, attack: 0, attackSpeed: 1000 },
+    combatAssumptions: legacyCombatAssumptions,
   };
   const save = {
     version: 52,
@@ -314,6 +331,86 @@ test("calibration tunes only matching patches after importing mixed external and
   assert.equal(report.tuning.durationMultiplier.sampleCount, 1);
   assert.ok(report.warnings.some(({ code, count }) => code === "calibration_log_patch_missing" && count === 1));
   assert.ok(report.warnings.some(({ code, count }) => code === "calibration_log_patch_mismatch" && count === 1));
+});
+
+test("calibration uses per-fight legacy timing from external logs and keeps current settings out of tuning", () => {
+  const targetId = "wall";
+  const gameVersion = "v0.874";
+  const stats = { maxHp: 100, attack: 10, attackSpeed: 1000, minDamage: 100, maxDamage: 100 };
+  const fight = { targetId, outcome: "win", seconds: 1, playerStats: stats };
+  const assumptions = {
+    combatSpeedMultiplier: 2,
+    flowStateActive: true,
+    flowStateLevel: 50,
+    flowStateKnownTargetIds: [targetId],
+  };
+  const entries = {
+    gameVersion,
+    combatAssumptions: assumptions,
+    logs: [fight, { ...fight, assumptions: { ...assumptions, flowStateLevel: null } }, { ...fight, assumptions }],
+  };
+  const externalLogs = parseCombatLogText(JSON.stringify(entries));
+  const options = {
+    dataMetadata: { gameVersion },
+    sketches: { [targetId]: { stats: { maxHp: 1, attack: 0, attackSpeed: 8000 } } },
+    trials: 3,
+    maxSeconds: 5,
+  };
+  const save = { state: { fundamentals: { timeAcceleration: 5 } } };
+  const report = createCalibrationReport({ ...options, externalLogs, save });
+  const historicalOnly = createCalibrationReport({ ...options, externalLogs: [externalLogs[2]] });
+
+  assert.equal(externalLogs[0].combatAssumptions, undefined);
+  assert.deepEqual(externalLogs[2].combatAssumptions, assumptions);
+  assert.deepEqual(report, createCalibrationReport({ ...options, externalLogs: entries, save }));
+  assert.deepEqual(report.comparisons.map(({ tuningExclusion }) => tuningExclusion), [
+    "calibration_combat_assumptions_missing", "calibration_combat_assumptions_invalid", null,
+  ]);
+  assert.deepEqual(report.comparisons.map(({ predicted }) => predicted.medianSeconds), [0.2, 0.2, 0.25]);
+  assert.deepEqual(report.comparisons[2].simulated, historicalOnly.comparisons[0].simulated);
+  assert.deepEqual(report.tuning, historicalOnly.tuning);
+  assert.equal(report.tuning.durationMultiplier.value, 4);
+  assert.ok(report.warnings.some(({ code, count }) => code === "calibration_combat_assumptions_missing" && count === 1));
+  assert.ok(report.warnings.some(({ code, count }) => code === "calibration_combat_assumptions_invalid" && count === 1));
+});
+
+test("Steam calibration requires historical encounter settings and applies recorded eraser and battle speedup", () => {
+  const targetId = "wall";
+  const gameVersion = checkPatchSanity().version;
+  const assumptions = {
+    ...steamCombatAssumptions,
+    battleSpeedup: { multiplier: 3, remainingSeconds: 2 },
+    steam: { ...steamCombatAssumptions.steam, erasedSketchIds: [targetId] },
+  };
+  const fight = {
+    targetId, gameVersion, outcome: "win", seconds: 1,
+    playerStats: { maxHp: 100, attack: 10, attackSpeed: 1000, minDamage: 100, maxDamage: 100 },
+  };
+  const options = {
+    dataMetadata: { gameVersion },
+    sketches: { [targetId]: { stats: { maxHp: 20, attack: 0, attackSpeed: 8000 } } },
+    trials: 3,
+    maxSeconds: 5,
+  };
+  const report = createCalibrationReport({
+    ...options,
+    save: { meta: { profile: "steam" }, state: { combatLog: [
+      { ...fight, combatAssumptions: legacyCombatAssumptions },
+      { ...fight, combatAssumptions: { ...assumptions, steam: { universeId: "mv-original" } } },
+      { ...fight, combatAssumptions: { ...assumptions, battleSpeedup: { multiplier: 3 } } },
+      { ...fight, combatAssumptions: assumptions },
+    ] } },
+  });
+  const historicalOnly = createCalibrationReport({ ...options, externalLogs: [{ ...fight, combatAssumptions: assumptions }] });
+
+  assert.equal(report.logs.tuningEligible, 1);
+  assert.deepEqual(report.comparisons.map(({ tuningExclusion }) => tuningExclusion), [
+    "calibration_combat_assumptions_invalid", "calibration_combat_assumptions_invalid", "calibration_combat_assumptions_invalid", null,
+  ]);
+  assert.deepEqual(report.comparisons.map(({ predicted }) => predicted.medianSeconds), [2, 2, 2, 1 / 3]);
+  assert.deepEqual(report.comparisons[3].simulated, historicalOnly.comparisons[0].simulated);
+  assert.deepEqual(report.tuning, historicalOnly.tuning);
+  assert.equal(report.tuning.durationMultiplier.value, 3);
 });
 
 test("calibration needs catalog patch metadata even when a log matches the reference snapshot", () => {
