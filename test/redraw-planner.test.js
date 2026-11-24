@@ -86,6 +86,17 @@ test("Targeted Redraw rejects Find New Sketches weighting", () => {
   }), /Find New Sketches is a separate mode/);
 });
 
+test("repeated requested targets count once per redraw and once in the run summary", () => {
+  const input = { sketches, targetIds: ["duct", "duct"], state: { availableSketches: ["duct"] },
+    guaranteedIds: ["duct"], totalSlots: 1, trials: 4 };
+  const result = estimateRedrawOdds(input);
+  assert.deepEqual(result.targetHits, { duct: 4 });
+  assert.deepEqual(result.targetRates, { duct: 1 });
+  assert.equal(result.probabilities.anyTarget, 1);
+  assert.deepEqual(evaluateCurrentRun(input).presentTargets, ["duct"]);
+  assert.deepEqual(recommendTargetedRedrawSettings(input).targetIds, ["duct"]);
+});
+
 test("estimateFindNewSketchOdds models Find New Sketches as a separate mode", () => {
   const result = estimateFindNewSketchOdds({
     sketches,

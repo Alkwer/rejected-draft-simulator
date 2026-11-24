@@ -15,7 +15,7 @@ import { remainingSketchVictories } from "./victory-limit.js";
 import { RewardProjectionError } from "./rewards.js";
 
 // Bump when changes to simulation or planner rules affect replayed analyses.
-const ANALYSIS_MODEL_VERSION = "2";
+const ANALYSIS_MODEL_VERSION = "3";
 function sortedJsonKeys(_key, value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return value;
   return Object.fromEntries(Object.keys(value).sort().map((key) => [key, value[key]]));
@@ -219,6 +219,7 @@ export function createWebAnalysis({
     baseStats: finalStats,
     targetSimulation: result,
     currentRun: { targets: projectedActive },
+    targetComparisons,
     ...normalizeStrategyOptions(strategyOptions),
     trials: auxiliaryTrials,
     maxSeconds: targetMaxSeconds,
@@ -1023,5 +1024,6 @@ function rarityRank(rarity) {
 
 function round(value) {
   if (!Number.isFinite(value)) return 0;
+  if (Number.isInteger(value)) return value;
   return Math.round(value * 1e6) / 1e6;
 }

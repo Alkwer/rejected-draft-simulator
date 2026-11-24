@@ -42,7 +42,7 @@ export function estimateRedrawOdds({
   if (searchNew) {
     throw new Error("Find New Sketches is a separate mode from Targeted Redraw minimums.");
   }
-  const normalizedTargets = normalizeList(targetIds);
+  const normalizedTargets = unique(normalizeList(targetIds));
   const normalizedMinimums = normalizeMinimums(minimums);
   const pool = buildRedrawPool({
     sketches,
@@ -400,7 +400,7 @@ export function recommendTargetedRedrawSettings({
   });
 
   return {
-    targetIds: normalizeList(targetIds),
+    targetIds: unique(normalizeList(targetIds)),
     recommendations,
     blockedCandidates,
   };
@@ -415,7 +415,7 @@ export function evaluateCurrentRun({
 } = {}) {
   const ids = normalizeList(state.availableSketches);
   const idSet = new Set(ids);
-  const normalizedTargets = normalizeList(targetIds);
+  const normalizedTargets = unique(normalizeList(targetIds));
   const normalizedMinimums = normalizeMinimums(minimums);
   const countsByRarity = countRarities({ sketches, ids });
   const presentTargets = normalizedTargets.filter((id) => idSet.has(id));

@@ -19,6 +19,17 @@ const slot = {
   },
 };
 
+const archivedForecast = {
+  target: { id: "hyena_hulk", name: "Hyena Hulk" },
+  trials: 4,
+  maxSeconds: 2,
+  probabilities: { win: 0.25, loss: 0.75, timeout: 0 },
+  duration: { medianSeconds: 1, p10Seconds: 0.5, p90Seconds: 1.5 },
+  assumptions: { combatSpeedMultiplier: 1, steam: { universeId: "mv-original" } },
+  player: { maxHp: 100, attack: 20 },
+  enemy: { maxHp: 1000 },
+};
+
 async function startServer(options) {
   const server = createWebServer(options);
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -247,16 +258,14 @@ test("an unreadable archive entry is reported by ID without blocking other fight
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const root = path.join(dir, "log");
   const start = Date.now();
-  const target = { id: "hyena_hulk", name: "Hyena Hulk" };
-  const forecast = { target, maxSeconds: 2, probabilities: { win: 0.25 },
-    duration: { medianSeconds: 1, p10Seconds: 0.5, p90Seconds: 1.5 } };
+  const { target } = archivedForecast;
   function archiveFight(slotNumber, offset) {
     const id = randomUUID();
     const entryDir = path.join(root, id);
     const file = path.join(entryDir, "forecast.json");
     const capture = { id, capturedAt: new Date(start + offset).toISOString(), source: `slot-${slotNumber}.json` };
     fs.mkdirSync(entryDir, { recursive: true });
-    fs.writeFileSync(file, JSON.stringify({ ...capture, forecast }));
+    fs.writeFileSync(file, JSON.stringify({ ...capture, forecast: archivedForecast }));
     return { id, entryDir, file, capture };
   }
   const older = archiveFight(1, 0);
@@ -384,11 +393,36 @@ test("the fight log reads and retries historical forecasts without stored warnin
   const dir = path.join(root, id);
   fs.mkdirSync(dir);
   const historical = { id, source: "slot-1.json", capturedAt: new Date().toISOString(),
-    forecast: { target: { id: "hyena_hulk", name: "Hyena Hulk" }, trials: 1000, maxSeconds: 300 } };
+    forecast: archivedForecast };
   fs.writeFileSync(path.join(dir, "forecast.json"), JSON.stringify(historical));
   const request = { root, pathname: "/api/steam-fights", method: "GET" };
   assert.equal(handleSteamFightRequest(request).fights[0].id, id);
   const { fight } = handleSteamFightRequest({ ...request, pathname: `${request.pathname}/${id}` });
   assert.deepEqual(fight, { ...historical, revision: 0, observation: null });
-  assert.deepEqual(await handleSteamFightRequest({ ...request, method: "POST", body: { id } }), { fight });
+  assert.deepEqual(await handleSteamFightRequest({ ...request, method: "POST",
+    body: { id, trials: archivedForecast.trials, maxSeconds: archivedForecast.maxSeconds } }), { fight });
+});
+
+test("the fight log excludes structurally incomplete forecasts from the readable archive", (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "rd-incomplete-forecast-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const request = { root, pathname: "/api/steam-fights", method: "GET" };
+  const capturedAt = new Date().toISOString();
+  const variants = [
+    { target: archivedForecast.target },
+    { ...archivedForecast, duration: { ...archivedForecast.duration, medianSeconds: null } },
+    { ...archivedForecast, probabilities: { win: 0.25 } },
+    { ...archivedForecast, warnings: [null] },
+  ];
+  const ids = variants.map((forecast) => {
+    const id = randomUUID();
+    const dir = path.join(root, id);
+    fs.mkdirSync(dir);
+    fs.writeFileSync(path.join(dir, "forecast.json"), JSON.stringify({
+      id, source: "slot-1.json", capturedAt, forecast,
+    }));
+    assert.throws(() => handleSteamFightRequest({ ...request, pathname: `${request.pathname}/${id}` }), { status: 422 });
+    return id;
+  });
+  assert.deepEqual(handleSteamFightRequest(request).fights, ids.sort().reverse().map((id) => ({ id, unreadable: true })));
 });

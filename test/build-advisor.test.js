@@ -156,6 +156,17 @@ test("analyzeBuildAdvice reserves remaining booster uses for new assignments", (
   ]);
 });
 
+test("an explicitly empty run only offers future guarantees", () => {
+  const { activeRun, tools } = analyzeBuildAdvice({
+    sketches, targetId: "duct_taped_banana", state: { availableSketches: [] },
+  });
+  for (const rows of Object.values(activeRun)) assert.deepEqual(rows, []);
+  assert.deepEqual(tools.booster, []);
+  assert.deepEqual(tools.meditation, []);
+  assert.deepEqual(tools.eraser, []);
+  assert.ok(tools.guarantee.length > 0);
+});
+
 test("analyzeBuildAdvice filters capped fights by sketch victories", () => {
   const advice = analyzeBuildAdvice({
     sketches,

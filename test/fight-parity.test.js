@@ -116,6 +116,23 @@ test("empty observations cannot pass parity, while an observed zero or event can
   assert.equal(compare({ events: [{ event: "attack" }] }).status, "match");
 });
 
+test("indexed events must match type, action and observation order", () => {
+  const compare = (events) => compareFightParityFixture({
+    fixture: { ...deterministicWinFixture, observed: { events } },
+  });
+  const attack = compare([]).trace.events.find((event) => event.event === "attack");
+  assert.equal(compare([{ index: 1, event: "start" },
+    { index: attack.index, event: "attack", action: attack.action.type }]).status, "match");
+  for (const events of [
+    [{ index: 1, event: "attack" }],
+    [{ index: attack.index, event: "attack", action: "wrong_action" }],
+    [{ index: attack.index }, { index: 1 }],
+    [{ index: 1 }, { index: 1 }],
+  ]) {
+    assert.equal(compare(events).status, "mismatch");
+  }
+});
+
 test("compareFightParityFixture applies combat speed multiplier from fixture assumptions", () => {
   const parity = compareFightParityFixture({
     fixture: {

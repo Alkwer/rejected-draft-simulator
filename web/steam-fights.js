@@ -75,13 +75,10 @@ function updateWatch(fight, monitorStatus) {
   if (byId("watchStatus").textContent !== message) status("watchStatus", message);
 }
 
-function showFight(fight, monitorStatus) {
+function showFight(fight, monitorStatus, preserveDraft = false) {
   const { forecast, observation } = fight;
   const { duration, probabilities, assumptions, enemy, player } = forecast;
   const warnings = forecast.warnings ?? [];
-  if (!duration || !probabilities || !assumptions?.steam || !enemy || !player || !Array.isArray(warnings)) {
-    throw new Error(`Could not display saved fight ${fight.id}.`);
-  }
   if (current?.id !== fight.id) byId("manualResult").open = !monitorsHyena(fight) && !fight.observation;
   current = fight;
   const picker = byId("fightPicker");
@@ -150,21 +147,23 @@ function showFight(fight, monitorStatus) {
     return [term, definition];
   }));
   byId("downloadSave").href = `${endpoint}/${fight.id}/save`;
-  byId("resultOutcome").value = observation?.outcome ?? "";
-  byId("resultElapsed").value = observation?.elapsedSeconds ?? "";
-  resultEdited = false;
+  if (!preserveDraft) {
+    byId("resultOutcome").value = observation?.outcome ?? "";
+    byId("resultElapsed").value = observation?.elapsedSeconds ?? "";
+    resultEdited = false;
+  }
   byId("recordResult").textContent = observation ? "Update result" : "Save result";
   updateWatch(fight, monitorStatus);
 }
 
-async function loadFight(id) {
+async function loadFight(id, preserveDraft = false) {
   const retry = byId("retryForecast");
   const pending = [...byId("fightPicker").options].some((option) => option.value === id && option.dataset.pending);
   retry.hidden = true;
   if (pending) status("resultStatus", "Finishing the forecast from your saved pre-fight state…");
   try {
     const { fight, monitorStatus } = await api(`${endpoint}/${id}`);
-    showFight(fight, monitorStatus);
+    showFight(fight, monitorStatus, preserveDraft);
     status("resultStatus", "");
   } catch (error) {
     if (pending) {
@@ -185,14 +184,8 @@ async function refreshObservation() {
     const { fight, monitorStatus } = await api(`${endpoint}/${previous.id}`);
     if (current !== previous || byId("fightPicker").disabled) return;
     if (fight.revision !== previous.revision) {
-      const draft = resultEdited && { outcome: byId("resultOutcome").value, elapsed: byId("resultElapsed").value };
-      showFight(fight, monitorStatus);
-      if (draft) {
-        byId("resultOutcome").value = draft.outcome;
-        byId("resultElapsed").value = draft.elapsed;
-        resultEdited = true;
-      }
-      status("resultStatus", draft ? "A result arrived while you were editing. Your unsaved values are still in the form." : "");
+      showFight(fight, monitorStatus, resultEdited);
+      status("resultStatus", resultEdited ? "A result arrived while you were editing. Your unsaved values are still in the form." : "");
     } else updateWatch(fight, monitorStatus);
   } catch {
     if (current === previous) status("watchStatus", "Cannot reach the simulator. Retrying the Steam result check…", true);
@@ -299,8 +292,8 @@ byId("resultForm").addEventListener("submit", async (event) => {
     status("resultStatus", error.message, true);
     if (error.status === 409) {
       try {
-        await loadFight(current.id);
-        status("resultStatus", "Another window changed this result. Review the latest entry before editing.", true);
+        await loadFight(current.id, true);
+        status("resultStatus", "The saved result changed. Review it above, then submit again to save your values.", true);
       } catch (reloadError) {
         status("resultStatus", reloadError.message, true);
       }

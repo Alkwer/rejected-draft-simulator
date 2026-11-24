@@ -14,6 +14,7 @@ const DEFAULT_MAX_SOFTCAP_WAIT_SECONDS = 30 * 60;
 const DEFAULT_COMPARE_PROFILE_IDS = ["farm-q", "3-masterpiece", "transcendent-paragon"];
 const MAX_FARM_STEPS = 8;
 const MAX_FARM_TRIALS = 200;
+const MAX_REPEAT_TRIALS = 20;
 
 const DEFAULT_REWARD_WEIGHTS = {
   quintessence: 1,
@@ -120,6 +121,7 @@ export function createStrategyPlan({
   targetId,
   baseStats = null,
   targetSimulation = null,
+  targetComparisons = [],
   currentRun = null,
   goalQuintessence = null,
   goalCurrencies = {},
@@ -152,9 +154,29 @@ export function createStrategyPlan({
     ...profileDefaults.goalCurrencies,
     ...numericObject(goalCurrencies),
   };
-  const effectiveTargetWinRate = targetWinRate == null
-    ? toNumber(profileConfig.targetWinRate, DEFAULT_TARGET_WIN_RATE)
-    : toNumber(targetWinRate, DEFAULT_TARGET_WIN_RATE);
+  const effectiveTargetWinRate = resolveTargetWinRate(profileConfig, targetWinRate);
+  const defeatedMasterpieces = defeatedMasterpieceIds({ state, sketches, currentRows });
+  const profileWinRates = new Map();
+  const getProfileWinRate = (id) => {
+    if (!id) return null;
+    if (!profileWinRates.has(id)) {
+      const provided = [
+        id === targetId ? targetSimulation : null,
+        targetComparisons.find((row) => row.id === id),
+        currentRun?.targets?.find((row) => row.id === id),
+      ].map((result) => toNumber(result?.winRate, null)).find((rate) => rate != null);
+      const winRate = provided ?? (sketches[id]?.stats ? runMonteCarlo({
+        player: stats,
+        enemy: enemyFromSketch(sketches[id], id),
+        assumptions,
+        trials: boundedFarmTrials(trials),
+        maxSeconds,
+        seed: `${seed}:${id}:profile`,
+      }).winRate : null);
+      profileWinRates.set(id, winRate == null ? null : clamp01(winRate));
+    }
+    return profileWinRates.get(id);
+  };
   const buildAdvice = analyzeBuildAdvice({ sketches, state, targetId, baseStats: stats });
   const rawTargetStatWeights = Object.fromEntries(
     buildAdvice.targetPlan.priorityStats.map((item) => [item.stat, item.weight]),
@@ -202,27 +224,28 @@ export function createStrategyPlan({
   const profileGoal = createProfileGoal({
     profile: profileConfig,
     state,
-    sketches,
+    defeatedMasterpieces,
     goalQuintessence: effectiveGoalQuintessence,
     goalCurrencies: normalizedGoalCurrencies,
+    targetId,
     targetWinRate: effectiveTargetWinRate,
+    getProfileWinRate,
   });
   const profileModes = createProfileModes({
     currentRows,
     runEV,
     opusValues,
-    targetId,
+    targetId: profileConfig.targetId ?? targetId,
     profile: profileConfig,
     rewardWeights,
   });
   const profileProgress = estimateProfileProgress({
-    profile: profileConfig,
     profileGoal,
     approach,
     runEV,
     currentRows,
     sketches,
-    state,
+    defeatedMasterpieces,
   });
   const boosters = compareBoosterChoices({
     sketches,
@@ -271,14 +294,16 @@ export function createStrategyPlan({
   });
   const profileComparison = createProfileComparison({
     requestedProfileIds: normalizeList(compareProfiles).length > 0 ? compareProfiles : profileIds,
-    selectedProfileId: profileConfig.id,
+    selectedProfile: profileConfig,
     state,
     sketches,
     approach,
     runEV,
     currentRows,
     targetId,
-    targetSimulation,
+    targetWinRate,
+    getProfileWinRate,
+    defeatedMasterpieces,
   });
   const economy = createEconomyPlan({
     state,
@@ -410,6 +435,10 @@ function resolveStrategyProfile(value, { targetId } = {}) {
   return createCustomProfile({ targetId });
 }
 
+function resolveTargetWinRate(profile, override) {
+  return toNumber(override ?? profile.targetWinRate, DEFAULT_TARGET_WIN_RATE);
+}
+
 function resolveStrategyMode(value) {
   const id = normalizeProfileId(value);
   return MODE_BY_ID[id] ?? MODE_BY_ID["greedy-farm"];
@@ -482,7 +511,9 @@ function scaleTargetStatWeights(targetStatWeights, rewardWeights) {
   );
 }
 
-function createProfileGoal({ profile, state, sketches = {}, goalQuintessence, goalCurrencies, targetWinRate }) {
+function createProfileGoal({
+  profile, state, defeatedMasterpieces, goalQuintessence, goalCurrencies, targetId, targetWinRate, getProfileWinRate,
+}) {
   const goal = profile.goal ?? {};
   if (goal.type === "quintessence") {
     return {
@@ -505,7 +536,10 @@ function createProfileGoal({ profile, state, sketches = {}, goalQuintessence, go
     };
   }
   if (goal.type === "masterpiece_count") {
-    const current = countDefeatedMasterpieces({ state, sketches });
+    // Older summaries can carry only a count, without the identities of first clears.
+    const current = state.sketchVictories == null
+      ? Math.max(defeatedMasterpieces.size, toNumber(state.defeatedMasterpieceCount ?? state.masterpieceDefeats))
+      : defeatedMasterpieces.size;
     return {
       type: "masterpiece_count",
       current,
@@ -514,12 +548,14 @@ function createProfileGoal({ profile, state, sketches = {}, goalQuintessence, go
     };
   }
   if (goal.type === "target_win_rate") {
+    const goalTargetId = profile.targetId ?? targetId;
+    const current = getProfileWinRate(goalTargetId);
     return {
       type: "target_win_rate",
-      current: null,
+      current,
       goal: targetWinRate,
-      missing: null,
-      targetId: profile.targetId ?? null,
+      missing: current == null ? null : Math.max(0, targetWinRate - current),
+      targetId: goalTargetId ?? null,
     };
   }
   return {
@@ -530,7 +566,7 @@ function createProfileGoal({ profile, state, sketches = {}, goalQuintessence, go
   };
 }
 
-function estimateProfileProgress({ profile, profileGoal, approach, runEV, currentRows, sketches, state }) {
+function estimateProfileProgress({ profileGoal, approach, runEV, currentRows, sketches, defeatedMasterpieces }) {
   const type = profileGoal.type;
   let missing = toNumber(profileGoal.missing);
   let expectedPerRun = 0;
@@ -543,12 +579,25 @@ function estimateProfileProgress({ profile, profileGoal, approach, runEV, curren
     expectedPerRun = toNumber(runEV.currencies?.[profileGoal.currency]?.expectedPerRun);
     unit = profileGoal.currency;
   } else if (type === "masterpiece_count") {
-    expectedPerRun = estimateMasterpieceKillsPerRun({ currentRows, sketches });
+    if (missing > 0 && profileGoal.current > defeatedMasterpieces.size) {
+      return { decision: "first_clear_history_unknown", unit: "masterpiece", missing,
+        expectedPerRun: null, averageRuns: null, averageRedraws: null };
+    }
+    expectedPerRun = estimateMasterpieceKillsPerRun({ currentRows, sketches, defeatedMasterpieces });
     unit = "masterpiece";
   } else if (type === "target_win_rate") {
-    missing = Math.max(0, toNumber(profile.targetWinRate, DEFAULT_TARGET_WIN_RATE) - toNumber(approach.winRate.current));
     expectedPerRun = estimateWinRateGainPerRun({ currentRows, runEV });
     unit = "win_rate";
+    if (profileGoal.current == null) {
+      return {
+        decision: "target_win_rate_unknown",
+        unit,
+        missing: null,
+        expectedPerRun: roundNumber(expectedPerRun),
+        averageRuns: null,
+        averageRedraws: null,
+      };
+    }
   } else {
     missing = approach.ready ? 0 : toNumber(approach.winRate.missing);
     expectedPerRun = estimateWinRateGainPerRun({ currentRows, runEV });
@@ -704,10 +753,11 @@ function decideStopFarming({
       currentWinRate: roundNumber(current),
       targetWinRate,
       curve: [],
+      hasUnverifiedCandidates: false,
     };
   }
   const { curve, improvesTarget, hasUnverifiedCandidates } = createWinRateCurve({
-    sketches, state, assumptions, stats, current, runEV, targetId, targetWinRate, trials, maxSeconds, seed,
+    sketches, state, assumptions, stats, current, currentRows, runEV, targetId, targetWinRate, trials, maxSeconds, seed,
   });
   const crossing = curve.find((step) => step.reachesTarget);
   if (crossing) {
@@ -719,34 +769,38 @@ function decideStopFarming({
       targetStep: crossing.step,
       targetSketchId: crossing.id,
       curve,
+      hasUnverifiedCandidates,
     };
   }
   return {
     decision: improvesTarget || hasUnverifiedCandidates ? "farm_more" : "redraw",
-    reason: improvesTarget ? "no_projected_step_reaches_target"
-      : hasUnverifiedCandidates ? "visible_rewards_need_target_verification" : "no_visible_progress_path",
+    reason: hasUnverifiedCandidates ? "visible_rewards_need_target_verification"
+      : improvesTarget ? "no_projected_step_reaches_target" : "no_visible_progress_path",
     currentWinRate: roundNumber(current),
     targetWinRate,
     curve,
+    hasUnverifiedCandidates,
   };
 }
 
 function createProfileComparison({
   requestedProfileIds,
-  selectedProfileId,
+  selectedProfile,
   state,
   sketches,
   approach,
   runEV,
   currentRows,
   targetId,
-  targetSimulation,
+  targetWinRate,
+  getProfileWinRate,
+  defeatedMasterpieces,
 }) {
   const ids = normalizeList(requestedProfileIds);
-  const selected = selectedProfileId && selectedProfileId !== "custom" ? [selectedProfileId] : [];
+  const selected = selectedProfile.id !== "custom" ? [selectedProfile.id] : [];
   const uniqueIds = [...new Set((ids.length > 0 ? ids : [...selected, ...DEFAULT_COMPARE_PROFILE_IDS]).filter(Boolean))];
   return uniqueIds
-    .map((id) => resolveStrategyProfile(id, { targetId }))
+    .map((id) => id === selectedProfile.id ? selectedProfile : resolveStrategyProfile(id, { targetId }))
     .filter((item) => item.id !== "custom")
     .map((profile) => {
       const mode = resolveStrategyMode(profile.defaultMode);
@@ -755,35 +809,26 @@ function createProfileComparison({
       const goal = createProfileGoal({
         profile,
         state,
-        sketches,
+        defeatedMasterpieces,
         goalQuintessence: defaults.goalQuintessence,
         goalCurrencies: defaults.goalCurrencies,
-        targetWinRate: toNumber(profile.targetWinRate, DEFAULT_TARGET_WIN_RATE),
+        targetId,
+        targetWinRate: resolveTargetWinRate(profile, targetWinRate),
+        getProfileWinRate,
       });
       const progress = estimateProfileProgress({
-        profile,
         profileGoal: goal,
-        approach: profile.id === selectedProfileId
-          ? approach
-          : {
-            ...approach,
-            winRate: {
-              ...approach.winRate,
-              current: toNumber(targetSimulation?.winRate, approach.winRate.current),
-              target: toNumber(profile.targetWinRate, DEFAULT_TARGET_WIN_RATE),
-              missing: Math.max(0, toNumber(profile.targetWinRate, DEFAULT_TARGET_WIN_RATE) - toNumber(targetSimulation?.winRate, approach.winRate.current)),
-            },
-          },
+        approach,
         runEV,
         currentRows,
         sketches,
-        state,
+        defeatedMasterpieces,
       });
       const modePlan = createProfileModes({
         currentRows,
         runEV,
         opusValues: [],
-        targetId,
+        targetId: profile.targetId ?? targetId,
         profile,
         rewardWeights: weights,
       })[toCamelModeId(mode.id)];
@@ -1195,20 +1240,20 @@ function decideRedrawFishing(candidates) {
   return best.score >= 30 ? "keep_run" : "redraw";
 }
 
-function countDefeatedMasterpieces({ state, sketches = {} }) {
-  const victories = numericObject(state.sketchVictories ?? {});
-  const explicit = toNumber(state.defeatedMasterpieceCount ?? state.masterpieceDefeats);
-  if (explicit > 0) return explicit;
-  return Object.entries(victories)
-    .filter(([id, count]) => count > 0 && sketches[id]?.rarity === "masterpiece")
-    .length;
+function defeatedMasterpieceIds({ state, sketches, currentRows }) {
+  const rarityById = new Map(currentRows.map((row) => [row.id, row.rarity]));
+  return new Set([...Object.entries(state.sketchVictories ?? {}), ...Object.entries(state.sketchRunVictories ?? {})]
+    .filter(([id, count]) => toNumber(count) > 0 && (sketches[id]?.rarity ?? rarityById.get(id)) === "masterpiece")
+    .map(([id]) => id));
 }
 
-function estimateMasterpieceKillsPerRun({ currentRows, sketches }) {
-  const expected = currentRows
-    .filter((row) => row.rarity === "masterpiece" || sketches[row.id]?.rarity === "masterpiece")
-    .reduce((sum, row) => sum + clamp01(row.winRate) * Math.min(1, row.remainingToMax), 0);
-  return roundNumber(expected);
+function estimateMasterpieceKillsPerRun({ currentRows, sketches, defeatedMasterpieces }) {
+  const firstWinRates = new Map();
+  for (const row of currentRows) {
+    if ((sketches[row.id]?.rarity ?? row.rarity) !== "masterpiece" || defeatedMasterpieces.has(row.id)) continue;
+    firstWinRates.set(row.id, Math.max(firstWinRates.get(row.id) ?? 0, clamp01(row.winRate)));
+  }
+  return roundNumber([...firstWinRates.values()].reduce((sum, winRate) => sum + winRate, 0));
 }
 
 function estimateWinRateGainPerRun({ currentRows, runEV }) {
@@ -1234,16 +1279,30 @@ function estimateUsefulRunRate(currentRows) {
   return roundNumber(rates.reduce((sum, rate) => sum + rate, 0) / rates.length);
 }
 
-function createWinRateCurve({ sketches, state, assumptions, stats, current, runEV, targetId, targetWinRate, trials, maxSeconds, seed }) {
-  const candidates = [...new Map(runEV.sketches
-    .filter((item) => item.id !== targetId && item.winRate > 0)
-    .map((item) => [item.id, item])).values()];
+function boundedFarmTrials(trials) {
+  return Math.max(1, Math.min(MAX_FARM_TRIALS, Math.floor(toNumber(trials, MAX_FARM_TRIALS))));
+}
+
+function createWinRateCurve({
+  sketches, state, assumptions, stats, current, currentRows, runEV, targetId, targetWinRate, trials, maxSeconds, seed,
+}) {
+  const rowsById = new Map(currentRows.map((row) => [row.id, row]));
+  const optionsById = new Map(runEV.sketches.filter((item) => item.id !== targetId).map((item) => [item.id, {
+    id: item.id,
+    name: item.name,
+    remaining: Math.ceil(rowsById.get(item.id).remainingToMax),
+    winRate: rowsById.get(item.id).winRate,
+    rewards: (sketches[item.id].rewards ?? []).filter((reward) => toNumber(reward.amount) !== 0),
+  }]));
+  const queue = [...optionsById.values()].filter((item) => item.winRate > 0);
   const curve = [];
+  const rewardingCandidates = queue.filter((item) => item.rewards.length > 0);
   if (!sketches[targetId]?.stats) {
-    return { curve, improvesTarget: false, hasUnverifiedCandidates: candidates.some((item) => item.expectedStatScore > 0) };
+    return { curve, improvesTarget: false, hasUnverifiedCandidates: rewardingCandidates.length > 0 };
   }
   const enemy = enemyFromSketch(sketches[targetId], targetId);
-  const sampleTrials = Math.max(1, Math.min(MAX_FARM_TRIALS, Math.floor(toNumber(trials, MAX_FARM_TRIALS))));
+  const repeatTrialBudget = rewardingCandidates.some((item) => item.remaining > 1) ? MAX_REPEAT_TRIALS : 0;
+  const sampleTrials = Math.min(boundedFarmTrials(trials), MAX_FARM_TRIALS - repeatTrialBudget);
   const simulate = (player) => runMonteCarlo({
     player, enemy, assumptions, trials: sampleTrials, maxSeconds, seed: `${seed}:farm-curve`,
   }).winRate;
@@ -1254,22 +1313,47 @@ function createWinRateCurve({ sketches, state, assumptions, stats, current, runE
     rewardDecay: toNumber(state.fundamentals?.rewardDecay, 1),
     rewardBoosterEffect: toNumber(state.fundamentals?.rewardBoosterEffect, 50),
   };
+  const projectedVictories = numericObject(state.sketchVictories);
   let player = stats;
   let baseline;
   let winRate;
   let projected = current;
   let improvesTarget = false;
+  let unverifiedRepeat = false;
+  let nextIndex = 0;
 
-  // Each point assumes one victory on every preceding step and on this step.
-  for (const item of candidates.slice(0, MAX_FARM_STEPS)) {
-    const rewards = sketches[item.id].rewards ?? [];
-    if (rewards.some((reward) => toNumber(reward.amount) !== 0)) {
-      const nextPlayer = applySketchRewards({ ...rewardOptions, baseStats: player, defeatedIds: [item.id] });
-      if (rewards.some(({ statName }) => nextPlayer[statName] !== player[statName])) {
+  // Share the per-step trial budget between checking a repeat and simulating the target.
+  for (; nextIndex < queue.length && nextIndex < MAX_FARM_STEPS; nextIndex += 1) {
+    const item = queue[nextIndex];
+    const farmer = sketches[item.id];
+    if (item.previousPlayer && item.previousPlayer !== player && (!farmer.stats || runMonteCarlo({
+      player,
+      enemy: enemyFromSketch(farmer, item.id),
+      assumptions,
+      trials: Math.min(MAX_REPEAT_TRIALS, sampleTrials),
+      maxSeconds,
+      seed: `${seed}:${item.id}:farm-repeat`,
+    }).wins === 0)) {
+      unverifiedRepeat = true;
+      continue;
+    }
+    const previousPlayer = player;
+    if (item.rewards.length > 0) {
+      const nextPlayer = applySketchRewards({
+        ...rewardOptions,
+        baseStats: player,
+        defeatedIds: [item.id],
+        existingVictories: projectedVictories,
+      });
+      if (item.rewards.some(({ statName }) => nextPlayer[statName] !== player[statName])) {
         baseline ??= simulate(stats);
         winRate = simulate(nextPlayer);
         player = nextPlayer;
       }
+    }
+    projectedVictories[item.id] = (projectedVictories[item.id] ?? 0) + 1;
+    if (item.remaining > 1 && previousPlayer !== player) {
+      queue.push({ ...item, remaining: item.remaining - 1, previousPlayer });
     }
 
     // Pair the target trials and anchor their measured difference to the reported win rate.
@@ -1279,13 +1363,21 @@ function createWinRateCurve({ sketches, state, assumptions, stats, current, runE
       step: curve.length + 1,
       id: item.id,
       name: item.name,
+      victoryNumber: projectedVictories[item.id],
       projectedWinRate: roundNumber(nextProjected),
       gain: roundNumber(nextProjected - projected),
       reachesTarget: nextProjected >= targetWinRate && winRate >= targetWinRate && winRate > baseline,
     });
     projected = nextProjected;
+    if (curve.at(-1).reachesTarget) {
+      nextIndex += 1;
+      break;
+    }
   }
-  const hasUnverifiedCandidates = candidates.slice(MAX_FARM_STEPS).some((item) => item.expectedStatScore > 0);
+  const hasUnverifiedCandidates = unverifiedRepeat
+    || queue.slice(nextIndex).some((item) => item.rewards.length > 0)
+    || rewardingCandidates.length > 1
+    || (player !== stats && [...optionsById.values()].some((item) => item.winRate <= 0 && item.rewards.length > 0));
   return { curve, improvesTarget, hasUnverifiedCandidates };
 }
 

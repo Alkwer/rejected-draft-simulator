@@ -65,6 +65,7 @@ test("replay fingerprints retain array order and the catalog order used for redr
   assert.throws(() => createWebAnalysis({ ...replay, save: { state: { ...state,
     availableSketches: [...state.availableSketches].reverse() } } }), /save has changed/);
   assert.throws(() => createWebAnalysis({ ...replay, expectedModelVersion: undefined }), /unknown model version/);
+  assert.throws(() => createWebAnalysis({ ...replay, expectedModelVersion: "2" }), /different or unknown model version/);
 });
 
 test("Steam reward forecasts preserve a fast imported player and the verified effective speed floor", () => {
@@ -78,8 +79,19 @@ test("Steam reward forecasts preserve a fast imported player and the verified ef
     assert.equal(analysis.routePreview.finalStats.attackSpeed, expected);
     const nextSpeed = analysis.activeDeltas.farm_a.statRewards.find(({ statName }) => statName === "attackSpeed");
     assert.equal(nextSpeed.amount, nextSpeed.finalValue - expected);
+    const wasted = analysis.strategicPlan.economy.wastedRewards.some(({ id, reason }) =>
+      id === "farm_a" && reason === "zero_or_negative_reward");
+    assert.equal(wasted, before === expected);
     assert.equal(analysis.result.trials, 2);
   }
+});
+
+test("web route previews serialize finite late-game currency balances", () => {
+  const state = { saveProfile: "steam", playerStats: { maxHp: 1000, attack: 100, attackSpeed: 1000 },
+    availableSketches: ["farm_a"], currencies: { Photon: 2e307 } };
+  const analysis = createWebAnalysis({ save: { state }, sketches, targetId: "duct", routeIds: ["farm_a"],
+    trials: 1, maxSeconds: 5 });
+  assert.equal(JSON.parse(JSON.stringify(analysis.routePreview)).currencies.Photon, 2e307);
 });
 
 test("an unrepresentable optional reward preserves the primary fight and the other reward forecasts", () => {

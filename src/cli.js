@@ -782,7 +782,11 @@ function printStrategyPlan({ target, statSource, strategicPlan }) {
   console.log("Roll/run decisions:");
   console.log(`  Masterpiece roll: ${strategicPlan.masterpieceRoll.decision} (${strategicPlan.masterpieceRoll.reason})`);
   console.log(`  Finish run: ${strategicPlan.runCompletion.decision} (${strategicPlan.runCompletion.reason})`);
-  if (strategicPlan.stopFarming) console.log(`  Stop farming: ${strategicPlan.stopFarming.decision} (${strategicPlan.stopFarming.reason})`);
+  const stop = strategicPlan.stopFarming;
+  if (stop) {
+    console.log(`  Stop farming: ${stop.decision} (${stop.reason})`);
+    if (stop.targetStep) console.log(`  Farm route: ${stop.curve.slice(0, stop.targetStep).map((step) => step.id).join(" -> ")}`);
+  }
   if (strategicPlan.profileModes?.safeFarm?.recommendation) {
     console.log(`  Safe farm: ${strategicPlan.profileModes.safeFarm.recommendation.id} score ${strategicPlan.profileModes.safeFarm.recommendation.score}`);
   }
@@ -1302,7 +1306,7 @@ function routeOptionsFromArgs(args) {
 }
 
 function createRedrawPlan({ sketches, save, targetId, args, trials, seed }) {
-  const targetIds = parseIdList(args.targets ?? targetId);
+  const targetIds = [...new Set(parseIdList(args.targets ?? targetId))];
   const findNewMode = Boolean(args["find-new-sketches"] || args["search-new"]);
   if (findNewMode) {
     return {

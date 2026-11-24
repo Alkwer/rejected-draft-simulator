@@ -405,17 +405,16 @@ function compareExpectedEvents({ expectedEvents, simulatedEvents, tolerances, de
 }
 
 function findSimulatedEvent(expected, simulatedEvents, searchFrom) {
-  if (Number.isInteger(expected.index)) {
-    const index = expected.index - 1;
-    return index >= 0 && index < simulatedEvents.length ? index : -1;
-  }
   const expectedEvent = expected.event ?? expected.type;
   const expectedAction = expected.action;
+  const matches = (event) => (!expectedEvent || event.event === expectedEvent)
+    && (!expectedAction || event.action?.type === expectedAction);
+  if (Number.isInteger(expected.index)) {
+    const index = expected.index - 1;
+    return index >= searchFrom && index < simulatedEvents.length && matches(simulatedEvents[index]) ? index : -1;
+  }
   for (let index = searchFrom; index < simulatedEvents.length; index += 1) {
-    const simulated = simulatedEvents[index];
-    if (expectedEvent && simulated.event !== expectedEvent) continue;
-    if (expectedAction && simulated.action?.type !== expectedAction) continue;
-    return index;
+    if (matches(simulatedEvents[index])) return index;
   }
   return -1;
 }

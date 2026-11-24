@@ -95,6 +95,25 @@ function validateFightMetadata(metadata, id) {
   return metadata;
 }
 
+function validateReadyFight(record, id) {
+  const { forecast } = record;
+  if (!forecast?.target) throw new Error("Missing saved forecast.");
+  const { assumptions, duration, enemy, maxSeconds, player, probabilities, trials, warnings } = forecast;
+  const speedup = assumptions?.battleSpeedup;
+  if (![duration?.p10Seconds, duration?.medianSeconds, duration?.p90Seconds].every((seconds) =>
+    Number.isFinite(seconds) && seconds >= 0) ||
+    ![probabilities?.win, probabilities?.loss, probabilities?.timeout].every((probability) =>
+      Number.isFinite(probability) && probability >= 0 && probability <= 1) ||
+    !Number.isInteger(trials) || trials < 1 || !Number.isInteger(maxSeconds) || maxSeconds < 1 ||
+    ![assumptions?.combatSpeedMultiplier, enemy?.maxHp, player?.maxHp, player?.attack].every(Number.isFinite) ||
+    typeof assumptions?.steam?.universeId !== "string" ||
+    (speedup && ![speedup.multiplier, speedup.remainingSeconds].every(Number.isFinite)) ||
+    (warnings != null && (!Array.isArray(warnings) || warnings.some((warning) => typeof warning?.message !== "string")))) {
+    throw new Error("Invalid saved forecast.");
+  }
+  return validateFightMetadata(record, id);
+}
+
 function readCaptureMetadata(dir, id) {
   const capture = readOptionalJson(path.join(dir, "capture.json"));
   return capture && validateFightMetadata({ ...capture.record, target: capture.target }, id);
@@ -105,10 +124,7 @@ function readFightMetadata(root, id) {
   try {
     const record = readOptionalJson(path.join(dir, "forecast", "forecast.json"))
       ?? readOptionalJson(path.join(dir, "forecast.json"));
-    if (record) {
-      if (!record.forecast?.target) throw new Error("Missing saved forecast.");
-      return validateFightMetadata(record, id);
-    }
+    if (record) return validateReadyFight(record, id);
     const capture = readCaptureMetadata(dir, id);
     if (capture) return capture;
     if (!fs.existsSync(dir)) return null;
@@ -224,7 +240,8 @@ async function finishCapture({ root, calculateForecast, pendingCaptures }, { id 
       const save = readSaveFile(path.join(dir, "save.json"));
       const forecast = await calculateForecast({ save, sketches: { [target.id]: sketch },
         dataMetadata, targetId: target.id, trials, maxSeconds, seed: id });
-      publish(dir, "forecast", { "forecast.json": JSON.stringify({ ...record, forecast }) });
+      const completed = validateReadyFight({ ...record, forecast }, id);
+      publish(dir, "forecast", { "forecast.json": JSON.stringify(completed) });
     }).finally(() => pendingCaptures.delete(id));
     pendingCaptures.set(id, pending);
   }
