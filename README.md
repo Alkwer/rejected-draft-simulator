@@ -243,10 +243,12 @@ npm.cmd test
 npm.cmd run lint
 npm.cmd run benchmark -- --trials 1000
 npm.cmd run benchmark -- --trials 1000 --json
+npm.cmd run benchmark -- --scenario direct --trials 1000
+npm.cmd run benchmark -- --scenario regen-wall --max-seconds 120 --trials 100
 npm.cmd run benchmark:dashboard
 ```
 
-`npm run lint` syntax-checks the simulator, tests, web UI, companion and browser test script. `npm run benchmark` reports simulations per second for a fixed combat scenario.
+`npm run lint` syntax-checks the simulator, tests, web UI, companion and browser test script. `npm run benchmark` measures simulations per second. The default `status` scenario exercises status effects. Use `direct` for a short fight won by direct hits or `regen-wall` for a fight prolonged by enemy healing. Use the same scenario, seed, trial count and time limit when comparing performance.
 
 `npm run benchmark:dashboard` measures two times from clicking **Run simulation**: the first rendered battle result and the completed panel. It uses headless Chrome (or `PLAYWRIGHT_CHANNEL`), a local server and two synthetic saves. It prints the median and three individual timings after one warm-up for each scenario, with the catalog build and simulated fight duration.
 

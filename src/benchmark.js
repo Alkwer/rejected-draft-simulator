@@ -5,37 +5,34 @@ import { fileURLToPath } from "node:url";
 
 import { runMonteCarlo } from "./combat.js";
 
-export function runBenchmark({
-  trials = 1000,
-  seed = "benchmark",
-  maxSeconds = 30,
-} = {}) {
-  const player = {
-    maxHp: 100000,
-    attack: 2500,
-    attackSpeed: 1000,
-    accuracy: 100,
-    minDamage: 100,
-    maxDamage: 100,
-    burnChance: 150,
-    burnDamage: 500,
-    bleedChance: 50,
-    freezeChance: 25,
-  };
-  const enemy = {
-    id: "benchmark_target",
-    name: "Benchmark Target",
-    maxHp: 250000,
-    attack: 500,
-    attackSpeed: 1200,
-    armor: 100,
-    absorb: 5,
-  };
+const directPlayer = {
+  maxHp: 100000,
+  attack: 2500,
+  attackSpeed: 1000,
+  accuracy: 100,
+  minDamage: 100,
+  maxDamage: 100,
+};
+const baseEnemy = {
+  id: "benchmark_target", name: "Benchmark Target",
+  maxHp: 250000, attack: 500, attackSpeed: 1200, armor: 100, absorb: 5,
+};
+const scenarios = {
+  status: {
+    player: { ...directPlayer, burnChance: 150, burnDamage: 500, bleedChance: 50, freezeChance: 25 },
+    enemy: baseEnemy,
+  },
+  direct: { player: directPlayer, enemy: { ...baseEnemy, maxHp: 10000 } },
+  "regen-wall": { player: directPlayer, enemy: { ...baseEnemy, attack: 0, regen: 5000 } },
+};
 
+export function runBenchmark({ scenario = "status", trials = 1000, seed = "benchmark", maxSeconds = 30 } = {}) {
+  if (!Object.hasOwn(scenarios, scenario)) throw new RangeError("--scenario must be status, direct or regen-wall.");
+  if (!Number.isSafeInteger(trials) || trials < 1) throw new RangeError("--trials must be a positive integer.");
+  if (!Number.isFinite(maxSeconds) || maxSeconds <= 0) throw new RangeError("--max-seconds must be a positive, finite number.");
   const startedAt = performance.now();
   const summary = runMonteCarlo({
-    player,
-    enemy,
+    ...scenarios[scenario],
     trials,
     seed,
     maxSeconds,
@@ -43,11 +40,15 @@ export function runBenchmark({
   const elapsedMs = Math.max(0.001, performance.now() - startedAt);
 
   return {
+    scenario,
+    seed,
+    maxSeconds,
     trials,
     elapsedMs,
     simulationsPerSecond: trials / (elapsedMs / 1000),
     winRate: summary.winRate,
     timeoutRate: summary.timeoutRate,
+    timeoutDiagnoses: summary.timeoutDiagnoses,
     medianSeconds: summary.medianSeconds,
     medianCensored: summary.medianCensored,
   };
@@ -60,6 +61,7 @@ function printBenchmark(result, { json = false } = {}) {
   }
 
   console.log("Rejected Draft Simulator benchmark");
+  console.log(`Scenario: ${result.scenario} | Seed: ${result.seed} | Fight limit: ${result.maxSeconds}s`);
   console.log(`Trials: ${result.trials}`);
   console.log(`Elapsed: ${result.elapsedMs.toFixed(2)}ms`);
   console.log(`Simulations/sec: ${result.simulationsPerSecond.toFixed(0)}`);
@@ -89,10 +91,16 @@ const isMain = process.argv[1]
 
 if (isMain) {
   const args = parseArgs(process.argv.slice(2));
-  const result = runBenchmark({
-    trials: Math.max(1, Math.floor(Number(args.trials ?? 1000) || 1000)),
-    seed: args.seed ?? "benchmark",
-    maxSeconds: Number(args["max-seconds"] ?? 30),
-  });
-  printBenchmark(result, { json: Boolean(args.json) });
+  try {
+    const result = runBenchmark({
+      scenario: args.scenario,
+      trials: args.trials === undefined ? undefined : Number(String(args.trials)),
+      seed: args.seed,
+      maxSeconds: args["max-seconds"] === undefined ? undefined : Number(String(args["max-seconds"])),
+    });
+    printBenchmark(result, { json: Boolean(args.json) });
+  } catch (error) {
+    console.error(error.message);
+    process.exitCode = 1;
+  }
 }

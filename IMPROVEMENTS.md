@@ -2,6 +2,16 @@
 
 The numbered sections record previous work and ideas. The active backlog starts with the work order below.
 
+## November 2026 audit
+
+- [x] Keep missing or unreadable fight links from selecting another Steam fight. Hide the result form until a fight is selected.
+- [x] Surface catalog and save-file loading errors. Keep a target search from repeating the simulation while the selected target stays the same.
+- [x] Honor JSON export for save inspection and target lists. Validate strategy trial counts and trace windows.
+- [x] Validate static file locations and uploaded saves. Limit catalog refresh requests to the local simulator.
+- [x] Check Steam catalog provenance and rebuild damaged caches from the installation. Check legacy web bundle imports and cached sketch records.
+- [x] Reject invalid benchmark settings and measure direct hits, status effects and regen walls independently.
+- [ ] Compare seeded forecasts against repeated, observed Hyena Hulk fights on the same Steam build and setup. See the [combat accuracy backlog](docs/combat-engine-accuracy-backlog.md).
+
 ## Priority 1: More Accurate Combat Engine
 
 - DONE in combat engine v2: DoT statuses, Remedy, Opacity, Leap, immunities, vulnerability, Thorns, Counter, Parry damage, Glancing Blow, Execute, Varnish, Haste, Slow, Freeze, Hinder, Banana Peel, MinDamage/MaxDamage, Crit, Golden Luck, Inspiration, MultiStrike, Energy Wave and Surrealism.
@@ -45,7 +55,7 @@ The numbered sections record previous work and ideas. The active backlog starts 
 
 ## Priority 5: Build Advisor
 
-- DONE: `--build-advice` and alias `--recommend` run a heuristic build advisor for the selected target.
+- DONE: `--build-advice` runs a heuristic build advisor for the selected target. `--recommend` gives the next action for the current run.
 - DONE: for `Duct-Taped Banana`, prioritizes Bleed, Leap, sustain, accuracy and anti-banana.
 - DONE: for `Rose Window`, prioritizes Freeze, regen/armor breakthrough, remedy/opacity and sustain.
 - DONE: for `Mobius Strip`, prioritizes Burn, anti-burn sustain, Leap/Remedy and sustain.
@@ -461,7 +471,7 @@ Started on 2026-05-23 with the observability slice: status deltas, ordered RNG t
 - Add a fast mode and an accuracy mode, with clear UI labels and different mechanic coverage if needed.
 - Cache normalized combatants and parsed stat maps between trials.
 - Avoid repeated object allocation in hot loops after engine parity stabilizes.
-- Add benchmark fixtures for simple direct fights, status-heavy fights, long regen walls and batch planner runs.
+- DONE: `npm run benchmark` covers direct hits, status effects and regen walls. `npm run benchmark:dashboard` measures the battle result and completed planner for two synthetic Steam runs.
 - Add a performance regression threshold for simulations per second.
 
 ### Testing Standards for Engine Work
