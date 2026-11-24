@@ -33,6 +33,25 @@ test("CLI runs a JSON simulation against a fixture save", () => {
   assert.equal(parsed.appliedIds.length, 0);
 });
 
+test("CLI list and inspection support both JSON output flags", () => {
+  const runJson = (args, flag) => {
+    const result = spawnSync(process.execPath, ["src/cli.js", ...args, ...flag],
+      { cwd: projectRoot, encoding: "utf8" });
+    assert.equal(result.status, 0, result.stderr);
+    return JSON.parse(result.stdout);
+  };
+  const listArgs = ["--list-targets", "--rarity", "masterpiece"];
+  const targets = runJson(listArgs, ["--export", "json"]);
+  assert.deepEqual(targets, runJson(listArgs, ["--json"]));
+  assert.ok(targets.every(({ rarity }) => rarity === "masterpiece"));
+  assert.ok(targets.some(({ id }) => id === "duct_taped_banana"));
+
+  const inspectArgs = ["--save", fixtureSave, "--inspect-save"];
+  const analysis = runJson(inspectArgs, ["--export", "json"]);
+  assert.deepEqual(analysis, runJson(inspectArgs, ["--json"]));
+  assert.ok(analysis.stats.recommendedSource);
+});
+
 test("CLI reports exact Steam Exploratory Redraw when only a different rarity is new", () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "rejected-draft-redraw-"));
   const file = path.join(directory, "save.json");
@@ -194,6 +213,18 @@ test("CLI exports a deterministic fight trace as JSON", () => {
   assert.equal(parsed.trace.target.id, "duct_taped_banana");
   assert.ok(parsed.trace.events.length > 0);
   assert.ok(parsed.trace.events.every((event) => event.time <= 5));
+});
+
+test("CLI rejects invalid trace windows", () => {
+  const base = ["src/cli.js", "--save", fixtureSave, "--target", "duct"];
+  const invalidArguments = [[], ["0"], ["-1"], ["typo"], ["Infinity"]];
+  for (const values of invalidArguments) {
+    const result = spawnSync(process.execPath, [...base, "--trace-fight", "--trace-seconds", ...values],
+      { cwd: projectRoot, encoding: "utf8" });
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /--trace-seconds must be a positive, finite number/);
+    assert.equal(result.stdout, "");
+  }
 });
 
 test("CLI can export RNG decisions in fight traces", () => {

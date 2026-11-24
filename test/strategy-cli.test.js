@@ -22,6 +22,8 @@ test("CLI prints a strategic plan as JSON", () => {
     "60",
     "--trials",
     "5",
+    "--strategy-trials",
+    "3",
     "--export",
     "json",
   ], {
@@ -32,12 +34,25 @@ test("CLI prints a strategic plan as JSON", () => {
   assert.equal(result.status, 0, result.stderr || result.stdout);
   const parsed = JSON.parse(result.stdout);
   assert.equal(parsed.target.id, "duct_taped_banana");
+  assert.equal(parsed.strategicPlan.assumptions.trials, 3);
+  assert.equal(parsed.strategicPlan.approach.winRate.trials, 3);
   assert.equal(parsed.strategicPlan.approach.resources.quintessence.goal, 1e6);
   assert.equal(parsed.strategicPlan.approach.resources.currencies.Graphite.goal, 100);
   assert.ok(parsed.strategicPlan.masterpieceRoll.decision);
   assert.ok(parsed.strategicPlan.economy);
   assert.ok(Array.isArray(parsed.strategicPlan.economy.purchasePlan.buyNow));
   assert.ok(Array.isArray(parsed.strategicPlan.economy.currencyForecasts));
+});
+
+test("CLI rejects invalid strategy trial counts", () => {
+  const base = ["src/cli.js", "--save", fixtureSave, "--target", "duct", "--strategy-plan", "--max-seconds", "1"];
+  for (const values of [[], ["0"], ["1.5"], ["typo"], ["Infinity"]]) {
+    const result = spawnSync(process.execPath, [...base, "--strategy-trials", ...values],
+      { cwd: projectRoot, encoding: "utf8" });
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /--strategy-trials must be a positive integer/);
+    assert.equal(result.stdout, "");
+  }
 });
 
 test("CLI accepts strategy profile and profile comparison options", () => {

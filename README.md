@@ -89,6 +89,7 @@ List Masterpiece ids:
 
 ```powershell
 npm.cmd run simulate -- --list-targets --rarity masterpiece
+npm.cmd run simulate -- --list-targets --rarity masterpiece --export json
 ```
 
 Simulate Duct-Taped Banana from a save:
@@ -103,6 +104,7 @@ Inspect a save without running combat:
 
 ```powershell
 npm.cmd run simulate -- --save "C:\path\to\save.txt" --inspect-save --target duct_taped_banana
+npm.cmd run simulate -- --save "C:\path\to\save.txt" --inspect-save --export json
 npm.cmd run simulate -- --save latest --inspect-save
 ```
 
@@ -181,7 +183,7 @@ Get build advice for a target from the current save:
 
 ```powershell
 npm.cmd run simulate -- --save "C:\path\to\save.txt" --target duct_taped_banana --build-advice
-npm.cmd run simulate -- --save "C:\path\to\save.txt" --target mobius_strip --recommend
+npm.cmd run simulate -- --save "C:\path\to\save.txt" --target mobius_strip --build-advice
 ```
 
 Build advisor output includes target-specific stat priorities, biggest build problems, guarantee/booster/eraser/meditation suggestions, active-run finish/hide/avoid lists, and best next rewards. It currently has dedicated profiles for Duct-Taped Banana, Rose Window, Mobius Strip and Transcendent Paragon.
@@ -192,7 +194,7 @@ Generate a broader strategic plan:
 npm.cmd run simulate -- --save "C:\path\to\save.txt" --target duct_taped_banana --strategy-plan --goal-q 1e230 --goal-currency "Photon=1e230" --softcap-seconds 600 --booster-candidates "old:franklyn,vinchy~new:new_tone,mariline" --trials 500 --export json
 ```
 
-`--strategy-plan` combines target readiness, missing Q/currency, wait-vs-redraw at softcap, farm plan, Opus currency-vs-stat value, run EV over `--farm-seconds`, economy planning, booster set comparison by route simulation, Masterpiece keep/redraw and finish-run/redraw decisions. Use `--goal-q`, `--goal-currency`, `--softcap-seconds`, `--farm-seconds`, `--booster-candidates`, `--masterpiece-targets` and `--strategy-trials` to make the assumptions explicit.
+`--strategy-plan` combines target readiness, missing Q/currency, wait-vs-redraw at softcap, farm plan, Opus currency-vs-stat value, run EV over `--farm-seconds`, economy planning, booster set comparison by route simulation, Masterpiece keep/redraw and finish-run/redraw decisions. Use `--goal-q`, `--goal-currency`, `--softcap-seconds`, `--farm-seconds`, `--booster-candidates` and `--masterpiece-targets` to make the assumptions explicit. Set `--strategy-trials` to a positive integer to override the strategy forecast budget. By default, the strategy uses the `--trials` budget up to 1,000.
 
 Farm window earnings include passive generation for the entire window and payouts from fights projected to finish within it. Full-route earnings cover one attempt per eligible sketch in planner order. The planner budgets the p90 duration of each fight, using its median when p90 is absent. A missing or censored time makes subsequent finish times uncertain. The report marks incomplete window totals and shows battle-only full-route earnings when it cannot time passive generation.
 
@@ -258,7 +260,7 @@ npm.cmd run simulate -- --save latest --current-run --trials auto
 npm.cmd run simulate -- --save latest --recommend --target mobius --trials 500
 ```
 
-`--remaining` lists unbeaten visible sketches in the active run with win chance, CI, p90 fight time and likely problem. `--current-run` adds a one-line decision on top of that list. `--recommend` now prints one concrete action such as `fight_target`, `finish_first`, `farm_current_run` or `redraw`; use `--build-advice` when you want the longer stat/tool advice report.
+`--remaining` lists unbeaten visible sketches in the active run with win chance, CI, p90 fight time and likely problem. `--current-run` adds a one-line decision on top of that list. `--recommend` prints one action such as `fight_target`, `finish_first`, `increase_trials`, `farm_current_run` or `redraw`. Use `--build-advice` for the longer stat and tool advice report.
 
 ## Current Scope
 

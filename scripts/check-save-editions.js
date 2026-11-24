@@ -59,6 +59,7 @@ async function checkMobileImport(browser, server, url) {
   try {
     await page.goto(url);
     await page.getByRole("button", { name: "Run", exact: true }).click();
+    assert.equal(await page.getByRole("button", { name: "Run", exact: true }).getAttribute("aria-pressed"), "true");
     await page.locator("#targetSelect").selectOption("little_stapler");
     await page.locator("#trialsSelect").selectOption("100");
     await page.locator("#maxSecondsInput").fill("5");
@@ -198,7 +199,11 @@ try {
   const page = await browser.newPage();
   const errors = [];
   page.on("pageerror", (error) => errors.push(error.message));
+  await page.route("**/api/targets?edition=steam", (route) => route.abort("failed"), { times: 1 });
   await page.goto(`http://127.0.0.1:${server.address().port}/`);
+  await page.locator("#messageBar").getByText(/Could not load the target catalog/).waitFor();
+  await page.locator("#importBundleButton").click();
+  await page.waitForFunction(() => document.querySelector("#targetSelect").options.length > 0);
   const battleTab = page.getByRole("tab", { name: "Battle", exact: true });
   await battleTab.press("ArrowRight");
   const runTab = page.getByRole("tab", { name: "Run", exact: true });
@@ -211,6 +216,15 @@ try {
   assert.equal(await battleTab.getAttribute("aria-selected"), "true");
   await page.getByRole("tab", { name: "Run", exact: true }).press("Enter");
   const target = page.locator("#targetSelect");
+  await page.evaluate(() => {
+    const readText = File.prototype.text;
+    File.prototype.text = function () {
+      File.prototype.text = readText;
+      return Promise.reject(new Error("Read failed."));
+    };
+  });
+  await page.locator("#saveFile").setInputFiles({ name: "unavailable.txt", mimeType: "text/plain", buffer: Buffer.from("save") });
+  await page.locator("#messageBar").getByText(/Could not read the save file/).waitFor();
   await target.selectOption("little_stapler");
   await page.locator("#trialsSelect").selectOption("100");
   await page.locator("#maxSecondsInput").fill("5");
@@ -262,6 +276,10 @@ try {
     await route.continue();
   });
   const firstRequest = page.waitForRequest((r) => r.url().endsWith("/api/analyze"));
+  await page.locator("#targetFilterInput").fill("Duct");
+  assert.equal(await target.inputValue(), "duct_taped_banana");
+  assert.equal(await page.locator("#analyzeButton").isEnabled(), true);
+  await page.locator("#targetFilterInput").fill("");
   await page.locator("#analyzeButton").press("Enter");
   await firstRequest;
   await attempts.selectOption("2000");
@@ -351,6 +369,16 @@ try {
   assert.equal(await page.locator("#fightPicker option").count(), 1);
 
   const fightId = await page.locator("#fightPicker").inputValue();
+  for (const [id, message] of [[unreadableId, "The linked fight could not be read."], ["missing", "The linked fight is unavailable."]]) {
+    await page.goto(new URL(`?fight=${id}`, page.url()).href);
+    await page.getByText(message, { exact: true }).waitFor();
+    assert.equal(new URL(page.url()).searchParams.get("fight"), id);
+    assert.equal(await page.locator("#fightDetail").isVisible(), false);
+    assert.equal(await page.locator("#fightPicker").inputValue(), "");
+  }
+  await page.locator("#fightPicker").selectOption(fightId);
+  await page.locator("#fightDetail").waitFor();
+  assert.equal(new URL(page.url()).searchParams.get("fight"), fightId);
   const resultUrl = `/api/steam-fights/${fightId}/observation`;
   const outcome = page.locator("#resultOutcome");
   const elapsed = page.locator("#resultElapsed");

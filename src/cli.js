@@ -68,9 +68,13 @@ if (save && shopUpgrades) save.state[STEAM_SHOP_CATALOG] = shopUpgrades;
 
 if (args["list-targets"]) {
   const rarity = args.rarity;
-  for (const sketch of Object.values(sketches)) {
-    if (rarity && sketch.rarity !== rarity) continue;
-    console.log(`${sketch.id.padEnd(32)} ${sketch.rarity.padEnd(12)} ${sketch.name}`);
+  const targets = Object.values(sketches).filter((sketch) => !rarity || sketch.rarity === rarity);
+  if (wantsJsonOutput(args)) {
+    console.log(JSON.stringify(targets.map(({ id, rarity, name }) => ({ id, rarity, name })), null, 2));
+  } else {
+    for (const sketch of targets) {
+      console.log(`${sketch.id.padEnd(32)} ${sketch.rarity.padEnd(12)} ${sketch.name}`);
+    }
   }
   process.exit(0);
 }
@@ -90,7 +94,7 @@ const targetId = resolveTargetId(args.target);
 const analysis = analyzeSave({ save, sketches, targetId, dataMetadata });
 
 if (args["inspect-save"]) {
-  if (args.json) console.log(JSON.stringify(analysis, null, 2));
+  if (wantsJsonOutput(args)) console.log(JSON.stringify(analysis, null, 2));
   else printSaveInspection(analysis);
   process.exit(0);
 }
@@ -115,7 +119,7 @@ if (args["max-seconds"] === true || !Number.isFinite(maxSeconds) || maxSeconds <
   process.exit(1);
 }
 if (args.trials !== undefined && String(args.trials).toLowerCase() !== "auto" &&
-    (args.trials === true || !Number.isSafeInteger(Number(args.trials)) || Number(args.trials) < 1)) {
+    !isPositiveIntegerArgument(args.trials)) {
   console.error("--trials must be auto or a positive integer.");
   process.exit(1);
 }
@@ -204,7 +208,12 @@ if (args["build-advice"]) {
 }
 
 if (args["strategy-plan"] || args.strategy) {
-  const strategyTrials = Math.max(1, Math.floor(Number(args["strategy-trials"] ?? Math.min(trials, 1000)) || 1000));
+  const strategyTrialsArgument = args["strategy-trials"];
+  if (strategyTrialsArgument !== undefined && !isPositiveIntegerArgument(strategyTrialsArgument)) {
+    console.error("--strategy-trials must be a positive integer.");
+    process.exit(1);
+  }
+  const strategyTrials = Number(strategyTrialsArgument ?? Math.min(trials, 1000));
   const strategyTrialsSetting = parseTrialsSetting(strategyTrials);
   const strategyCurrentRun = createCurrentRunReport({
     sketches,
@@ -374,6 +383,14 @@ if (appliedIds.length > 0) {
 }
 const enemy = enemyFromSketch(target);
 
+const traceSecondsArgument = args["trace-seconds"];
+const traceSeconds = Number(traceSecondsArgument ?? 60);
+if ((args["trace-fight"] || args["fight-fixture"]) &&
+    (traceSecondsArgument === true || !Number.isFinite(traceSeconds) || traceSeconds <= 0)) {
+  console.error("--trace-seconds must be a positive, finite number.");
+  process.exit(1);
+}
+
 if (args["fight-fixture"]) {
   const fixture = readJsonFile(args["fight-fixture"]);
   const fixtureWithAssumptions = fixture.assumptions
@@ -385,7 +402,7 @@ if (args["fight-fixture"]) {
     enemy,
     targetId,
     maxSeconds,
-    traceSeconds: Number(args["trace-seconds"] ?? 60),
+    traceSeconds,
     includeRng: Boolean(args["trace-rng"]),
     seed,
   });
@@ -412,7 +429,7 @@ if (args["trace-fight"]) {
     player,
     enemy,
     maxSeconds,
-    traceSeconds: Number(args["trace-seconds"] ?? 60),
+    traceSeconds,
     includeRng: Boolean(args["trace-rng"]),
     seed,
     assumptions: combatAssumptions,
@@ -528,13 +545,14 @@ Options:
   --explain              Explain target mechanics and important stat thresholds.
   --observed-outcome <x> Compare simulation with practice: win, loss or timeout.
   --trace-fight          Export one deterministic fight timeline for debugging.
-  --trace-seconds <n>    Seconds captured by --trace-fight. Default: 60.
+  --trace-seconds <n>    Positive trace window in seconds. Default: 60.
   --trace-rng            Include ordered RNG calls in --trace-fight output.
   --fight-fixture <file> Compare one observed fight JSON fixture against a deterministic simulator trace.
   --fail-on-parity-mismatch Exit 2 when --fight-fixture finds deviations.
   --build-advice         Recommend target build priorities, tools and active-run actions.
   --recommend            Print one concrete run decision: fight, finish first, hide or redraw.
   --strategy-plan        Print strategic farm/softcap/EV/booster/roll advice for a target.
+  --strategy-trials <n>  Positive trial count for strategy forecasts. Defaults to --trials, capped at 1000.
   --strategy-profile <p> Profile: farm-q, farm-photon, farm-gold-leaf, farm-acrylic, 3-masterpiece, 4-masterpiece, transcendent-paragon.
   --strategy-mode <m>    Mode: safe-farm, greedy-farm, boss-approach or redraw-fishing.
   --compare-profiles <x> Comma-separated strategy profiles to compare side by side.
@@ -1070,7 +1088,7 @@ function printCurrentRunReport({ currentRun, recommendation, statSource, targetI
   printWarnings(warnings);
   console.log("Current run simulation");
   console.log(`Stats source: ${statSource}`);
-  if (targetId) console.log(`Target filter: ${targetId}`);
+  if (targetId) console.log(`Requested target: ${targetId}`);
   console.log(`Simulated: ${currentRun.summary.simulated}/${currentRun.summary.totalAvailable}`);
   console.log(`Skipped: hidden ${currentRun.summary.hiddenSkipped}, completed ${currentRun.summary.completedSkipped}, missing ${currentRun.summary.missingSkipped}`);
   console.log("");
@@ -1422,6 +1440,11 @@ function parseArgs(argv) {
 
 function wantsJsonOutput(parsedArgs) {
   return Boolean(parsedArgs.json) || String(parsedArgs.export ?? "").toLowerCase() === "json";
+}
+
+function isPositiveIntegerArgument(value) {
+  const number = Number(value);
+  return value !== true && Number.isSafeInteger(number) && number > 0;
 }
 
 function wantsMarkdownOutput(parsedArgs) {

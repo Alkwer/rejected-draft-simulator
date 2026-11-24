@@ -22,7 +22,7 @@
 .log-panel .icon-button { width: fit-content; }
 .log-panel .log-status:empty { display: none; }
 .log-panel .log-status[data-error="true"] { color: #ffad9e; }
-#fightDetail { display: grid; gap: 10px; }
+#fightDetail:not([hidden]) { display: grid; gap: 10px; }
 #archiveComparison[open] > p { margin-block: 10px; }
 #comparisonGroups { display: grid; gap: 18px; }
 #comparisonGroups section { display: grid; gap: 5px; min-width: 0; }

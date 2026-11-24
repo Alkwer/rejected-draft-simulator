@@ -275,16 +275,28 @@ async function loadSaved() {
   byId("unreadableFights").hidden = unreadable.length === 0;
   const picker = byId("fightPicker");
   picker.replaceChildren(...readable.map(pickerOption));
+  byId("fightPickerLabel").hidden = !readable.length;
   const linked = new URL(location.href).searchParams.get("fight");
-  const id = readable.find((fight) => fight.id === linked)?.id ?? readable[0]?.id;
-  if (id) {
+  if (linked !== null && !readable.some((fight) => fight.id === linked)) {
+    if (readable.length) {
+      const placeholder = new Option("Choose a saved fight", "");
+      placeholder.disabled = true;
+      picker.prepend(placeholder);
+      picker.value = "";
+    }
     byId("emptyFights").hidden = true;
-    byId("fightPickerLabel").hidden = false;
-    picker.value = id;
-    await loadFight(id);
-  } else byId("emptyFights").textContent = unreadable.length
-    ? "No readable saved fights." : "Saved forecasts and their results will appear here.";
-  if (linked && !fights.some((fight) => fight.id === linked)) status("resultStatus", "The linked fight is unavailable.", true);
+    status("resultStatus", unreadable.some((fight) => fight.id === linked)
+      ? "The linked fight could not be read." : "The linked fight is unavailable.", true);
+    return;
+  }
+  if (!readable.length) {
+    byId("emptyFights").textContent = unreadable.length
+      ? "No readable saved fights." : "Saved forecasts and their results will appear here.";
+    return;
+  }
+  byId("emptyFights").hidden = true;
+  picker.value = linked ?? readable[0].id;
+  await loadFight(picker.value);
 }
 
 byId("logSource").addEventListener("change", () => {
