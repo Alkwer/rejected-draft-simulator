@@ -22,22 +22,28 @@ function hyenaOutcome(notice) {
   return null;
 }
 
+export function hyenaNotificationsEnabled({ state }) {
+  const settings = state.notificationSettings;
+  return state.combatLogUnlocked !== false && settings?.VICTORY?.inGame !== false && settings?.DEFEAT?.inGame !== false;
+}
+
 export function inspectHyenaHistory(save, { since, until = Infinity, checkedThrough = since }) {
   const history = save.state.notificationHistory;
   const savedAt = save.meta?.savedAt;
-  if (!Array.isArray(history) || !Number.isSafeInteger(savedAt)) return { status: "unavailable" };
+  if (!Number.isSafeInteger(savedAt)) return { status: "unavailable" };
   if (savedAt < since || savedAt < checkedThrough) return { status: "waiting" };
+  if (!Array.isArray(history)) return { status: hyenaNotificationsEnabled(save) ? "unavailable" : "settings" };
+  const chronological = history.filter((entry) => Number.isSafeInteger(entry?.timestamp) && entry.timestamp <= savedAt)
+    .sort((a, b) => a.timestamp - b.timestamp);
   // The docked history holds ten entries and the basic style holds up to five.
   // A later rematch cannot fill a gap between the last inspected save and this window.
   const capacity = save.state.notificationStyle === "basic" ? 5 : 10;
-  if (history.length >= capacity && !history.some((entry) => Number.isSafeInteger(entry?.timestamp) && entry.timestamp <= checkedThrough)) {
+  if (history.length >= capacity && !chronological.some((entry) => entry.timestamp <= checkedThrough)) {
     return { status: "history-gap" };
   }
-  const chronological = [...history].sort((a, b) => a?.timestamp - b?.timestamp);
   for (const notice of chronological) {
     const outcome = hyenaOutcome(notice);
-    if (!outcome || !Number.isSafeInteger(notice.timestamp) || notice.timestamp < since ||
-        notice.timestamp >= until || notice.timestamp > savedAt) continue;
+    if (!outcome || notice.timestamp < since || notice.timestamp >= until) continue;
     const action = notice.action;
     if (action?.kind !== "combat-log" || !Number.isSafeInteger(action.startTime) || action.startTime <= 0 ||
         action.startTime > notice.timestamp || typeof action.encounterId !== "string" || !action.encounterId.trim()) {
@@ -52,9 +58,6 @@ export function inspectHyenaHistory(save, { since, until = Infinity, checkedThro
     };
   }
   if (savedAt >= until) return { status: "superseded" };
-  const settings = save.state.notificationSettings;
-  if (save.state.combatLogUnlocked === false || settings?.VICTORY?.inGame === false || settings?.DEFEAT?.inGame === false) {
-    return { status: "settings" };
-  }
+  if (!hyenaNotificationsEnabled(save)) return { status: "settings" };
   return { status: "waiting", checkedThrough: savedAt };
 }

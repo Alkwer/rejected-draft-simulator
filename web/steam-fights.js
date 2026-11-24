@@ -5,10 +5,12 @@ const rangeLabels = { below: "Shorter than forecast range", within: "Within fore
   above: "Longer than forecast range", indeterminate: "Time limit prevents comparison" };
 const watchMessages = {
   waiting: "Waiting for Steam to save a Hyena Hulk result. You can switch back to the game.",
-  settings: "In Steam, unlock the Combat Log and turn on in-game Victory and Defeat notifications. Save your slot before the next fight.",
+  settings: "Unlock the Combat Log and enable in-game Victory and Defeat notifications in Steam. Save a new pre-fight state or enter this result manually.",
   unavailable: "Waiting for the original Steam slot and its notification history to become available.",
   "missing-timing": "Steam saved a Hyena Hulk result without a combat start time. Enter this result manually.",
   "history-gap": "Steam has rotated the saved notifications for this forecast. Save a new pre-fight state just before your next attempt.",
+  "setup-changed": "The combat setup or game version changed. Save a new pre-fight state or enter this result manually.",
+  "setup-unverified": "The original Steam save could not be checked. Enter this result manually.",
   superseded: "A newer Hyena Hulk forecast was saved for this slot before a result was found.",
 };
 const numbers = new Intl.NumberFormat(undefined, { maximumFractionDigits: 2 });

@@ -222,5 +222,6 @@ function normalizeArray(value) {
 
 function roundNumber(value) {
   if (!Number.isFinite(value)) return 0;
+  if (Math.abs(value) >= 1e9) return value;
   return Math.round(value * 1e9) / 1e9;
 }

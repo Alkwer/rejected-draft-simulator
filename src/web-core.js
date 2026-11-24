@@ -57,7 +57,7 @@ export function createWebAnalysis({
   expectedSaveHash,
   expectedCatalogHash,
   expectedModelVersion,
-} = {}) {
+} = {}, onPrimary) {
   let replayIdentity;
   if (identifyInputs) {
     if ((expectedModelVersion || expectedSaveHash || expectedCatalogHash) && expectedModelVersion !== ANALYSIS_MODEL_VERSION) {
@@ -114,6 +114,10 @@ export function createWebAnalysis({
   const result = targetSimulation.result;
   const targetMaxSeconds = targetSimulation.effectiveMaxSeconds;
   const report = createCombatReport({ target, player: finalStats, simulation: result });
+  onPrimary?.({
+    target: targetSummary(target), finalStats, result, report,
+    bundle: summarizeGameBundle({ sketches, dataMetadata }), warnings: analysis.warnings,
+  });
   const assumptionComparisons = createModelAssumptionComparisons({
     target,
     player: finalStats,

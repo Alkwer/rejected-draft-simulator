@@ -142,7 +142,7 @@ test("Steam monitor imports a Hyena result in the background from the captured s
   const notices = [{ type: "DEFEAT", message: "Defeated by Hyena Hulk! 7 second cooldown.",
     action: { kind: "combat-log", startTime: start, encounterId: "combat-42" }, timestamp: start + 1999 }];
   const saved = { ...empty, meta: { ...empty.meta, savedAt: start + 2000 },
-    state: { ...empty.state, notificationHistory: notices } };
+    state: { ...empty.state, playerStats: { ...empty.state.playerStats, attack: 100 }, notificationHistory: notices } };
   fs.writeFileSync(later, JSON.stringify({ ...saved, meta: { ...saved.meta, slot: 2 } }));
   fs.writeFileSync(path.join(dir, "last-slot.txt"), "2");
   await server.close();
@@ -163,6 +163,8 @@ test("Steam monitor imports a Hyena result in the background from the captured s
   assert.equal(fight.observation.source, "steam-notification");
   assert.equal(fight.observation.encounterId, "combat-42");
   assert.equal(fight.observation.elapsedSeconds, 1.999);
+  assert.equal(fight.observation.gameVersion, empty.meta.gameVersion);
+  assert.equal(fight.observation.saveVersion, empty.version);
   assert.equal(fight.observation.outcome, "loss");
   assert.deepEqual(fight.forecast, second.forecast);
   const older = await fetchFight(first.id);
@@ -190,13 +192,64 @@ test("Steam monitor imports a Hyena result in the background from the captured s
   assert.equal((await fetchFight(second.id)).fight.revision, 3);
 });
 
+test("Steam monitor keeps an unverified match manual across restarts", async (t) => {
+  for (const [name, { state = {}, meta = {}, withResult = false, missingCapture = false, status }] of Object.entries({
+    "changed combat stats": { state: { playerStats: { ...slot.state.playerStats, attack: 100 } }, status: "setup-changed" },
+    "changed eraser": { state: { erasedSketchIds: [] }, status: "setup-changed" },
+    "disabled notifications": { state: { notificationSettings: { VICTORY: { inGame: false } } }, status: "settings" },
+    "changed game version": { meta: { gameVersion: "v0.9772" }, withResult: true, status: "setup-changed" },
+    "missing original save": { missingCapture: true, withResult: true, status: "setup-unverified" },
+  })) {
+    await t.test(name, async (t) => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rd-unverified-fight-"));
+      t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+      const root = path.join(dir, "log");
+      const file = path.join(dir, "slot-1.json");
+      const options = { root, dataPath: DEFAULT_DATA_PATH, steamSaveDir: dir };
+      const store = (savedAt, snapshot = {}, history = [], extraMeta = {}) => fs.writeFileSync(file, JSON.stringify({
+        ...slot, meta: { ...slot.meta, slot: 1, savedAt, ...extraMeta },
+        state: { ...slot.state, notificationHistory: history, ...snapshot },
+      }));
+      store(slot.meta.savedAt);
+      const base = "/api/steam-fights";
+      const { fight: captured } = await handleSteamFightRequest({
+        ...options, pathname: base, method: "POST", body: { trials: 1, maxSeconds: 2 },
+      });
+      const since = Date.parse(captured.capturedAt);
+      const result = { type: "VICTORY", message: "Hyena Hulk defeated!", timestamp: since + 400,
+        action: { kind: "combat-log", startTime: since + 200, encounterId: "later-fight" } };
+      if (missingCapture) fs.unlinkSync(path.join(root, captured.id, "save.json"));
+      store(since + (withResult ? 500 : 100), state, withResult ? [result] : [], meta);
+      const monitor = createSteamFightMonitor(options);
+      t.after(() => monitor.stop());
+      monitor.start();
+      assert.equal(monitor.status(captured.id), status);
+      monitor.stop();
+
+      store(since + 600, {}, [result]);
+      const restarted = createSteamFightMonitor(options);
+      t.after(() => restarted.stop());
+      restarted.start();
+      assert.equal(restarted.status(captured.id), status);
+      const pathname = base + "/" + captured.id;
+      assert.equal(handleSteamFightRequest({ ...options, pathname, method: "GET" }).fight.observation, null);
+      const manual = handleSteamFightRequest({
+        ...options, pathname: pathname + "/observation", method: "PUT",
+        body: { revision: 0, outcome: "win", elapsedSeconds: 0.2 },
+      });
+      assert.equal(manual.fight.observation.outcome, "win");
+      assert.equal(manual.fight.observation.source, undefined);
+    });
+  }
+});
+
 test("Steam monitor restores inspected coverage after a restart with a full, overlapping history", async (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rd-fight-checkpoint-"));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const root = path.join(dir, "log");
   const file = path.join(dir, "slot-1.json");
-  const writeSlot = (savedAt, notificationHistory) => fs.writeFileSync(file, JSON.stringify({
-    ...slot, meta: { ...slot.meta, slot: 1, savedAt }, state: { ...slot.state, notificationHistory },
+  const writeSlot = (savedAt, notificationHistory, state = {}) => fs.writeFileSync(file, JSON.stringify({
+    ...slot, meta: { ...slot.meta, slot: 1, savedAt }, state: { ...slot.state, notificationHistory, ...state },
   }));
   const options = { root, dataPath: DEFAULT_DATA_PATH, steamSaveDir: dir };
   writeSlot(slot.meta.savedAt, []);
@@ -239,7 +292,7 @@ test("Steam monitor restores inspected coverage after a restart with a full, ove
   ];
   assert.equal(notices.length, 10);
   assert.ok(notices.every((notice) => notice.timestamp > since));
-  writeSlot(notifiedAt + 1, notices);
+  writeSlot(notifiedAt + 1, notices, { playerStats: { ...slot.state.playerStats, attack: 100 } });
   const restarted = createSteamFightMonitor(options);
   t.after(() => restarted.stop());
   restarted.start();
@@ -266,6 +319,7 @@ test("an unreadable archive entry is reported by ID without blocking other fight
     const capture = { id, capturedAt: new Date(start + offset).toISOString(), source: `slot-${slotNumber}.json` };
     fs.mkdirSync(entryDir, { recursive: true });
     fs.writeFileSync(file, JSON.stringify({ ...capture, forecast: archivedForecast }));
+    fs.writeFileSync(path.join(entryDir, "save.json"), JSON.stringify(slot));
     return { id, entryDir, file, capture };
   }
   const older = archiveFight(1, 0);

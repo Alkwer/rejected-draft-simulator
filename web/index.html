@@ -102,6 +102,7 @@
             <h2>Save</h2>
             <button id="steamSlotButton" type="button" class="icon-button primary">Use active Steam slot</button>
             <textarea id="saveInput" spellcheck="false" aria-label="Save export string" placeholder="Or paste a save export"></textarea>
+            <button id="mobileAnalyzeButton" type="button" class="icon-button primary">Run simulation</button>
             <div class="file-row">
               <label class="file-picker">
                 <input id="saveFile" type="file" accept=".txt,.json,text/plain,application/json">
@@ -487,7 +488,7 @@
             </div>
           </section>
 
-          <section class="panel" data-function-panel="compare-history" data-mobile-panel="planner">
+          <section class="panel history-panel" data-function-panel="compare-history" data-mobile-panel="planner">
             <div class="section-head">
               <h2>History</h2>
               <button id="clearHistoryButton" type="button" class="icon-only" title="Clear history" data-tooltip="Clear history">

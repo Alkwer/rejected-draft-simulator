@@ -506,6 +506,16 @@ select:focus-visible {
   align-items: center;
 }
 
+#mobileAnalyzeButton {
+  display: none;
+}
+
+/* While the worker finishes, keep earlier recommendations out of the new fight's view. */
+body.primary-result-only .main-stack > .panel:not(.result-panel, .history-panel),
+body.primary-result-only .active-run-section {
+  display: none !important;
+}
+
 .file-picker {
   position: relative;
   min-width: 0;
@@ -1370,9 +1380,22 @@ body[data-density="dense"] td {
   }
 
   .brand p,
-  .version-ticket {
+  .version-ticket strong {
     display: none;
   }
+
+  .topbar { gap: 2px; }
+  .version-ticket {
+    margin-left: 66px;
+    padding: 0;
+    min-width: 0;
+    border: 0;
+    box-shadow: none;
+    background: transparent;
+    transform: none;
+  }
+
+  #mobileAnalyzeButton { display: inline-flex; }
 
   .resource-strip {
     grid-template-columns: 1fr 1fr;

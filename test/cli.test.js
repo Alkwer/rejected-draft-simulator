@@ -33,6 +33,17 @@ test("CLI runs a JSON simulation against a fixture save", () => {
   assert.equal(parsed.appliedIds.length, 0);
 });
 
+test("CLI route reports use the erased enemy's HP for the DPS threshold", () => {
+  const result = spawnSync(process.execPath, ["src/cli.js", "--save", fixtureSave, "--target", "rorschach_bat",
+    "--route", "mariline", "--erase", "rorschach_bat", "--trials", "1", "--max-seconds", "10", "--json"],
+  { cwd: projectRoot, encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  const { target, report, route } = JSON.parse(result.stdout);
+  assert.equal(target.stats.maxHp, 110);
+  assert.equal(target.stats.maxHp, route.target.stats.maxHp);
+  assert.equal(report.thresholds.find((row) => row.stat === "damagePerSecond").target, 11);
+});
+
 test("CLI rejects invalid stat sources, time limits, and trial counts", () => {
   for (const args of [["--stats", "typo"], ["--max-seconds", "typo"], ["--max-seconds", "0"],
     ["--max-seconds"], ["--trials", "1.5"], ["--trials", "Infinity"]]) {

@@ -1,4 +1,5 @@
 import { parseSaveEnvelope, isSteamSave } from "./save-format.js";
+import { readAnalysisResponse } from "./analysis-response.js";
 
 const els = {
   bundleStatus: document.querySelector("#bundleStatus"),
@@ -14,6 +15,7 @@ const els = {
   currentSpecsGrid: document.querySelector("#currentSpecsGrid"),
   importBundleButton: document.querySelector("#importBundleButton"),
   analyzeButton: document.querySelector("#analyzeButton"),
+  mobileAnalyzeButton: document.querySelector("#mobileAnalyzeButton"),
   compareTargetsButton: document.querySelector("#compareTargetsButton"),
   saveInput: document.querySelector("#saveInput"),
   steamSlotButton: document.querySelector("#steamSlotButton"),
@@ -135,9 +137,13 @@ async function init() {
 function bindEvents() {
   els.importBundleButton.addEventListener("click", importBundle);
   els.analyzeButton.addEventListener("click", analyze);
+  els.mobileAnalyzeButton.addEventListener("click", analyze);
   els.steamSlotButton.addEventListener("click", () => analyze({ loadSlot: true }));
   els.saveInput.addEventListener("input", () => {
+    resetSaveAnalysis();
     state.slotName = null;
+    els.saveFile.value = "";
+    els.saveFileLabel.textContent = "Choose save file";
     els.saveInput.placeholder = "Or paste a save export";
     syncExportTargets();
   });
@@ -185,53 +191,61 @@ function bindEvents() {
     if (tab) setMobileTab(tab);
   });
   els.clearButton.addEventListener("click", () => {
-    state.analysisGeneration += 1;
-    state.pendingAnalysis = false;
-    window.clearTimeout(state.autoAnalyzeTimer);
-    state.targetRequest += 1;
+    resetSaveAnalysis();
     state.slotName = null;
     els.saveInput.placeholder = "Or paste a save export";
     els.saveInput.value = "";
     els.saveFile.value = "";
     els.saveFileLabel.textContent = "Choose save file";
-    state.assumed.clear();
-    state.routeIds = [];
-    state.hiddenSketchIds.clear();
-    state.selectedSketchId = null;
-    state.lastAnalysis = null;
-    hideMessage();
-    renderCurrentSpecs();
-    renderActiveSketches([]);
-    renderRoutePlanner();
-    renderRoutePreview(null);
-    renderDiagnostics(null);
-    renderAssumptionComparisons([]);
-    renderFightTrace(null);
-    renderStrategyPlan(null);
-    renderSketchDelta(null);
-    renderRollWishlist(null);
-    renderTargetComparisons([]);
-    renderBuildComparison([]);
-    for (const { element, text, className } of emptyResultFields) {
-      element.textContent = text;
-      element.className = className;
-    }
-    renderUiDiagnostics();
   });
   els.saveFile.addEventListener("change", async () => {
     const [file] = els.saveFile.files;
     if (!file) return;
     const text = await file.text();
     if (file !== els.saveFile.files[0]) return;
+    resetSaveAnalysis();
     state.slotName = null;
+    els.saveInput.placeholder = "Or paste a save export";
     els.saveFileLabel.textContent = file.name;
     els.saveInput.value = text;
-    await analyze();
+    if (state.isBusy) state.pendingAnalysis = true;
+    else await analyze();
   });
   els.clearHistoryButton.addEventListener("click", () => {
     localStorage.removeItem("rd-sim-history");
     renderHistory();
   });
+}
+
+function resetSaveAnalysis() {
+  state.analysisGeneration += 1;
+  state.targetRequest += 1;
+  state.pendingAnalysis = false;
+  window.clearTimeout(state.autoAnalyzeTimer);
+  state.assumed.clear();
+  state.routeIds = [];
+  state.hiddenSketchIds.clear();
+  state.selectedSketchId = null;
+  state.lastAnalysis = null;
+  document.body.classList.remove("primary-result-only");
+  hideMessage();
+  renderCurrentSpecs();
+  renderActiveSketches([]);
+  renderRoutePlanner();
+  renderRoutePreview(null);
+  renderDiagnostics(null);
+  renderAssumptionComparisons([]);
+  renderFightTrace(null);
+  renderStrategyPlan(null);
+  renderSketchDelta(null);
+  renderRollWishlist(null);
+  renderTargetComparisons([]);
+  renderBuildComparison([]);
+  for (const { element, text, className } of emptyResultFields) {
+    element.textContent = text;
+    element.className = className;
+  }
+  renderUiDiagnostics();
 }
 
 function analyzeIfReady() {
@@ -366,9 +380,19 @@ async function analyze({ loadSlot = false, replay = null } = {}) {
       expectedSaveHash: replay?.saveHash, expectedCatalogHash: replay?.catalogHash,
       expectedModelVersion: replay?.modelVersion,
     };
-    const data = await api("/api/analyze", {
+    const response = await fetch("/api/analyze", {
       method: "POST",
+      headers: { "content-type": "application/json", accept: "application/x-ndjson" },
       body: JSON.stringify(payload),
+    });
+    const data = await readAnalysisResponse(response, (primary) => {
+      if (generation !== state.analysisGeneration || state.pendingAnalysis || els.saveInput.value !== exportText) return;
+      document.body.classList.add("primary-result-only");
+      renderBundle(primary.bundle);
+      renderCurrentSpecs(primary.finalStats);
+      renderResourceStrip(primary);
+      renderResult(primary);
+      showMessage(["Fight result ready. Calculating strategy and comparisons.", ...primary.warnings.map((item) => item.message)].join(" "), "ok");
     });
     if (generation !== state.analysisGeneration || els.saveInput.value !== exportText) return;
     if (loadSlot) {
@@ -389,6 +413,8 @@ async function analyze({ loadSlot = false, replay = null } = {}) {
     }
     if (generation !== state.analysisGeneration || state.pendingAnalysis) return;
     if (replay) restoreAnalysisSettings(settings);
+    document.body.classList.remove("primary-result-only");
+    hideMessage();
     state.lastAnalysis = data.analysis;
     renderAnalysis(data.analysis);
     if (data.analysis.warnings.length) showMessage(data.analysis.warnings.map((item) => item.message).join(" "));
@@ -443,7 +469,7 @@ function renderResourceStrip(analysis) {
   const q = analysis.strategicPlan?.approach?.resources?.quintessence;
   const farm = analysis.strategicPlan?.farmPlan?.goal;
   els.stripQ.textContent = q?.current == null ? "--" : formatNumber(q.current);
-  els.stripQDelta.textContent = q?.missing > 0 ? `missing ${formatNumber(q.missing)}` : farm?.estimatedSeconds != null ? `ETA ${seconds(farm.estimatedSeconds)}` : "ready";
+  els.stripQDelta.textContent = !q ? "--" : q.missing > 0 ? `missing ${formatNumber(q.missing)}` : farm?.estimatedSeconds != null ? `ETA ${seconds(farm.estimatedSeconds)}` : "ready";
   els.stripTarget.textContent = analysis.target?.name ?? "--";
   els.stripWin.textContent = percent(result.winRate);
   els.stripWinDetail.textContent = `95% CI ${confidenceRange(result.winRateCi95)}`;
@@ -572,8 +598,8 @@ function renderResult(analysis) {
   els.winRateCi.textContent = `95% CI ${confidenceRange(result.winRateCi95)} | ${result.trials} attempts`;
   els.timeoutRate.textContent = percent(result.timeoutRate ?? 0);
   els.fightTime.textContent = `median ${seconds(result.medianSeconds, result.medianCensored)} | p90 ${seconds(result.p90Seconds, result.p90Censored)}${timeLimitNote(result)}`;
-  els.decision.textContent = analysis.recommendation.action;
-  els.decisionReason.textContent = analysis.recommendation.targetId ?? analysis.recommendation.reason;
+  els.decision.textContent = analysis.recommendation?.action ?? "--";
+  els.decisionReason.textContent = analysis.recommendation?.targetId ?? analysis.recommendation?.reason ?? "";
 
   renderBreakdown(analysis.report.breakdowns.failures);
   renderThresholds(analysis.report.thresholds);
@@ -884,11 +910,13 @@ function renderStrategyPlan(plan) {
   }
 
   const winRate = plan.approach?.winRate;
+  const interval = winRate?.decision === "increase_trials" && winRate.ci95Lower != null && winRate.ci95Upper != null
+    ? ` | 95% CI ${percent(winRate.ci95Lower)}–${percent(winRate.ci95Upper)}` : "";
   const qGap = plan.approach?.resources?.quintessence;
   const farmGoal = plan.farmPlan?.goal ?? {};
   els.strategySummary.textContent = plan.profile?.label ?? plan.target?.name ?? "strategy";
   els.strategyDecision.textContent = compactDecision(plan.approach?.decision);
-  els.strategyReadiness.textContent = `win ${percent(winRate?.current)} / ${percent(winRate?.target)}${qGap?.goal == null ? "" : ` | missing Q ${formatNumber(qGap.missing)}`}`;
+  els.strategyReadiness.textContent = `win ${percent(winRate?.current)} / ${percent(winRate?.target)}${interval}${qGap?.goal == null ? "" : ` | missing Q ${formatNumber(qGap.missing)}`}`;
   els.strategySoftcap.textContent = compactDecision(plan.softcap?.decision);
   els.strategySoftcapReason.textContent = plan.softcap?.secondsToSoftcap == null
     ? plan.softcap?.reason ?? "--"
@@ -1301,6 +1329,7 @@ function setBusy(isBusy) {
   const retryTrials = els.nextActionBody.querySelector("button");
   if (retryTrials) retryTrials.disabled = isBusy;
   els.analyzeButton.disabled = isBusy;
+  els.mobileAnalyzeButton.disabled = isBusy;
   els.steamSlotButton.disabled = isBusy;
   els.importBundleButton.disabled = isBusy;
   els.targetSelect.disabled = isBusy;

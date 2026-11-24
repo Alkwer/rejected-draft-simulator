@@ -5,6 +5,64 @@ import path from "node:path";
 import { chromium } from "playwright-core";
 import { createWebServer } from "../src/web-server.js";
 import { ANALYSIS_MODEL_VERSION } from "../src/model-version.js";
+import { completedAnalysis } from "./browser-analysis.js";
+
+async function checkMobileImport(browser, server, url) {
+  const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
+  let releaseCompletion;
+  try {
+    await page.goto(url);
+    await page.getByRole("button", { name: "Run", exact: true }).click();
+    await page.locator("#targetSelect").selectOption("little_stapler");
+    await page.locator("#trialsSelect").selectOption("100");
+    await page.locator("#maxSecondsInput").fill("5");
+    const stats = { maxHp: 45000, attack: 1000, attackSpeed: 800, berserk: 0 };
+    const steamExport = (ids) => JSON.stringify({ version: 86, meta: { profile: "steam" },
+      state: { playerStats: stats, availableSketches: ids } });
+    const response = () => page.waitForResponse((r) => r.url().endsWith("/api/analyze"));
+    const ready = () => page.waitForFunction(() => !document.querySelector("#analyzeButton").disabled);
+    const simulate = page.getByRole("button", { name: "Run simulation", exact: true });
+    const archive = page.getByRole("link", { name: /Steam fight log/ });
+    assert.ok(await archive.isVisible());
+    await page.locator("#saveInput").fill(steamExport(["little_stapler", "rorschach_bat"]));
+    const first = response();
+    await simulate.click();
+    await completedAnalysis(first);
+    await ready();
+    const selected = response();
+    await page.locator('[data-sketch-id="little_stapler"] .assume-one-button').click();
+    assert.equal((await completedAnalysis(selected)).analysis.finalStats.berserk, 0.7);
+    await ready();
+
+    // Keep the real primary record flowing, but hold the final response until the UI displays it.
+    const gate = new Promise((resolve) => { releaseCompletion = resolve; });
+    server.prependOnceListener("request", (req, res) => {
+      assert.equal(req.url, "/api/analyze");
+      const end = res.end.bind(res);
+      res.end = (...args) => { gate.then(() => end(...args)); return res; };
+    });
+    const second = response();
+    await page.locator("#saveFile").setInputFiles({ name: "next-run.json", mimeType: "application/json",
+      buffer: Buffer.from(steamExport(["rorschach_bat"])) });
+    await page.getByRole("button", { name: "Results", exact: true }).click();
+    await page.getByText(/Fight result ready/).waitFor();
+    assert.ok(await page.locator("#winRateCi").isVisible());
+    assert.match(await page.locator("#winRateCi").textContent(), /100 attempts/);
+    assert.equal(await page.locator("#nextActionPanel").isVisible(), false);
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth), 390);
+    releaseCompletion();
+    const { analysis } = await completedAnalysis(second);
+    assert.deepEqual(analysis.assumedVictories, {});
+    assert.equal(analysis.finalStats.berserk, 0);
+    await ready();
+    assert.ok(await page.locator("#nextActionPanel").isVisible());
+    await archive.click();
+    await page.locator("#captureForm").waitFor();
+  } finally {
+    releaseCompletion?.();
+    await page.close();
+  }
+}
 
 async function checkMoreTrials(browser, url) {
   const page = await browser.newPage();
@@ -20,7 +78,7 @@ async function checkMoreTrials(browser, url) {
       playerStats: { maxHp: 1, attack: 15000, attackSpeed: 500, minDamage: 100, maxDamage: 100, critChance: 50, critDmg: 200 } } };
     const first = page.waitForResponse((r) => r.url().endsWith("/api/analyze"));
     await page.locator("#saveFile").setInputFiles({ name: "borderline.json", mimeType: "application/json", buffer: Buffer.from(JSON.stringify(save)) });
-    const { analysis } = await (await first).json();
+    const { analysis } = await completedAnalysis(first);
     assert.equal(analysis.nextAction.targetId, "little_stapler");
     assert.equal(analysis.nextAction.trials, 100);
     await page.getByRole("tab", { name: "Battle", exact: true }).click();
@@ -32,7 +90,7 @@ async function checkMoreTrials(browser, url) {
     }
     const retried = page.waitForResponse((r) => r.url().endsWith("/api/analyze"));
     await button.press("Enter");
-    const result = (await (await retried).json()).analysis;
+    const result = (await completedAnalysis(retried)).analysis;
     assert.equal(result.target.id, "little_stapler");
     assert.equal(result.result.trials, 500);
     assert.equal(result.activeSketches[0].trials, 500);
@@ -65,7 +123,7 @@ try {
   assert.equal(await page.locator("#targetFilterInput").inputValue(), "");
   const webResponse = page.waitForResponse((r) => r.url().endsWith("/api/analyze"));
   await page.locator("#analyzeButton").press("Enter");
-  const web = await (await webResponse).json();
+  const web = await completedAnalysis(webResponse);
   assert.equal(web.ok, true, web.error);
   assert.equal(web.analysis.bundle.platform, "web");
   assert.equal(web.analysis.target.id, "duct_taped_banana");
@@ -87,7 +145,7 @@ try {
   const steamFile = JSON.stringify({ meta: { profile: "steam" }, version: 86, state });
   const steamResponse = page.waitForResponse((r) => r.url().endsWith("/api/analyze"));
   await page.locator("#saveFile").setInputFiles({ name: "slot-1.json", mimeType: "application/json", buffer: Buffer.from(steamFile) });
-  const steam = await (await steamResponse).json();
+  const steam = await completedAnalysis(steamResponse);
   assert.equal(steam.ok, true, steam.error);
   assert.equal(steam.analysis.bundle.platform, "steam");
   assert.ok(steam.analysis.strategicPlan.softcap.secondsToSoftcap > 0 && steam.analysis.strategicPlan.softcap.secondsToSoftcap <= 60);
@@ -115,7 +173,7 @@ try {
   const historyRow = page.locator(".history-item").filter({ hasText: "Steam" }).filter({ hasText: "trials 100 ·" }).last();
   const repeatResponse = page.waitForResponse((r) => r.url().endsWith("/api/analyze"));
   await historyRow.getByRole("button", { name: "Repeat analysis" }).click();
-  const repeated = await (await repeatResponse).json();
+  const repeated = await completedAnalysis(repeatResponse);
   assert.deepEqual(repeated.analysis, steam.analysis);
   await page.waitForFunction(() => document.querySelector("#trialsSelect").value === "100");
   const history = await page.evaluate(() => JSON.parse(localStorage.getItem("rd-sim-history")));
@@ -169,7 +227,7 @@ try {
   await page.getByRole("tab", { name: "Run", exact: true }).click();
   const hiddenResponse = page.waitForResponse((r) => r.url().endsWith("/api/analyze"));
   await page.getByRole("button", { name: "Hide", exact: true }).click();
-  assert.deepEqual((await (await hiddenResponse).json()).analysis.strategicPlan.runEV.sketches, []);
+  assert.deepEqual((await completedAnalysis(hiddenResponse)).analysis.strategicPlan.runEV.sketches, []);
   await page.getByRole("tab", { name: "Compare", exact: true }).click();
   await page.getByRole("cell", { name: "No active farm target" }).waitFor();
   await page.goto(`http://127.0.0.1:${server.address().port}/steam-fights.html`);
@@ -224,6 +282,7 @@ try {
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth), width, `Archive overflows at ${width}px`);
   }
   assert.deepEqual(errors, []);
+  await checkMobileImport(browser, server, `http://127.0.0.1:${server.address().port}/`);
   await checkMoreTrials(browser, `http://127.0.0.1:${server.address().port}/`);
   console.log("Passed save imports, responsive layout, queued changes, history replay, censored times, diagnostics, hidden targets and Steam archive checks.");
 } finally {

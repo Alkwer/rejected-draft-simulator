@@ -1,14 +1,17 @@
 import fs from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 
 import { decodeSaveText, defaultSteamSaveDir, findActiveSteamSave, isFullSteamSave, readSaveFile } from "./save.js";
 import { readGameBundle } from "./sketch-data.js";
-import { createSteamFightForecast, compareSteamFightObservation, validateSteamFightForecastInput } from "./steam-fight-forecast.js";
-import { inspectHyenaHistory } from "./steam-fight-notifications.js";
+import { createSteamFightForecast, compareSteamFightObservation, steamFightSetup, validateSteamFightForecastInput } from "./steam-fight-forecast.js";
+import { hyenaNotificationsEnabled, inspectHyenaHistory } from "./steam-fight-notifications.js";
 
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i;
-const TERMINAL_WATCH_STATUSES = new Set(["history-gap", "missing-timing", "superseded"]);
+const TERMINAL_WATCH_STATUSES = new Set([
+  "history-gap", "missing-timing", "settings", "setup-changed", "setup-unverified", "superseded",
+]);
 
 function problem(status, message) {
   return Object.assign(new Error(message), { status });
@@ -303,6 +306,40 @@ export function listSteamFights(root) {
   return archiveEntries(root).map((fight) => fight.unreadable ? { id: fight.id, unreadable: true } : fight);
 }
 
+function inspectWatch(root, id, slot, watch) {
+  const match = inspectHyenaHistory(slot, watch);
+  if (match.status !== "imported" && match.checkedThrough === undefined) return match;
+
+  if (!watch.original) {
+    try {
+      const captured = readSaveFile(path.join(fightDir(root, id), "save.json"));
+      if (!isFullSteamSave(captured)) return { status: "setup-unverified" };
+      watch.original = {
+        setup: steamFightSetup(captured, "hyena_hulk"),
+        gameVersion: captured.meta?.gameVersion ?? null,
+        saveVersion: captured.version ?? null,
+        notificationsEnabled: hyenaNotificationsEnabled(captured),
+      };
+    } catch (error) {
+      return { status: ["EBUSY", "EPERM", "EACCES"].includes(error.code) ? "unavailable" : "setup-unverified" };
+    }
+  }
+  if (!watch.original.notificationsEnabled) return { status: "settings" };
+  const gameVersion = slot.meta?.gameVersion ?? null;
+  const saveVersion = slot.version ?? null;
+  if (watch.original.gameVersion !== gameVersion || watch.original.saveVersion !== saveVersion) {
+    return { status: "setup-changed" };
+  }
+  if (match.status === "imported") {
+    // A victory can grant stats and other bonuses before the result is saved.
+    return { ...match, evidence: { ...match.evidence, gameVersion, saveVersion } };
+  }
+  if (!isDeepStrictEqual(watch.original.setup, steamFightSetup(slot, "hyena_hulk"))) {
+    return { status: "setup-changed" };
+  }
+  return match;
+}
+
 export function createSteamFightMonitor({ root, steamSaveDir = defaultSteamSaveDir() }) {
   const watches = new Map();
   let directoryStamp;
@@ -357,7 +394,7 @@ export function createSteamFightMonitor({ root, steamSaveDir = defaultSteamSaveD
         watch.status = "unavailable";
         continue;
       }
-      const match = inspectHyenaHistory(slot, watch);
+      const match = inspectWatch(root, id, slot, watch);
       if (match.status !== "imported") {
         const checkedThrough = match.checkedThrough ?? watch.checkedThrough;
         if (checkedThrough > watch.checkedThrough || TERMINAL_WATCH_STATUSES.has(match.status)) {

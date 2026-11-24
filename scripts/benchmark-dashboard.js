@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { chromium } from "playwright-core";
 import { createWebServer } from "../src/web-server.js";
+import { completedAnalysis } from "./browser-analysis.js";
 
 const scenarios = [
   {
@@ -30,15 +31,22 @@ async function measure(page, url, scenario) {
   }));
   await page.getByRole("tab", { name: "Battle", exact: true }).click();
   const samples = [];
+  const primarySamples = [];
   let baseline;
   let gameBuild;
   for (let sample = 0; sample < 4; sample++) {
     const response = page.waitForResponse((r) => r.url().endsWith("/api/analyze"), { timeout: 180000 });
     await page.evaluate(() => {
       performance.clearMeasures("dashboard");
+      performance.clearMeasures("primary");
       const button = document.querySelector("#analyzeButton");
       button.addEventListener("click", () => {
         const start = performance.now();
+        const primaryObserver = new MutationObserver(() => {
+          primaryObserver.disconnect();
+          requestAnimationFrame(() => requestAnimationFrame(() => performance.measure("primary", { start })));
+        });
+        primaryObserver.observe(document.querySelector("#winRateCi"), { childList: true });
         const observer = new MutationObserver(() => {
           if (button.disabled) return;
           observer.disconnect();
@@ -48,9 +56,10 @@ async function measure(page, url, scenario) {
       }, { once: true, capture: true });
     });
     await page.locator("#analyzeButton").click();
-    const data = await (await response).json();
+    const data = await completedAnalysis(response);
     assert.equal(data.ok, true, data.error);
     const elapsed = await (await page.waitForFunction(() => performance.getEntriesByName("dashboard", "measure")[0]?.duration)).jsonValue();
+    const primary = await (await page.waitForFunction(() => performance.getEntriesByName("primary", "measure")[0]?.duration)).jsonValue();
     const analysis = data.analysis;
     assert.equal(analysis.bundle.platform, "steam");
     assert.equal(analysis.target.id, scenario.target);
@@ -62,11 +71,13 @@ async function measure(page, url, scenario) {
     } else {
       assert.deepEqual(analysis.result, baseline);
       samples.push(Math.round(elapsed));
+      primarySamples.push(Math.round(primary));
     }
   }
   return { scenario: scenario.name, gameBuild, trials: baseline.trials,
     fightMedianSeconds: baseline.medianSeconds, medianCensored: baseline.medianCensored,
-    samplesMs: samples, medianDashboardMs: [...samples].sort((a, b) => a - b)[1] };
+    samplesMs: samples, medianDashboardMs: [...samples].sort((a, b) => a - b)[1],
+    primarySamplesMs: primarySamples, medianPrimaryMs: [...primarySamples].sort((a, b) => a - b)[1] };
 }
 
 const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL || "chrome", headless: true });

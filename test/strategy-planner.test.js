@@ -120,6 +120,52 @@ test("createStrategyPlan estimates resource gaps, softcap choice, farm plan and 
   assert.ok(plan.runEV.currencies.Graphite.expected > 0);
 });
 
+test("strategy requests more trials when the win interval crosses the configured threshold", () => {
+  const targetRow = { id: "target", rarity: "masterpiece", winRate: 0.51, trials: 100 };
+  const options = {
+    sketches,
+    state: state(),
+    targetId: "target",
+    currentRun: { targets: [targetRow] },
+    compareProfiles: ["farm-q"],
+    trials: 20,
+  };
+  // The fallback current-run estimate and the explicit simulation should agree.
+  for (const targetSimulation of [undefined, { winRate: 0.51, wins: 51, trials: 100 }]) {
+    const plan = createStrategyPlan({ ...options, targetSimulation });
+    assert.equal(plan.approach.winRate.ci95Lower.toFixed(3), "0.413");
+    assert.equal(plan.approach.winRate.ci95Upper.toFixed(3), "0.606");
+    assert.equal(plan.approach.ready, false);
+    assert.equal(plan.approach.decision, "increase_trials");
+    assert.equal(plan.stopFarming.decision, "increase_trials");
+    assert.equal(plan.farmPlan.decision, "increase_trials");
+    assert.equal(plan.profileProgress.decision, "increase_trials");
+    assert.equal(plan.masterpieceRoll.decision, "keep_scout");
+    assert.equal(plan.runCompletion.decision, "increase_trials");
+  }
+
+  for (const [winRate, lower, upper, ready, decision] of [
+    [0.51, 0.5, 0.61, true, "attempt_target"],
+    [0.49, 0.39, 0.5, false, "increase_trials"],
+    [0.49, 0.39, 0.4999, false, "redraw"],
+  ]) {
+    const plan = createStrategyPlan({
+      ...options,
+      targetSimulation: { winRate, winRateCi95: { lower, upper } },
+    });
+    assert.equal(plan.approach.ready, ready);
+    assert.equal(plan.stopFarming.decision, decision);
+  }
+
+  const custom = createStrategyPlan({ ...options, targetWinRate: 0.6 });
+  assert.equal(custom.stopFarming.decision, "increase_trials");
+  assert.equal(custom.runCompletion.decision, "increase_trials");
+
+  const legacy = createStrategyPlan({ ...options, targetSimulation: { winRate: 0.51 } });
+  assert.equal(legacy.approach.ready, true);
+  assert.equal(legacy.stopFarming.decision, "attempt_target");
+});
+
 test("farming currency or an irrelevant stat does not cross a nearby target threshold", () => {
   const plan = createStrategyPlan({
     sketches,
@@ -260,13 +306,14 @@ test("farming uses the Steam universe for both the target and the next reward", 
     maxSeconds: sample.maxSeconds,
     seed: "pair",
   });
-  const nextWinRate = runMonteCarlo({ ...sample, player: { ...baseStats, attack: 99 } }).winRate;
+  const next = runMonteCarlo({ ...sample, player: { ...baseStats, attack: 99 } });
 
-  assert.ok(nextWinRate > current);
-  assert.equal(plan.stopFarming.curve[0].projectedWinRate, Number(nextWinRate.toFixed(6)));
-  assert.ok(nextWinRate >= 0.7);
-  assert.equal(plan.stopFarming.curve[0].reachesTarget, true);
+  assert.ok(next.winRate > current);
+  assert.equal(plan.stopFarming.curve[0].projectedWinRate, Number(next.winRate.toFixed(6)));
+  assert.ok(next.winRate >= 0.7 && next.winRateCi95.lower < 0.7);
+  assert.equal(plan.stopFarming.curve[0].reachesTarget, false);
   assert.equal(plan.stopFarming.decision, "farm_until_step");
+  assert.ok(plan.stopFarming.targetStep > 1);
 });
 
 test("farming checks a second win on the same sketch with decay and the victory cap", () => {
@@ -342,6 +389,44 @@ test("farming distinguishes unchecked repeats from a completed search of the vis
   assert.equal(firstRewardWeakensPlayer.curve.length, 1);
   assert.equal(firstRewardWeakensPlayer.hasUnverifiedCandidates, true);
   assert.equal(firstRewardWeakensPlayer.decision, "farm_more");
+});
+
+test("farming verifies a different sketch's first win before adding its reward", () => {
+  const baseStats = { maxHp: 1000, attack: 42, attackSpeed: 1000, accuracy: 100, minDamage: 100, maxDamage: 100 };
+  const candidates = {
+    ...sketches,
+    opus_hp: {
+      ...sketches.opus_hp,
+      rewards: [{ statName: "maxHp", amount: -990 }, { statName: "critDamage", amount: 1e60 }],
+    },
+    opus_currency: { ...sketches.opus_currency, rewards: [{ statName: "attack", amount: 1 }] },
+    opus_attack: {
+      ...sketches.opus_attack,
+      stats: { maxHp: 10, attack: 100, attackSpeed: 500, accuracy: 100, minDamage: 100, maxDamage: 100 },
+      rewards: [{ statName: "attack", amount: 100 }],
+    },
+    target: { ...sketches.target, stats: { ...sketches.target.stats, maxHp: 100 } },
+  };
+  const fight = { enemy: enemyFromSketch(candidates.opus_attack), trials: 20, maxSeconds: 1.5 };
+  assert.equal(runMonteCarlo({ ...fight, player: baseStats }).wins, 20);
+  assert.equal(runMonteCarlo({ ...fight, player: { ...baseStats, maxHp: 10 } }).wins, 0);
+
+  const { runEV, stopFarming } = createStrategyPlan({
+    sketches: candidates,
+    state: state({ fundamentals: { maxVictories: 1, rewardDecay: 1 } }),
+    baseStats,
+    targetId: "target",
+    targetSimulation: { winRate: 0 },
+    currentRun: { targets: ["opus_hp", "opus_attack", "opus_currency"].map((id) => ({ id, winRate: 1 })) },
+    trials: 200,
+    maxSeconds: fight.maxSeconds,
+  });
+  assert.deepEqual(runEV.sketches.map(({ id }) => id), ["opus_hp", "opus_attack", "opus_currency"]);
+  assert.deepEqual(stopFarming.curve.map(({ id, projectedWinRate }) => [id, projectedWinRate]), [
+    ["opus_hp", 0], ["opus_currency", 0],
+  ]);
+  assert.equal(stopFarming.hasUnverifiedCandidates, true);
+  assert.equal(stopFarming.decision, "farm_more");
 });
 
 test("an explicitly empty current run does not fall back to available sketches", () => {
@@ -723,7 +808,7 @@ test("strategy planner returns profile-specific tools, stop farming advice and p
     state: state({ sketchVictories: { target: 1 } }),
     targetId: "target",
     baseStats: state().battleStats,
-    targetSimulation: { winRate: 0.55, trials: 100 },
+    targetSimulation: { winRate: 0.65, trials: 100 },
     currentRun,
     strategyProfile: "3-masterpiece",
     profileIds: ["farm-q", "3-masterpiece", "transcendent-paragon"],
@@ -756,7 +841,7 @@ test("the Paragon profile uses its own target's result and the effective thresho
   };
   const selected = createStrategyPlan({ ...options, profile });
   assert.deepEqual(selected.profile.goal, {
-    type: "target_win_rate", current: 0, goal: 0.6, missing: 0.6, targetId: paragon,
+    type: "target_win_rate", current: 0, goal: 0.6, missing: 0.6, targetId: paragon, needsMoreTrials: false,
   });
   assert.notEqual(selected.profileProgress.decision, "goal_reached");
   assert.deepEqual(selected.profileComparison[0].goal, selected.profile.goal);
@@ -786,6 +871,16 @@ test("the Paragon profile uses its own target's result and the effective thresho
   }).profileComparison[0];
   assert.deepEqual(manualComparison.goal, manual.profile.goal);
   assert.equal(manualComparison.decision, manual.profileProgress.decision);
+
+  const uncertain = createStrategyPlan({
+    ...options,
+    profile,
+    targetComparisons: [{ id: paragon, winRate: 0.61, trials: 100 }],
+  });
+  assert.equal(uncertain.profile.goal.missing, 0);
+  assert.equal(uncertain.profile.goal.needsMoreTrials, true);
+  assert.equal(uncertain.profileProgress.decision, "increase_trials");
+  assert.equal(uncertain.profileComparison[0].decision, "increase_trials");
 });
 
 test("the Paragon profile simulates its target when it is absent from the current roll", () => {

@@ -49,7 +49,7 @@ import {
   exportMarkdownReport,
 } from "./report.js";
 import { readGameBundle } from "./sketch-data.js";
-import { enemyFromSketch, sketchForEncounter } from "./combat/steam-encounter.js";
+import { enemyFromSketch, sketchForEncounter, sketchWithEnemyStats } from "./combat/steam-encounter.js";
 import { createStrategyPlan, parseStrategyCurrencyGoals } from "./strategy-planner.js";
 
 const args = parseArgs(process.argv.slice(2));
@@ -301,9 +301,10 @@ if (args.route) {
     seed,
     ...routeOptionsFromArgs(args),
   });
+  const routeTarget = sketchWithEnemyStats(target, routeResult.target.stats);
   const routeReport = routeResult.target?.simulation
     ? createCombatReport({
-      target,
+      target: routeTarget,
       player: routeResult.finalStats,
       simulation: routeResult.target.simulation,
       maxSeconds,
@@ -315,7 +316,7 @@ if (args.route) {
     console.log(exportMarkdownReport(routeReport));
   } else if (wantsJsonOutput(args)) {
     console.log(JSON.stringify({
-      target: targetSummary(target),
+      target: targetSummary(routeTarget),
       statSource,
       requestedStatsSource,
       statsReason: analysis.stats.reason,

@@ -14,6 +14,11 @@ test("reports show both Wilson bounds at the extremes", () => {
   }
 });
 
+test("finite late-game DPS thresholds survive JSON export", () => {
+  const { thresholds } = explainTarget({ target: { stats: { maxHp: 1e306 } }, maxSeconds: 10 });
+  assert.equal(JSON.parse(JSON.stringify(thresholds)).find((row) => row.stat === "damagePerSecond").target, 1e305);
+});
+
 test("createCombatReport adds confidence interval, percentiles and breakdown tables", () => {
   const report = createCombatReport({
     target: {

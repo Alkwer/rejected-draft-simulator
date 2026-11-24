@@ -6,10 +6,11 @@ import { createCompanionAnalysis, createWebAnalysis } from "./web-core.js";
 const workerName = "simulator-analysis";
 
 if (workerData === workerName && parentPort) {
-  parentPort.on("message", ({ id, companion, dataPath, options, steamForecast }) => {
+  parentPort.on("message", ({ id, companion, dataPath, options, steamForecast, progressive }) => {
     try {
       const analyze = companion ? createCompanionAnalysis : createWebAnalysis;
-      const analysis = steamForecast ? createSteamFightForecast(options) : analyze({ ...options, ...readGameBundle(dataPath) });
+      const onPrimary = progressive ? (primary) => parentPort.postMessage({ id, primary }) : undefined;
+      const analysis = steamForecast ? createSteamFightForecast(options) : analyze({ ...options, ...readGameBundle(dataPath) }, onPrimary);
       parentPort.postMessage({ id, analysis });
     } catch (error) {
       parentPort.postMessage({ id, error: error.message ?? String(error), status: error.status });
@@ -28,13 +29,17 @@ export function createAnalysisRunner() {
     for (const request of pending.values()) request.reject(error);
     pending.clear();
   }
-  function runRequest(payload) {
+  function runRequest(payload, onPrimary) {
     if (!worker) {
       const instance = new Worker(new URL(import.meta.url), { workerData: workerName, execArgv: [] });
       worker = instance;
-      instance.on("message", ({ id, analysis, error, status }) => {
+      instance.on("message", ({ id, primary, analysis, error, status }) => {
         const request = pending.get(id);
         if (!request) return;
+        if (primary) {
+          request.onPrimary(primary);
+          return;
+        }
         pending.delete(id);
         if (error !== undefined) request.reject(Object.assign(new Error(error), { status }));
         else request.resolve(analysis);
@@ -44,13 +49,13 @@ export function createAnalysisRunner() {
     }
     const id = nextId++;
     return new Promise((resolve, reject) => {
-      worker.postMessage({ id, ...payload });
-      pending.set(id, { resolve, reject });
+      worker.postMessage({ id, ...payload, progressive: Boolean(onPrimary) });
+      pending.set(id, { resolve, reject, onPrimary });
     });
   }
   return {
-    run(dataPath, options, companion = false) {
-      return runRequest({ dataPath, options, companion });
+    run(dataPath, options, companion = false, onPrimary) {
+      return runRequest({ dataPath, options, companion }, onPrimary);
     },
     runSteamForecast(options) {
       return runRequest({ steamForecast: true, options });
