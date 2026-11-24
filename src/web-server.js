@@ -31,7 +31,12 @@ export function createWebServer({
   const forecastRunner = createAnalysisRunner();
   const pendingCaptures = new Map();
   const server = http.createServer(async (req, res) => {
-    const url = new URL(req.url ?? "/", "http://127.0.0.1");
+    let url;
+    try {
+      url = new URL(req.url ?? "/", "http://127.0.0.1");
+    } catch {
+      return sendJson(res, { ok: false, error: "Invalid request URL." }, 400);
+    }
     try {
       if (url.pathname.startsWith("/api/companion/") && req.method === "OPTIONS") {
         res.writeHead(204, companionCorsHeaders(req));
@@ -63,6 +68,7 @@ export function createWebServer({
         return sendJson(res, { ok: true, ...result });
       }
       if (url.pathname === "/api/import-bundle" && req.method === "POST") {
+        if (!isLocalRequest(req)) return sendJson(res, { ok: false, error: "Open the simulator on localhost to refresh the catalog." }, 403);
         const update = updateDataOnImport
           ? await updateGameDataImpl({ dataPath, gameUrl, steamDir, offlineFallback: true })
           : { updated: false, offline: false };
@@ -91,7 +97,13 @@ export function createWebServer({
         if (!body.targetId) {
           return sendJson(res, { ok: false, error: "Missing targetId" }, 400);
         }
-        save ??= decodeSaveText(body.saveText);
+        if (!save) {
+          try {
+            save = decodeSaveText(body.saveText);
+          } catch (error) {
+            return sendJson(res, { ok: false, error: error.message }, 400);
+          }
+        }
         const slotChanged = Boolean(slotName && body.scenarioSlot && slotName !== body.scenarioSlot);
         const onPrimary = req.headers.accept === "application/x-ndjson" ? (primary) => {
           if (res.destroyed) return;
@@ -156,7 +168,7 @@ export function createWebServer({
         return sendJson(res, { ok: true, fixtureCapture }, 200, companionCorsHeaders(req));
       }
 
-      return serveStatic({ req, res, publicDir, url });
+      await serveStatic({ res, publicDir, url });
     } catch (error) {
       if (res.destroyed) return;
       if (res.headersSent) return res.end(JSON.stringify({ ok: false, error: error.message ?? String(error) }) + "\n");
@@ -185,22 +197,32 @@ function isLocalRequest(req) {
     (!req.headers.origin || req.headers.origin === `http://${host}`);
 }
 
-function serveStatic({ res, publicDir, url }) {
-  const pathname = url.pathname === "/" ? "/index.html" : decodeURIComponent(url.pathname);
-  const targetPath = path.resolve(publicDir, `.${pathname}`);
-  const root = path.resolve(publicDir);
-  if (!targetPath.startsWith(root)) {
-    res.writeHead(403);
-    res.end("Forbidden");
-    return;
+function insideDirectory(root, file) {
+  const relative = path.relative(root, file);
+  return relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
+}
+
+async function serveStatic({ res, publicDir, url }) {
+  let pathname;
+  try {
+    pathname = decodeURIComponent(url.pathname === "/" ? "/index.html" : url.pathname);
+  } catch {
+    return sendJson(res, { ok: false, error: "Invalid URL encoding." }, 400);
   }
-  if (!fs.existsSync(targetPath) || !fs.statSync(targetPath).isFile()) {
-    res.writeHead(404);
-    res.end("Not found");
-    return;
+  if (pathname.includes("\0")) return sendJson(res, { ok: false, error: "Invalid file name." }, 400);
+  const root = await fs.promises.realpath(publicDir);
+  const file = path.resolve(root, `.${pathname}`);
+  if (!insideDirectory(root, file)) return res.writeHead(403).end("Forbidden");
+  try {
+    const resolved = await fs.promises.realpath(file);
+    if (!insideDirectory(root, resolved)) return res.writeHead(403).end("Forbidden");
+    if (!(await fs.promises.stat(resolved)).isFile()) return res.writeHead(404).end("Not found");
+    const contents = await fs.promises.readFile(resolved);
+    res.writeHead(200, { "content-type": mimeType(file) }).end(contents);
+  } catch (error) {
+    if (error.code === "ENOENT" || error.code === "ENOTDIR") return res.writeHead(404).end("Not found");
+    throw error;
   }
-  res.writeHead(200, { "content-type": mimeType(targetPath) });
-  fs.createReadStream(targetPath).pipe(res);
 }
 
 function companionCorsHeaders(req) {

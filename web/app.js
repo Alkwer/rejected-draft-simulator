@@ -163,7 +163,11 @@ async function init() {
   setMobileTab("results");
   renderHistory();
   renderUiDiagnostics();
-  await loadTargets();
+  try {
+    await loadTargets();
+  } catch (error) {
+    showMessage(`Could not load the target catalog. Use Refresh Steam data to retry. ${error.message}`);
+  }
   renderUiDiagnostics();
 }
 
@@ -185,8 +189,9 @@ function bindEvents() {
   els.targetSelect.addEventListener("change", analyzeIfReady);
   els.compareTargetsButton.addEventListener("click", toggleFullCompare);
   els.targetFilterInput.addEventListener("input", () => {
+    const previous = els.targetSelect.value;
     renderTargetOptions();
-    analyzeIfReady();
+    if (els.targetSelect.value !== previous) scheduleAnalyze();
   });
   els.trialsSelect.addEventListener("change", scheduleAnalyze);
   els.maxSecondsInput.addEventListener("input", scheduleAnalyze);
@@ -247,7 +252,16 @@ function bindEvents() {
   els.saveFile.addEventListener("change", async () => {
     const [file] = els.saveFile.files;
     if (!file) return;
-    const text = await file.text();
+    let text;
+    try {
+      text = await file.text();
+    } catch {
+      if (file === els.saveFile.files[0]) {
+        els.saveFile.value = "";
+        showMessage("Could not read the save file. Choose the file again or paste its contents.");
+      }
+      return;
+    }
     if (file !== els.saveFile.files[0]) return;
     resetSaveAnalysis();
     state.slotName = null;
@@ -1229,7 +1243,9 @@ function applyStrategyPreset(preset) {
 function setMobileTab(tab) {
   document.body.dataset.mobileTab = tab;
   for (const button of els.mobileTabBar.querySelectorAll("[data-mobile-tab]")) {
-    button.classList.toggle("selected", button.dataset.mobileTab === tab);
+    const selected = button.dataset.mobileTab === tab;
+    button.classList.toggle("selected", selected);
+    button.setAttribute("aria-pressed", String(selected));
   }
 }
 

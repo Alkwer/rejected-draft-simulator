@@ -17,6 +17,7 @@ test("active Steam slot and uploaded web save select their own catalogs", async 
   const request = (source, headers = {}) => fetch(url, { method: "POST", headers: { "content-type": "application/json", ...headers },
     body: JSON.stringify({ targetId: "stick man", trials: 1, maxSeconds: 2, ...source }) });
   assert.equal((await request({ saveSource: "steam" })).status, 404);
+  assert.equal((await request({ saveText: "incomplete export" })).status, 400);
   const state = { playerStats: { maxHp: 100, attack: 100, attackSpeed: 1000 }, availableSketches: ["stick man"] };
   const save = { version: 86, meta: { profile: "steam" }, state: { ...state, saveProfile: "steam" } };
   fs.writeFileSync(path.join(steamSaveDir, "slot-4.json"), Buffer.from(JSON.stringify(save)).toString("base64"));
@@ -57,6 +58,11 @@ test("web server exposes health and bundle import endpoints", async () => {
   try {
     const health = await fetch(`http://127.0.0.1:${port}/api/health`).then((response) => response.json());
     assert.equal(health.ok, true);
+    for (const [route, status] of [["/", 200], ["/styles.css", 200], ["/absent.css", 404], ["/invalid-%", 400]]) {
+      const response = await fetch(`http://127.0.0.1:${port}${route}`);
+      assert.equal(response.status, status, route);
+      await response.text();
+    }
 
     const bundle = await fetch(`http://127.0.0.1:${port}/api/import-bundle`, { method: "POST" }).then((response) => response.json());
     assert.equal(bundle.ok, true);
@@ -78,6 +84,11 @@ test("web server import endpoint refreshes game data when enabled", async () => 
   const { port } = server.address();
 
   try {
+    const denied = await fetch(`http://127.0.0.1:${port}/api/import-bundle`, {
+      method: "POST", headers: { origin: "https://kuzzigames.com" },
+    });
+    assert.equal(denied.status, 403);
+    assert.equal(called, 0);
     const bundle = await fetch(`http://127.0.0.1:${port}/api/import-bundle`, { method: "POST" }).then((response) => response.json());
     assert.equal(bundle.ok, true);
     assert.equal(called, 1);
