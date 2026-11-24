@@ -24,18 +24,8 @@ export async function updateGameData({
   if (!gameUrl) return syncSteamCatalog({ dataPath, steamDir, offlineFallback, now });
   if (path.extname(dataPath) === ".json") throw new Error("Legacy web data needs a separate .js file.");
   try {
-    const html = await fetchText(fetchImpl, gameUrl);
-    let { artistAsset, sketchAsset, mainAsset, storeAsset } = parseGamePageAssets(html);
-    if (!mainAsset) throw new Error("Could not find main-*.js asset in game HTML.");
-
-    const mainAssetUrl = resolveAssetUrl(mainAsset, gameUrl);
-    const mainSource = await fetchText(fetchImpl, mainAssetUrl);
-    artistAsset ??= parseArtistAssetFromMain(mainSource);
-    sketchAsset ??= parseSketchAssetFromMain(mainSource);
-    storeAsset ??= parseStoreAssetFromMain(mainSource);
+    const { mainAsset, mainAssetUrl, mainSource, storeAsset, artistAsset, dataAsset } = await discoverWebAssets(gameUrl, fetchImpl);
     const storeSource = storeAsset ? await fetchText(fetchImpl, resolveAssetUrl(storeAsset, gameUrl)) : "";
-    const dataAsset = artistAsset ?? sketchAsset;
-    if (!dataAsset) throw new Error("Could not find artistLinks-*.js or data-sketches-*.js asset in game HTML or main bundle.");
 
     const dataAssetUrl = resolveAssetUrl(dataAsset, gameUrl);
     const sketchSource = await fetchText(fetchImpl, dataAssetUrl);
@@ -67,6 +57,7 @@ export async function updateGameData({
     };
   } catch (error) {
     if (!error.webCatalogRecoveryRequired && offlineFallback && fs.existsSync(dataPath)) {
+      validateWebSketchSource(fs.readFileSync(dataPath, "utf8"));
       return {
         updated: false,
         offline: true,
@@ -87,27 +78,31 @@ export async function checkGameDataFreshness({
 } = {}) {
   if (!gameUrl) return syncSteamCatalog({ dataPath, steamDir, check: true });
   localMetadata ??= readDataMetadata(dataPath);
-  const html = await fetchText(fetchImpl, gameUrl);
-  const assets = parseGamePageAssets(html);
+  const assets = await discoverWebAssets(gameUrl, fetchImpl);
   const remote = {
-    asset: assets.artistAsset || assets.sketchAsset ? path.basename(assets.artistAsset ?? assets.sketchAsset) : null,
-    mainAsset: assets.mainAsset ? path.basename(assets.mainAsset) : null,
+    asset: path.basename(assets.dataAsset),
+    mainAsset: path.basename(assets.mainAsset),
+    storeAsset: assets.storeAsset ? path.basename(assets.storeAsset) : null,
   };
   const warnings = [];
 
-  if (
-    (remote.asset && localMetadata?.asset && remote.asset !== localMetadata.asset)
-    || (remote.mainAsset && localMetadata?.mainAsset && remote.mainAsset !== localMetadata.mainAsset)
-  ) {
+  if (Object.entries(remote).some(([key, value]) => (localMetadata?.[key] ?? null) !== value)) {
     warnings.push({
       code: "remote_asset_changed",
       message: "Local sketch data points at older game assets than the current game page.",
       local: {
         asset: localMetadata?.asset ?? null,
         mainAsset: localMetadata?.mainAsset ?? null,
+        storeAsset: localMetadata?.storeAsset ?? null,
       },
       remote,
     });
+  }
+  if (!fs.existsSync(dataPath)) {
+    warnings.push({ code: "missing_local_catalog", message: "Local web sketch data is missing." });
+  } else if (!warnings.length) {
+    const source = fs.readFileSync(dataPath, "utf8");
+    validateWebSketchSource(source);
   }
 
   return {
@@ -115,6 +110,20 @@ export async function checkGameDataFreshness({
     warnings,
     remote,
   };
+}
+
+async function discoverWebAssets(gameUrl, fetchImpl) {
+  const html = await fetchText(fetchImpl, gameUrl);
+  let { artistAsset, sketchAsset, mainAsset, storeAsset } = parseGamePageAssets(html);
+  if (!mainAsset) throw new Error("Could not find main-*.js asset in game HTML.");
+  const mainAssetUrl = resolveAssetUrl(mainAsset, gameUrl);
+  const mainSource = await fetchText(fetchImpl, mainAssetUrl);
+  artistAsset ??= parseArtistAssetFromMain(mainSource);
+  sketchAsset ??= parseSketchAssetFromMain(mainSource);
+  storeAsset ??= parseStoreAssetFromMain(mainSource);
+  const dataAsset = artistAsset ?? sketchAsset;
+  if (!dataAsset) throw new Error("Could not find artistLinks-*.js or data-sketches-*.js asset in game HTML or main bundle.");
+  return { mainAsset, mainAssetUrl, mainSource, artistAsset, dataAsset, storeAsset };
 }
 
 export function parseGamePageAssets(html) {
@@ -186,10 +195,7 @@ async function fetchText(fetchImpl, url) {
   return response.text();
 }
 
-function publishWebCatalog({ dataPath, sketchSource, metadata }) {
-  if (!Number.isSafeInteger(metadata.saveVersion) || metadata.saveVersion < 1) {
-    throw new Error("Could not identify the web save schema version.");
-  }
+function validateWebSketchSource(sketchSource, sanityTargets = WEB_SANITY_TARGETS) {
   let sketches;
   try {
     sketches = parseSketches(sketchSource, { strict: true });
@@ -205,12 +211,6 @@ function publishWebCatalog({ dataPath, sketchSource, metadata }) {
     throw new Error("Incomplete web sketch catalog.");
   }
 
-  const dir = path.dirname(dataPath);
-  const historyPath = path.join(dir, "game-versions.json");
-  const history = readJson(historyPath) ?? { current: null, versions: {} };
-  history.versions ??= {};
-  const key = metadata.gameVersion;
-  const sanityTargets = history.versions[key]?.sanityTargets ?? WEB_SANITY_TARGETS;
   const missing = [...new Set([...WEB_SANITY_TARGETS, ...sanityTargets])]
     .filter((id) => !Object.hasOwn(sketches, id));
   if (missing.length) throw new Error(`Incomplete web sketch catalog. Missing: ${missing.join(", ")}.`);
@@ -221,7 +221,19 @@ function publishWebCatalog({ dataPath, sketchSource, metadata }) {
   });
   if (syntax.error) throw syntax.error;
   if (syntax.status !== 0) throw new Error("Invalid web sketch bundle syntax.");
+}
 
+function publishWebCatalog({ dataPath, sketchSource, metadata }) {
+  if (!Number.isSafeInteger(metadata.saveVersion) || metadata.saveVersion < 1) {
+    throw new Error("Could not identify the web save schema version.");
+  }
+  const dir = path.dirname(dataPath);
+  const historyPath = path.join(dir, "game-versions.json");
+  const history = readJson(historyPath) ?? { current: null, versions: {} };
+  history.versions ??= {};
+  const key = metadata.gameVersion;
+  const sanityTargets = history.versions[key]?.sanityTargets ?? WEB_SANITY_TARGETS;
+  validateWebSketchSource(sketchSource, sanityTargets);
   history.current = key;
   history.versions[key] = {
     saveVersion: metadata.saveVersion,

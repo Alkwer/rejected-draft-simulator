@@ -1,9 +1,11 @@
 import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import { STEAM_APP_ID, findSteamInstall, withGameArchive } from "./steam-install.js";
-import { parseSketches, readGameBundle } from "./sketch-data.js";
+import { parseSketches } from "./sketch-data.js";
 import { parseSteamShop } from "./steam-shop-catalog.js";
+import { isRecord } from "../web/save-format.js";
 
 function assetName(files, prefix) {
   const matches = Object.keys(files).filter((name) => name.startsWith(`assets/${prefix}-`) && name.endsWith(".js"));
@@ -71,26 +73,26 @@ export function syncSteamCatalog({ dataPath, steamDir, roots, check = false, off
   let cached;
   if (fs.existsSync(dataPath)) {
     try {
-      cached = readGameBundle(dataPath);
+      cached = JSON.parse(fs.readFileSync(dataPath, "utf8"));
     } catch (error) {
       if (!(error instanceof SyntaxError)) throw error;
     }
   }
-  const local = cached?.dataMetadata;
+  const local = cached?.metadata;
   if (!install) {
     const error = "Steam installation not found. Set REJECTED_DRAFT_STEAM_DIR or pass --steam-dir pointing to the game folder.";
-    if (!check && offlineFallback && local?.platform === "steam" && Object.keys(cached.sketches ?? {}).length) {
+    if (!check && offlineFallback && usableSteamCache(cached)) {
       return { updated: false, offline: true, metadata: local, dataPath, error };
     }
     throw new Error(error);
   }
   const catalog = readSteamCatalog(install, now);
   const remote = catalog.metadata;
-  const stale = local?.platform !== "steam" || local.rendererBuildId !== remote.rendererBuildId ||
-    local.gameVersion !== remote.gameVersion || local.asset !== remote.asset || local.shopAsset !== remote.shopAsset ||
-    local.saveVersion !== remote.saveVersion || (remote.buildId !== null && local.buildId !== remote.buildId) ||
-    JSON.stringify(cached.sketches) !== JSON.stringify(catalog.sketches) ||
-    JSON.stringify(cached.shopUpgrades) !== JSON.stringify(catalog.shopUpgrades);
+  const stale = Object.entries(remote).some(([key, value]) =>
+    key !== "capturedAt" && !(key === "buildId" && value === null) && local?.[key] !== value) ||
+    // Sketch order affects redraws, and shop order can break ties in the planner.
+    !isDeepStrictEqual(Object.entries(cached?.sketches ?? {}), Object.entries(catalog.sketches)) ||
+    !isDeepStrictEqual(Object.entries(cached?.shopUpgrades ?? {}), Object.entries(catalog.shopUpgrades));
   if (check) {
     const warnings = stale ? [{ code: "steam_build_changed", message: "The local catalog differs from the installed Steam build." }] : [];
     return { stale, warnings, remote };
@@ -106,4 +108,20 @@ export function syncSteamCatalog({ dataPath, steamDir, roots, check = false, off
     }
   }
   return { updated: stale, offline: false, metadata: stale ? remote : local, dataPath };
+}
+
+function usableSteamCache(catalog) {
+  const sketches = catalog?.sketches;
+  if (catalog?.metadata?.platform !== "steam" || !isRecord(sketches)) return false;
+  const entries = Object.entries(sketches);
+  if (!entries.length || !entries.every(([id, sketch]) =>
+    sketch?.id === id && typeof sketch.name === "string" && typeof sketch.rarity === "string" &&
+    Number.isFinite(sketch.stats?.maxHp) && sketch.stats.maxHp > 0 &&
+    Number.isFinite(sketch.stats.attackSpeed) && sketch.stats.attackSpeed > 0)) return false;
+  if (!catalog.metadata.shopAsset && catalog.shopUpgrades === undefined) return true;
+  if (!isRecord(catalog.shopUpgrades)) return false;
+  const upgrades = Object.entries(catalog.shopUpgrades);
+  return upgrades.length > 0 && upgrades.every(([id, upgrade]) => upgrade?.id === id &&
+    typeof upgrade.statName === "string" && typeof upgrade.currency === "string" &&
+    [upgrade.baseCost, upgrade.costMultiplier, upgrade.perLevel].every((n) => Number.isFinite(n) && n > 0));
 }
