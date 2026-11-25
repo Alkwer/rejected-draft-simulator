@@ -1,7 +1,7 @@
 import { toNumber } from "./save.js";
 import { sketchForEncounter } from "./combat/steam-encounter.js";
 import { combatAssumptionsFromSave } from "./combat-assumptions.js";
-import { getPreciseEraserEligibility, getSketchFightEligibility, isSketchToolUnlocked } from "./tool-rules.js";
+import { boosterRestriction, getPreciseEraserEligibility, getSketchFightEligibility, isSketchToolUnlocked } from "./tool-rules.js";
 import { remainingSketchVictories } from "./victory-limit.js";
 
 const TARGET_PROFILES = {
@@ -306,7 +306,7 @@ function createBoosterAdvice({ activeItems, state, currentRows, limit }) {
   let remainingUses = Math.max(0, maxUses - boosted.size);
   const winRates = new Map(currentRows.filter((row) => row.winRate != null).map((row) => [row.id, row.winRate]));
   return activeItems
-    .filter((item) => item.score > 0)
+    .filter((item) => item.score > 0 && (boosted.has(item.id) || !boosterRestriction(item, state)))
     .sort((a, b) => b.score * (winRates.get(b.id) ?? 1) - a.score * (winRates.get(a.id) ?? 1))
     .slice(0, limit)
     .map((item) => {

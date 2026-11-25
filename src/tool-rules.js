@@ -29,6 +29,15 @@ export function isSketchToolUnlocked(state, tool) {
   return !isFullSteamSave(state) || state[key] !== false;
 }
 
+const boosterTalents = new Map([["framed", "boosterFramed"], ["opus", "boosterOpus"], ["masterpiece", "boosterMasterpiece"]]);
+
+export function boosterRestriction(sketch, state) {
+  if (!isSketchToolUnlocked(state, "booster")) return "booster_locked";
+  if (!isFullSteamSave(state) || ["scrap", "rough"].includes(sketch?.rarity)) return null;
+  const talent = boosterTalents.get(sketch?.rarity);
+  return talent && toNumber(state.fundamentals?.[talent]) > 0 ? null : "booster_rarity_locked";
+}
+
 export function getPreciseEraserEligibility(sketch, state = {}) {
   if (!sketch?.id) {
     return { eligible: false, reason: "unknown_sketch", message: "The sketch is missing from the catalog." };
@@ -46,12 +55,16 @@ export function getPreciseEraserEligibility(sketch, state = {}) {
     };
   }
 
-  if (rarity === "masterpiece") {
+  if (rarity === "masterpiece" && !(isFullSteamSave(state) && toNumber(state.fundamentals?.masterpieceEraser) > 0)) {
     return {
       eligible: false,
       reason: "masterpiece_not_eligible",
-      message: "Precise Eraser is currently unavailable for Masterpiece targets in this game bundle.",
+      message: isFullSteamSave(state) ? "Precise Eraser on Masterpiece targets requires the Masterpiece Eraser talent."
+        : "Precise Eraser is unavailable for Masterpiece targets in this game bundle.",
     };
+  }
+  if (isFullSteamSave(state) && !["scrap", "rough", "framed", "opus", "masterpiece"].includes(rarity)) {
+    return { eligible: false, reason: "eraser_rarity_ineligible", message: "Precise Eraser cannot be used on this rarity." };
   }
 
   return {

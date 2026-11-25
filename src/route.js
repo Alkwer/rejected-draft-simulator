@@ -10,7 +10,7 @@ import {
   spendUpgradeCurrency, upgradeCost,
 } from "./shop-upgrades.js";
 import { applySteamVictoryStatChanges, createSteamStatProjection, isSteamRawStats } from "./steam-stat-projection.js";
-import { getPreciseEraserEligibility, getSketchFightEligibility, isSketchToolUnlocked } from "./tool-rules.js";
+import { boosterRestriction, getPreciseEraserEligibility, getSketchFightEligibility } from "./tool-rules.js";
 import { remainingSketchVictories } from "./victory-limit.js";
 
 export { currencyFundamentalKey, SECRET_STASH_COST, upgradeCost };
@@ -417,8 +417,9 @@ function applyRequestedBoosters({ requestedIds, sketches, state, ledger, tools }
       tools.boostedApplied.push(id);
       continue;
     }
-    if (!isSketchToolUnlocked(state, "booster")) {
-      tools.boostedSkipped.push({ id, reason: "booster_locked" });
+    const restriction = boosterRestriction(sketches[id], state);
+    if (restriction) {
+      tools.boostedSkipped.push({ id, reason: restriction });
       continue;
     }
     if (boostedSet.size >= maxUses) {

@@ -658,7 +658,7 @@ button:active {
 .mini-button {
   min-height: 30px;
   padding: 0 9px;
-  font-size: 10px;
+  font-size: 12px;
 }
 
 .mini-button:hover,

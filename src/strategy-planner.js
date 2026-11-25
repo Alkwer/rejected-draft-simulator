@@ -9,7 +9,7 @@ import { RewardProjectionError, steamCurrencyPerkWinsRemaining, steamSketchRewar
 import { currencyRewardAmount, projectVictories, simulateRoute } from "./route.js";
 import { isFullSteamSave, normalizeStats, toNumber } from "./save.js";
 import { applySteamVictoryStatChanges, createSteamStatProjection } from "./steam-stat-projection.js";
-import { getSketchFightEligibility, isSketchToolUnlocked } from "./tool-rules.js";
+import { boosterRestriction, getSketchFightEligibility, isSketchToolUnlocked } from "./tool-rules.js";
 import { remainingSketchVictories } from "./victory-limit.js";
 
 const DEFAULT_TARGET_WIN_RATE = 0.5;
@@ -1219,6 +1219,7 @@ function compareBoosterChoices({
     for (const id of candidate.ids) counts.set(id, (counts.get(id) ?? 0) + 1);
     const newUses = [...counts.keys()].filter((id) => !existing.has(id)).length;
     return newUses > 0 && newUses <= remaining && [...counts].every(([id, count]) => !unavailable.has(id)
+      && (existing.has(id) || !boosterRestriction(sketches[id], state))
       && getSketchFightEligibility(sketches[id], state).eligible && count <= remainingSketchVictories(state, id));
   });
   const choices = eligibleCandidates.map((candidate) => {

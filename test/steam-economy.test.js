@@ -6,9 +6,10 @@ import { applySketchRewards, projectSketchRewards } from "../src/rewards.js";
 import { projectVictories, simulateRoute } from "../src/route.js";
 import { STEAM_SHOP_CATALOG } from "../src/steam-shop-catalog.js";
 import { createStrategyPlan } from "../src/strategy-planner.js";
+import { analyzeBuildAdvice } from "../src/build-advisor.js";
 
 test("pre-target rewards use the route's booster limits, retroactive credits and skipped IDs", () => {
-  const sketch = { rewards: [{ statName: "attack", amount: 10 }] };
+  const sketch = { rarity: "rough", rewards: [{ statName: "attack", amount: 10 }] };
   const sketches = { first: sketch, second: sketch };
   const state = { saveProfile: "steam", playerStats: { attack: 10, attackSpeed: 1000, maxHp: 100 },
     sketchVictories: { first: 1 }, fundamentals: { rewardBoosterRetroactive: 1, rewardBoosterEffect: 100 } };
@@ -194,4 +195,27 @@ test("Steam route skips explicitly locked tools and strategy omits locked booste
   assert.deepEqual(route.tools.erasedSkipped, [{ id: "small", reason: "eraser_locked" }]);
   const strategy = createStrategyPlan({ state, sketches, boosterCandidates: [{ ids: ["small"] }] });
   assert.deepEqual(strategy.boosters, { recommendation: null, choices: [] });
+});
+
+test("Steam booster and eraser recommendations respect the unlocked rarities", () => {
+  const stats = { maxHp: 100, attack: 10, attackSpeed: 1000 };
+  const rarities = ["scrap", "rough", "framed", "opus", "masterpiece"];
+  const sketches = Object.fromEntries(rarities.map((id) => [id, { id, name: id, rarity: id, stats,
+    rewards: [{ statName: "attack", amount: 10 }] }]));
+  const state = { saveProfile: "steam", availableSketches: rarities, playerStats: stats,
+    fundamentals: { rewardBoosterUses: 4, preciseEraserUses: 4 } };
+  for (const unlocked of [false, true]) {
+    if (unlocked) Object.assign(state.fundamentals, {
+      boosterFramed: 1, boosterOpus: 1, boosterMasterpiece: 1, opusEraser: 1, masterpieceEraser: 1,
+    });
+    const route = simulateRoute({ state, sketches, boostedIds: rarities, erasedIds: rarities });
+    const boostable = unlocked ? rarities : ["scrap", "rough"];
+    assert.deepEqual(route.tools.boostedApplied, boostable);
+    assert.deepEqual(route.tools.erasedApplied, unlocked ? rarities : ["scrap", "rough", "framed"]);
+    const advice = analyzeBuildAdvice({ state, sketches, targetId: "scrap" });
+    assert.deepEqual(new Set(advice.tools.booster.map(({ id }) => id)), new Set(boostable.filter((id) => id !== "scrap")));
+    const plan = createStrategyPlan({ state, sketches, targetId: "rough", trials: 2, maxSeconds: 2,
+      boosterCandidates: rarities.map((id) => ({ name: id, ids: [id] })) });
+    assert.deepEqual(new Set(plan.boosters.choices.map(({ name }) => name)), new Set(boostable));
+  }
 });
