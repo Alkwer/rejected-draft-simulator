@@ -188,6 +188,20 @@ test("an explicitly empty run only offers future guarantees", () => {
   assert.ok(tools.guarantee.length > 0);
 });
 
+test("the build advisor never recommends erasing an unavailable, hidden, capped or unknown target", () => {
+  const targetId = "bleed_route";
+  for (const [state, reason] of [
+    [{ availableSketches: ["sustain_route"] }, "sketch_not_available"],
+    [{ availableSketches: [targetId], hiddenSketches: [targetId] }, "hidden_sketch"],
+    [{ availableSketches: [targetId], sketchVictories: { [targetId]: 250 } }, "max_victories"],
+  ]) {
+    const { eraser } = analyzeBuildAdvice({ sketches, state, targetId }).tools;
+    assert.equal(eraser[0].action, "not_eligible");
+    assert.equal(eraser[0].reasonCode, reason);
+  }
+  assert.deepEqual(analyzeBuildAdvice({ sketches, targetId: "unknown" }).tools.eraser, []);
+});
+
 test("analyzeBuildAdvice filters capped fights by sketch victories", () => {
   const advice = analyzeBuildAdvice({
     sketches,

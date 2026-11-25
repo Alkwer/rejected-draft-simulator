@@ -100,6 +100,29 @@ test("one-pass forecasts match each separately simulated prefix, including skipp
   }
 });
 
+test("a declared route credits future rewards and labels the fight forecasts as conditional", () => {
+  const route = simulateRoute({ sketches, state: state({ availableSketches: ["drain"] }),
+    routeIds: ["warmup"], targetId: "target", trials: 3, maxSeconds: 8, includeStepForecasts: true });
+
+  assert.equal(route.conditional, true);
+  assert.equal(route.steps[0].conditional, true);
+  assert.equal(route.steps[0].availableNow, false);
+  assert.equal(route.steps[0].availabilityReason, "sketch_not_available");
+  assert.deepEqual(route.steps[0].statRewards, [{ statName: "attack", amount: 100, finalValue: 200 }]);
+  assert.equal(route.target.conditional, true);
+  assert.equal(route.target.availableNow, false);
+  assert.equal(route.target.simulation.winRate, 1);
+});
+
+test("an unknown eraser target does not consume a forecast eraser use", () => {
+  const result = simulateRoute({ sketches, state: state({ fundamentals: { opusEraser: 1 } }),
+    erasedIds: ["unknown", "erasable_target"], targetId: "erasable_target" });
+
+  assert.deepEqual(result.tools.erasedSkipped, [{ id: "unknown", reason: "unknown_sketch" }]);
+  assert.deepEqual(result.tools.erasedApplied, ["erasable_target"]);
+  assert.equal(result.target.stats.maxHp, 400);
+});
+
 test("large finite balances survive route JSON export", () => {
   const result = simulateRoute({ state: state({ currencies: { Photon: 2e307, Graphite: Number.MAX_VALUE } }),
     sketches, routeIds: ["warmup"], includeStepForecasts: true });

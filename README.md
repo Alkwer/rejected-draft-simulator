@@ -32,6 +32,10 @@ Open the printed local URL, usually `http://127.0.0.1:5173`. Click **Use active 
 
 Loading a new export clears the previous save's assumed victories, route and hidden sketches. On a phone, use **Run simulation** below the pasted export. The battle result appears as soon as it is ready. Strategy and comparisons follow when their simulations finish.
 
+A redraw within the same Steam slot also clears the previous run’s scenario, even when a sketch appears in both draws. Ordinary autosaves keep it. For older slots without a redraw counter or timestamp the dashboard detects a changed roster. Select a sketch name to inspect its rewards with the mouse or keyboard. **Restore** brings back the last hidden sketch, including its assumed victories and route positions.
+
+**Practice** and **Trace (s)** update the displayed diagnostics from the current sample. The dashboard shows up to 24 trace events within the chosen window. Automatic scenario changes keep the seed so you can compare them. Click **Simulate** to draw a fresh sample.
+
 On Windows, the game stores its six slots under `%APPDATA%\Rejected Draft\saves\steam`. The simulator follows `last-slot.txt` and uses the most recently modified slot if the selected file is missing. CLI users can run:
 
 ```powershell
@@ -66,6 +70,8 @@ The comparison shows how often the observed outcome occurred in the simulations,
 Reopen the entry under **Saved fights** to review it, correct the observed result or download the original pre-fight save. The local archive lives in `.local/steam-fights/` and survives server restarts and slot changes. Capturing another fight creates a separate entry. If an entry is unreadable, the archive shows its ID and you can still open the other fights.
 
 Open **Compare recorded fights by setup** to compare observed and expected counts across repeated attempts. Each fight contributes one observation and its forecast probabilities. Groups share a target, effective combat setup, game patch, catalog build, model version and time limit. Fights that reach the limit count as timeouts. A fight stopped earlier with an unknown outcome cannot contribute. Correcting a result updates its group.
+
+Each group also counts durations below, within and above the individual forecasts’ p10–p90 ranges. If the time limit prevents a comparison, the group counts it as indeterminate.
 
 ## Legacy web companion
 
@@ -197,6 +203,8 @@ npm.cmd run simulate -- --save "C:\path\to\save.txt" --target duct_taped_banana 
 `--strategy-plan` combines target readiness, missing Q/currency, wait-vs-redraw at softcap, farm plan, Opus currency-vs-stat value, run EV over `--farm-seconds`, economy planning, booster set comparison by route simulation, Masterpiece keep/redraw and finish-run/redraw decisions. Use `--goal-q`, `--goal-currency`, `--softcap-seconds`, `--farm-seconds`, `--booster-candidates` and `--masterpiece-targets` to make the assumptions explicit. Set `--strategy-trials` to a positive integer to override the strategy forecast budget. By default, the strategy uses the `--trials` budget up to 1,000.
 
 Farm window earnings include passive generation for the entire window and payouts from fights projected to finish within it. Full-route earnings cover one attempt per eligible sketch in planner order. The planner budgets the p90 duration of each fight, using its median when p90 is absent. A missing or censored time makes subsequent finish times uncertain. The report marks incomplete window totals and shows battle-only full-route earnings when it cannot time passive generation.
+
+Farm decisions weigh the projected Opus reward per minute against the win-rate interval. Booster comparisons estimate the chance of winning each prerequisite from the stats available at that step and compare the route with the same route unboosted. The manual route planner can still show hypothetical rewards after listed victories. Immediate fight and tool recommendations check the active roster.
 
 Steam saves supply generator unlocks and accumulated battle income. The planner uses these values for flat and income-based generators and applies the active speed and generator multipliers.
 

@@ -274,6 +274,75 @@ test("calibration keeps missing and incomplete player snapshots in diagnostics w
   assert.deepEqual(report.tuning, recordedOnly.tuning);
 });
 
+test("calibration verifies partial enemy stats against the matching legacy catalog", () => {
+  const gameVersion = "v0.874";
+  const targetId = "duct_taped_banana";
+  const target = GAME_DATA_VERSIONS[gameVersion].targets[targetId];
+  const log = {
+    targetId, gameVersion, outcome: "loss", seconds: 2,
+    playerStats: { maxHp: 100, attack: 20, attackSpeed: 1000, minDamage: 100, maxDamage: 100 },
+    combatAssumptions: legacyCombatAssumptions,
+  };
+  const options = { sketches: { [targetId]: target }, dataMetadata: { platform: "web", gameVersion },
+    trials: 20, maxSeconds: 5 };
+  const compare = (entries) => createCalibrationReport({ ...options, externalLogs: entries });
+  const catalog = compare([log]);
+  const partial = compare([{ ...log, targetStats: { maxHp: "3.3e12" } }]);
+  assert.equal(catalog.comparisons[0].simulated.summary.wins, 0);
+  assert.deepEqual(partial.comparisons[0].simulated, catalog.comparisons[0].simulated);
+  assert.equal(partial.logs.tuningEligible, 1);
+
+  const entries = [
+    { ...log, targetStats: { armor: 0 } },
+    { ...log, targetStats: { maxHp: " " } },
+    { ...log, targetStats: { maxHp: target.stats.maxHp, vulnerability: ["bleedChance", 7] } },
+    { ...log, targetStats: { maxHp: target.stats.maxHp }, gameVersion: "v0.881" },
+    { ...log, targetStats: { maxHp: 1, attack: 0, attackSpeed: 1000 } },
+  ];
+  const report = compare(parseCombatLogText(JSON.stringify(entries)));
+
+  assert.equal(report.logs.tuningEligible, 1);
+  assert.deepEqual(report.comparisons.map(({ tuningExclusion }) => tuningExclusion), [
+    "calibration_target_stats_incomplete", "calibration_target_stats_incomplete", "calibration_target_stats_incomplete",
+    "calibration_log_patch_mismatch", null,
+  ]);
+  assert.ok(report.comparisons.slice(0, 4).every(({ simulated }) => simulated === null));
+  assert.equal(report.comparisons[4].simulated.summary.wins, 20);
+  assert.equal(report.warnings.find(({ code }) => code === "calibration_target_stats_incomplete").count, 3);
+  assert.deepEqual(report.comparisons[4].simulated, compare(entries.slice(-1)).comparisons[0].simulated);
+});
+
+test("calibration verifies partial Steam snapshots after applying encounter modifiers once", () => {
+  const targetId = "wall";
+  const gameVersion = checkPatchSanity().version;
+  const fight = {
+    targetId, gameVersion, outcome: "win", seconds: 3,
+    playerStats: { maxHp: 100, attack: 25, attackSpeed: 1000, minDamage: 100, maxDamage: 100 },
+    combatAssumptions: {
+      ...steamCombatAssumptions,
+      steam: { ...steamCombatAssumptions.steam, universeId: "mv-brutal-1", erasedSketchIds: [targetId] },
+    },
+  };
+  const options = {
+    dataMetadata: { gameVersion, platform: "steam" },
+    sketches: { [targetId]: { stats: { maxHp: 10, attack: 0, attackSpeed: 8000 } } },
+    trials: 3, maxSeconds: 5,
+  };
+  const compare = (stats) => createCalibrationReport({ ...options, externalLogs: [{ ...fight, targetStats: stats }] });
+  const catalog = compare(undefined);
+  const partial = compare({ maxHp: 60, isPreciseErased: true });
+  const recorded = compare({ maxHp: 60, attack: 0, attackSpeed: 8000, isPreciseErased: true });
+
+  assert.equal(catalog.comparisons[0].predicted.medianSeconds, 3);
+  assert.equal(partial.logs.tuningEligible, 1);
+  assert.deepEqual(partial.comparisons[0].simulated, catalog.comparisons[0].simulated);
+  assert.deepEqual(recorded.comparisons[0].simulated, catalog.comparisons[0].simulated);
+  assert.equal(compare({ maxHp: 10 }).comparisons[0].tuningExclusion, "calibration_target_stats_incomplete");
+  assert.equal(compare({ maxHp: 60, isPreciseErased: false }).logs.tuningEligible, 0);
+  assert.equal(createCalibrationReport({ ...options, sketches: {}, externalLogs: [fight] })
+    .comparisons[0].tuningExclusion, "calibration_target_stats_missing");
+});
+
 test("an invalid Steam attack interval does not interrupt calibration of other fights", () => {
   const stats = { maxHp: 100, attack: 5, attackSpeed: 1000 };
   const log = { targetId: "wall", gameVersion: checkPatchSanity().version, targetStats: stats, outcome: "loss",

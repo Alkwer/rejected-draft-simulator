@@ -23,7 +23,7 @@ test("decodeSaveText decodes base64 save exports", () => {
     version: 52,
     state: {
       quintessence: { mantissa: 1.25, exponent: 6 },
-      playerStats: { attack: { mantissa: 2, exponent: 3 } },
+      playerStats: { maxHp: 100, attack: { mantissa: 2, exponent: 3 }, attackSpeed: 1000 },
     },
   };
   const encoded = Buffer.from(JSON.stringify(payload), "utf8").toString("base64");

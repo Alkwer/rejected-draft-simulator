@@ -54,6 +54,7 @@ test("archive comparisons use one forecast per observed fight at the same horizo
   assert.equal(groups[0].fights, 2);
   assert.deepEqual(groups[0].observed, { win: 1, loss: 0, timeout: 1 });
   assert.deepEqual(groups[0].expected, { win: 0.5, loss: 1.5, timeout: 0 });
+  assert.deepEqual(groups[0].durationRange, { below: 0, within: 1, above: 1, indeterminate: 0 });
 });
 
 async function startServer(options) {

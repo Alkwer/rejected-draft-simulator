@@ -111,7 +111,7 @@ test("CLI applies the same Steam opening and booster rules across single fights 
   const farm = { ...boss, name: "Farm", id: "farm", rarity: "opus", rewards: [{ statName: "armor", amount: 1 }] };
   fs.writeFileSync(data, JSON.stringify({ sketches: { boss, farm }, metadata: { platform: "steam", gameVersion: "v0.9772" } }));
   const state = { playerStats: { maxHp: 100, attack: 100, attackSpeed: 1000, minDamage: 100, maxDamage: 100 },
-    fundamentals: { flowStateLevel: 50 }, glossaryUnlocks: ["boss", "farm"], availableSketches: ["boss", "farm"],
+    fundamentals: { flowStateLevel: 50, boosterOpus: 1 }, glossaryUnlocks: ["boss", "farm"], availableSketches: ["boss", "farm"],
     combatState: { lastVictory: { time: 10000, enemyId: "boss" } }, autoChallengeActive: true, autoChallengeUnlocked: true };
   const save = { meta: { profile: "steam", savedAt: 11000 }, version: 87, state };
   fs.writeFileSync(file, JSON.stringify(save));

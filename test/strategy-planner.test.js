@@ -732,6 +732,93 @@ test("booster comparisons omit configurations containing a hidden sketch", () =>
   assert.deepEqual(plan.boosters.choices.map(({ name }) => name), ["visible"]);
 });
 
+test("farm decisions use the uncertainty and fight time of the Opus payout", () => {
+  const jackpot = { ...sketches.opus_currency, currencyRewards: [{ name: "Photon", amount: 1e6 }] };
+  const options = { sketches: { ...sketches, [jackpot.id]: jackpot }, state: state({ availableSketches: [jackpot.id] }),
+    goalCurrencies: { Photon: 1000 }, targetId: "target", targetSimulation: { winRate: 0 }, trials: 5 };
+  const plan = (winRate, trials, p90Seconds) => createStrategyPlan({ ...options,
+    currentRun: { targets: [{ id: jackpot.id, winRate, trials, p90Seconds }] } });
+
+  const noWins = plan(0, 100, 60);
+  assert.equal(noWins.runEV.currencies.Photon.battleExpectedPerRun, 0);
+  assert.equal(noWins.farmPlan.bestOpusTargets[0].expectedValuePerMinute, 0);
+  assert.equal(noWins.masterpieceRoll.decision, "redraw");
+  assert.equal(noWins.runCompletion.decision, "redraw");
+  assert.equal(noWins.farmPlan.decision, "redraw");
+
+  const smallSample = plan(0, 5, 60);
+  assert.equal(smallSample.masterpieceRoll.decision, "increase_trials");
+  assert.equal(smallSample.runCompletion.reason, "opus_farm_return_uncertain");
+  assert.equal(smallSample.stopFarming.reason, "opus_farm_return_uncertain");
+  assert.ok(smallSample.runCompletion.bestOpus.upperValuePerMinute > 10);
+
+  const fast = plan(0.2, 100, 60);
+  assert.equal(fast.masterpieceRoll.decision, "keep_farm");
+  assert.equal(fast.masterpieceRoll.targetId, jackpot.id);
+  assert.equal(fast.runCompletion.decision, "finish_opus_farm");
+  const slow = plan(0.2, 100, 600);
+  assert.equal(slow.masterpieceRoll.decision, "redraw");
+  assert.equal(slow.runCompletion.decision, "redraw");
+});
+
+test("booster recommendations require accessible, beatable route steps and incremental gains", () => {
+  const impossible = { ...sketches.opus_attack, id: "impossible",
+    stats: { maxHp: 1e9, attack: 1e9, attackSpeed: 10 }, rewards: [{ statName: "attack", amount: 1e9 }] };
+  const absent = { ...impossible, id: "absent", stats: sketches.opus_currency.stats };
+  const health = { ...sketches.opus_hp, rewards: [{ statName: "maxHp", amount: 30 }] };
+  const plan = createStrategyPlan({
+    sketches: { ...sketches, impossible, absent, [health.id]: health },
+    state: state({ availableSketches: ["impossible", "opus_attack", "opus_currency", "opus_hp", "target"],
+      hiddenSketches: ["opus_currency"], sketchVictories: { opus_attack: 2 } }),
+    targetId: "target",
+    boosterCandidates: [
+      { name: "Absent reward", ids: ["absent"] },
+      { name: "Impossible second fight", ids: ["opus_hp", "impossible"] },
+      { name: "Hidden", ids: ["opus_currency"] },
+      { name: "Capped", ids: ["opus_attack"] },
+      { name: "Unknown", ids: ["unknown"] },
+      { name: "Over cap", ids: ["opus_hp", "opus_hp", "opus_hp"] },
+      { name: "Reachable reward", ids: ["opus_hp"] },
+    ],
+    trials: 20,
+    maxSeconds: 5,
+  });
+
+  assert.deepEqual(plan.boosters.choices.map(({ name }) => name), ["Reachable reward", "Impossible second fight"]);
+  assert.equal(plan.boosters.recommendation.name, "Reachable reward");
+  const failedRoute = plan.boosters.choices[1];
+  assert.equal(failedRoute.conditional, true);
+  assert.equal(failedRoute.winRate, 1);
+  assert.equal(failedRoute.routeWinRate, 0);
+  assert.equal(failedRoute.jointWinRate, 0);
+  assert.deepEqual(failedRoute.steps.map(({ fightSimulation }) => fightSimulation.winRate), [1, 0]);
+});
+
+test("a favorable projected fight still requires an available target", () => {
+  const options = { sketches, targetId: "target", targetSimulation: { winRate: 1, trials: 100 }, trials: 1,
+    currentRun: { targets: [{ id: "target", winRate: 1 }, { id: "opus_currency", winRate: 1 }] } };
+  for (const overrides of [
+    { availableSketches: ["opus_currency"] }, { hiddenSketches: ["target"] }, { sketchVictories: { target: 2 } },
+  ]) {
+    const plan = createStrategyPlan({ ...options, state: state(overrides) });
+    assert.equal(plan.target.availableNow, false);
+    assert.equal(plan.approach.conditional, true);
+    assert.equal(plan.approach.ready, false);
+    assert.notEqual(plan.stopFarming.decision, "attempt_target");
+    assert.notEqual(plan.runCompletion.decision, "fight_target");
+  }
+});
+
+test("the masterpiece roll prefers another wanted target with supported odds", () => {
+  const wanted = { ...sketches.target, id: "wanted" };
+  const plan = createStrategyPlan({ sketches: { ...sketches, wanted }, targetId: "target", masterpieceTargetIds: ["wanted"],
+    state: state({ availableSketches: ["target", "wanted"] }), targetSimulation: { winRate: 0.8, trials: 4 },
+    currentRun: { targets: [{ id: "target", winRate: 0.8, trials: 4 }, { id: "wanted", winRate: 0.7, trials: 100 }] },
+    trials: 1 });
+  assert.equal(plan.masterpieceRoll.decision, "keep_target");
+  assert.equal(plan.masterpieceRoll.targetId, "wanted");
+});
+
 test("createStrategyPlan uses the same fight samples after renaming a booster choice", () => {
   const plan = createStrategyPlan({
     sketches: { ...sketches, target: { ...sketches.target, stats: { ...sketches.target.stats, dodge: 50 } } },
@@ -934,6 +1021,7 @@ test("Masterpiece profiles count and estimate only first wins on distinct sketch
   const plan = createStrategyPlan({
     sketches: { ...sketches, [newMasterpiece.id]: newMasterpiece, [previouslyDefeated.id]: previouslyDefeated },
     state: state({
+      availableSketches: ["target", newMasterpiece.id, previouslyDefeated.id],
       sketchVictories: { target: 6, opus_attack: 2 },
       sketchRunVictories: { target: 3, [previouslyDefeated.id]: 2 },
       defeatedMasterpieceCount: 8,

@@ -105,6 +105,9 @@ export function createWebServer({
           }
         }
         const slotChanged = Boolean(slotName && body.scenarioSlot && slotName !== body.scenarioSlot);
+        const runKey = slotName && steamRunKey(save.state);
+        const runChanged = Boolean(slotName && !slotChanged && body.scenarioRunKey && body.scenarioRunKey !== runKey);
+        const resetScenario = slotChanged || runChanged;
         const onPrimary = req.headers.accept === "application/x-ndjson" ? (primary) => {
           if (res.destroyed) return;
           res.writeHead(200, { "content-type": "application/x-ndjson; charset=utf-8", "cache-control": "no-store" });
@@ -117,19 +120,20 @@ export function createWebServer({
           expectedModelVersion: body.expectedModelVersion,
           save,
           targetId: body.targetId,
-          assumedVictoryIds: slotChanged ? [] : body.assumedVictoryIds,
-          assumedVictories: slotChanged ? {} : body.assumedVictories,
+          assumedVictoryIds: resetScenario ? [] : body.assumedVictoryIds,
+          assumedVictories: resetScenario ? {} : body.assumedVictories,
           trials: body.trials ?? "auto",
           maxSeconds: body.maxSeconds ?? 300,
           seed: body.seed ?? "web-ui",
           referenceTimeMs: body.referenceTimeMs,
           strategyOptions: body.strategyOptions,
-          routeIds: slotChanged ? [] : body.routeIds,
-          hiddenSketchIds: slotChanged ? [] : body.hiddenSketchIds,
+          routeIds: resetScenario ? [] : body.routeIds,
+          hiddenSketchIds: resetScenario ? [] : body.hiddenSketchIds,
           observedOutcome: body.observedOutcome,
           traceSeconds: body.traceSeconds,
+          interactiveDiagnostics: body.interactiveDiagnostics === true,
         }, false, onPrimary);
-        const result = { ok: true, analysis, slotName, ...(slotChanged && { slotChanged }) };
+        const result = { ok: true, analysis, slotName, runKey, ...(slotChanged && { slotChanged }), ...(runChanged && { runChanged }) };
         if (res.destroyed) return;
         if (res.headersSent) return res.end(JSON.stringify(result) + "\n");
         return sendJson(res, result);
@@ -189,6 +193,13 @@ const COMPANION_ALLOWED_ORIGINS = new Set([
   "https://kuzzigames.com",
   "https://www.kuzzigames.com",
 ]);
+
+function steamRunKey(state) {
+  const { redrawCount, lastRedrawTime, availableSketches, multiverse } = state;
+  const fallback = redrawCount == null && lastRedrawTime == null
+    ? Object.values(availableSketches ?? {}).sort() : null;
+  return JSON.stringify([multiverse?.currentUniverseId ?? null, redrawCount ?? null, lastRedrawTime ?? null, fallback]);
+}
 
 function isLocalRequest(req) {
   const host = req.headers.host ?? "";

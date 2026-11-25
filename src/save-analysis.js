@@ -1,6 +1,7 @@
 import { extractStats, isSteamSave, toNumber } from "./save.js";
 import { STEAM_UNIVERSES, VERIFIED_STEAM_BUILD } from "./combat/steam-universes.js";
 import { maxSketchVictories, remainingSketchVictories } from "./victory-limit.js";
+import { invalidCombatStats, validateLegacyStatSources } from "../web/save-format.js";
 
 export function analyzeSave({ save, sketches = {}, targetId = null, dataMetadata = null }) {
   const state = save?.state ?? {};
@@ -27,7 +28,7 @@ export function analyzeStats(state, { steamSave = isSteamSave({ state }) } = {})
   const playerStats = extractStats(state, "playerStats");
   const battleStats = extractStats(state, "battleStats");
   const runStats = extractRunStats(state);
-  const recommended = chooseStatsSource({ state, playerStats, battleStats, runStats, steamSave });
+  const recommended = chooseStatsSource(state, steamSave);
 
   return {
     recommendedSource: recommended.source,
@@ -46,33 +47,34 @@ export function getStatsBySource(state, source) {
     const { sources, recommendedSource } = analyzeStats(state);
     return sources[recommendedSource] ?? {};
   }
-  if (source === "runStats") return extractRunStats(state);
-  return extractStats(state, source);
+  const rawSource = source === "runStats" ? "currentRunStats" : source;
+  if (!isSteamSave({ state })) validateLegacyStatSources(state, [rawSource]);
+  return extractStats(state, rawSource);
 }
 
 function extractRunStats(state) {
   return extractStats(state, "currentRunStats");
 }
 
-function chooseStatsSource({ state, playerStats, battleStats, runStats, steamSave }) {
+function chooseStatsSource(state, steamSave) {
   // Steam's battleStats holds accumulated rewards, and playerStats includes all active modifiers.
   if (steamSave) {
     return { source: "playerStats", reason: "steam_player_stats" };
   }
-  if (hasEnoughStats(runStats) && normalizeArray(state.availableSketches).length > 0) {
+  const hasRunStats = invalidCombatStats(state?.currentRunStats).length === 0;
+  if (hasRunStats && normalizeArray(state.availableSketches).length > 0) {
     return { source: "runStats", reason: "current_run_stats_available" };
   }
-  if (hasEnoughStats(battleStats) && battleStats.attackSpeed > 0) {
+  if (invalidCombatStats(state?.battleStats).length === 0) {
     return { source: "battleStats", reason: "battle_stats_available" };
   }
-  if (hasEnoughStats(playerStats)) {
+  if (invalidCombatStats(state?.playerStats).length === 0) {
     return { source: "playerStats", reason: "fallback_player_stats" };
   }
-  return { source: "playerStats", reason: "no_viable_stats_found" };
-}
-
-function hasEnoughStats(stats) {
-  return toNumber(stats.maxHp) > 0 && toNumber(stats.attack) >= 0 && Object.keys(stats).length > 0;
+  if (hasRunStats) {
+    return { source: "runStats", reason: "fallback_current_run_stats" };
+  }
+  validateLegacyStatSources(state);
 }
 
 function compareStats(base, current) {

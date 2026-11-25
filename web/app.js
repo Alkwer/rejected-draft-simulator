@@ -75,6 +75,7 @@ const els = {
   routePlannerList: document.querySelector("#routePlannerList"),
   activeSketches: document.querySelector("#activeSketches"),
   activeCount: document.querySelector("#activeCount"),
+  restoreSketchButton: document.querySelector("#restoreSketchButton"),
   messageBar: document.querySelector("#messageBar"),
   nextActionBadge: document.querySelector("#nextActionBadge"),
   nextActionBody: document.querySelector("#nextActionBody"),
@@ -141,6 +142,8 @@ const state = {
   lastAnalysis: null,
   isBusy: false,
   slotName: null,
+  runKey: null,
+  seed: null,
   platform: null,
   targetRequest: 0,
 };
@@ -175,8 +178,9 @@ function bindEvents() {
   els.startFileButton.addEventListener("click", () => els.saveFile.click());
   els.startSteamButton.addEventListener("click", () => els.steamSlotButton.click());
   els.importBundleButton.addEventListener("click", importBundle);
-  els.analyzeButton.addEventListener("click", analyze);
-  els.mobileAnalyzeButton.addEventListener("click", analyze);
+  const rerun = () => analyze({ newSeed: true });
+  els.analyzeButton.addEventListener("click", rerun);
+  els.mobileAnalyzeButton.addEventListener("click", rerun);
   els.steamSlotButton.addEventListener("click", () => analyze({ loadSlot: true }));
   els.saveInput.addEventListener("input", () => {
     resetSaveAnalysis();
@@ -195,8 +199,8 @@ function bindEvents() {
   });
   els.trialsSelect.addEventListener("change", scheduleAnalyze);
   els.maxSecondsInput.addEventListener("input", scheduleAnalyze);
-  els.observedOutcomeSelect.addEventListener("change", scheduleAnalyze);
-  els.traceSecondsInput.addEventListener("input", scheduleAnalyze);
+  els.observedOutcomeSelect.addEventListener("change", () => renderObservation(state.lastAnalysis?.diagnostics));
+  els.traceSecondsInput.addEventListener("input", () => renderFightTrace(state.lastAnalysis?.fightTrace));
   els.densityModeSelect.addEventListener("change", () => {
     applyDensityMode(els.densityModeSelect.value);
     renderUiDiagnostics();
@@ -221,6 +225,14 @@ function bindEvents() {
     state.routeIds = [];
     renderRoutePlanner();
     scheduleAnalyze();
+  });
+  els.restoreSketchButton.addEventListener("click", () => {
+    const id = [...state.hiddenSketchIds].at(-1);
+    if (!id) return;
+    state.hiddenSketchIds.delete(id);
+    renderRestoreSketch();
+    renderRoutePlanner();
+    analyzeIfReady();
   });
   els.functionTabBar.addEventListener("click", (event) => {
     const tab = event.target.closest("[data-function-tab]")?.dataset.functionTab;
@@ -278,6 +290,8 @@ function bindEvents() {
 }
 
 function resetSaveAnalysis() {
+  state.runKey = null;
+  state.seed = null;
   state.analysisGeneration += 1;
   state.targetRequest += 1;
   state.pendingAnalysis = false;
@@ -406,7 +420,7 @@ async function importBundle() {
   if (reanalyze && !state.isBusy) analyzeIfReady();
 }
 
-async function analyze({ loadSlot = false, replay = null } = {}) {
+async function analyze({ loadSlot = false, replay = null, newSeed = false } = {}) {
   if (state.isBusy) return;
   window.clearTimeout(state.autoAnalyzeTimer);
   const generation = state.analysisGeneration;
@@ -424,7 +438,7 @@ async function analyze({ loadSlot = false, replay = null } = {}) {
     const settings = replay?.settings ?? {
       targetId: els.targetSelect.value,
       assumedVictories: loadSlot ? [] : assumedVictoriesPayload(),
-      routeIds: loadSlot ? [] : [...state.routeIds],
+      routeIds: loadSlot ? [] : state.routeIds.filter((id) => !state.hiddenSketchIds.has(id)),
       hiddenSketchIds: loadSlot ? [] : [...state.hiddenSketchIds],
       trials: els.trialsSelect.value,
       maxSeconds: Number(els.maxSecondsInput.value || 300),
@@ -432,12 +446,14 @@ async function analyze({ loadSlot = false, replay = null } = {}) {
       traceSeconds: Number(els.traceSecondsInput.value || 60),
       strategyOptions: strategyOptionsPayload(),
       referenceTimeMs: now,
-      seed: `web-${now}`,
+      seed: newSeed || loadSlot || !state.seed ? `web-${now}` : state.seed,
     };
     const saveSource = fromSlot ? "steam" : "export";
     const payload = {
       ...settings, saveSource, saveText: fromSlot ? undefined : exportText,
       scenarioSlot: fromSlot && !loadSlot && !replay ? state.slotName : undefined,
+      scenarioRunKey: fromSlot && !loadSlot && !replay ? state.runKey : undefined,
+      interactiveDiagnostics: true,
       // Earlier history entries included their analysis time in the generated seed.
       referenceTimeMs: settings.referenceTimeMs ?? Number(/^web-(\d+)$/.exec(settings.seed)?.[1] ?? now),
       expectedSaveHash: replay?.saveHash, expectedCatalogHash: replay?.catalogHash,
@@ -458,7 +474,7 @@ async function analyze({ loadSlot = false, replay = null } = {}) {
       showMessage(["Fight result ready. Calculating strategy and comparisons.", ...primary.warnings.map((item) => item.message)].join(" "), "ok");
     });
     if (generation !== state.analysisGeneration || els.saveInput.value !== exportText) return;
-    if (loadSlot || data.slotChanged) {
+    if (loadSlot || data.slotChanged || data.runChanged) {
       state.assumed.clear();
       state.routeIds = [];
       state.hiddenSketchIds.clear();
@@ -466,10 +482,11 @@ async function analyze({ loadSlot = false, replay = null } = {}) {
       els.saveInput.value = "";
       els.saveFile.value = "";
       els.saveFileLabel.textContent = "Choose save file";
-      if (data.slotChanged) Object.assign(settings, { assumedVictories: {}, routeIds: [], hiddenSketchIds: [] });
+      if (data.slotChanged || data.runChanged) Object.assign(settings, { assumedVictories: {}, routeIds: [], hiddenSketchIds: [] });
     }
     if (data.slotName) {
       state.slotName = data.slotName;
+      state.runKey = data.runKey;
       els.saveInput.placeholder = `Using Steam ${data.slotName}. Paste an export to switch saves.`;
     }
     if (data.analysis.bundle.platform && state.platform !== data.analysis.bundle.platform) {
@@ -477,6 +494,7 @@ async function analyze({ loadSlot = false, replay = null } = {}) {
     }
     if (generation !== state.analysisGeneration || state.pendingAnalysis) return;
     if (replay) restoreAnalysisSettings(settings);
+    state.seed = settings.seed;
     document.body.classList.remove("primary-result-only");
     hideMessage();
     state.lastAnalysis = data.analysis;
@@ -484,6 +502,7 @@ async function analyze({ loadSlot = false, replay = null } = {}) {
     renderAnalysis(data.analysis);
     const messages = data.analysis.warnings.map((item) => item.message);
     if (data.slotChanged) messages.unshift(`Switched to Steam ${data.slotName}. Cleared the previous slot's assumed victories, route and hidden sketches.`);
+    if (data.runChanged) messages.unshift(`New run in Steam ${data.slotName}. Cleared the previous run's assumed victories, route and hidden sketches.`);
     if (messages.length) showMessage(messages.join(" "), data.analysis.warnings.length ? "error" : "ok");
     if (!replay) pushHistory(data.analysis, { ...data.analysis.replayIdentity, settings, saveSource });
     else if (!data.analysis.warnings.length) showMessage("Repeated the saved analysis with its original settings.", "ok");
@@ -554,8 +573,18 @@ function renderCurrentSpecs(stats = {}) {
   }
 }
 
+function renderRestoreSketch() {
+  const lastHidden = [...state.hiddenSketchIds].at(-1);
+  els.restoreSketchButton.hidden = !lastHidden;
+  if (lastHidden) {
+    const name = state.targetOptions.find((target) => target.id === lastHidden)?.name ?? lastHidden;
+    els.restoreSketchButton.textContent = `Restore ${name}`;
+  }
+}
+
 function renderActiveSketches(items) {
   state.activeSketches = items;
+  renderRestoreSketch();
   const visibleItems = items.filter((item) => !state.hiddenSketchIds.has(item.id));
   syncAssumptionsWithItems(visibleItems);
   if (!state.selectedSketchId || !visibleItems.some((item) => item.id === state.selectedSketchId)) {
@@ -577,10 +606,10 @@ function renderActiveSketches(items) {
     row.dataset.sketchId = item.id;
     row.innerHTML = `
       <input class="assumed-toggle" type="checkbox" title="Assume defeated before target" aria-label="Assume ${escapeHtml(item.name)} defeated before target" ${count > 0 ? "checked" : ""}>
-      <span class="sketch-main">
+      <button type="button" class="sketch-main" aria-label="Inspect rewards for ${escapeHtml(item.name)}">
         <strong>${escapeHtml(item.name)}</strong>
         <span>${escapeHtml(item.id)} | ${escapeHtml(item.rarity)} | kills ${item.totalVictories}/${item.maxVictories} | left ${maxCount}</span>
-      </span>
+      </button>
       <span class="kill-controls">
         <input class="kill-count" type="number" min="0" max="${maxCount}" step="1" value="${count}" title="Extra kills">
         <button class="mini-button" type="button" data-tooltip="Assume all remaining kills">Max</button>
@@ -606,11 +635,16 @@ function renderActiveSketches(items) {
       countInput.value = String(nextCount);
       row.classList.toggle("selected", nextCount > 0);
       row.classList.toggle("inspected", state.selectedSketchId === item.id);
+      row.querySelector(".sketch-main").setAttribute("aria-pressed", String(state.selectedSketchId === item.id));
     };
     row.addEventListener("click", (event) => {
-      if (event.target.closest("button,input")) return;
+      if (event.target.closest("button,input") && !event.target.closest(".sketch-main")) return;
       state.selectedSketchId = item.id;
-      renderActiveSketches(state.activeSketches);
+      for (const other of els.activeSketches.children) {
+        const selected = other === row;
+        other.classList.toggle("inspected", selected);
+        other.querySelector(".sketch-main").setAttribute("aria-pressed", String(selected));
+      }
       renderSketchDelta(state.lastAnalysis);
     });
     toggle.addEventListener("change", () => {
@@ -647,9 +681,8 @@ function renderActiveSketches(items) {
     });
     hideButton.addEventListener("click", () => {
       state.hiddenSketchIds.add(item.id);
-      state.assumed.delete(item.id);
-      state.routeIds = state.routeIds.filter((id) => id !== item.id);
       renderActiveSketches(state.activeSketches);
+      els.restoreSketchButton.focus();
       renderRoutePlanner();
       scheduleAnalyze();
     });
@@ -707,7 +740,7 @@ function renderThresholds(items) {
   for (const item of items.slice(0, 6)) {
     const row = document.createElement("div");
     row.className = "threshold-item";
-    row.innerHTML = `<strong>${escapeHtml(item.stat)}</strong><span>${formatNumber(item.current)} / ${formatNumber(item.target)}</span>`;
+    row.innerHTML = `<strong>${escapeHtml(item.stat)}</strong><span>Current ${formatNumber(item.current)} · Target ${formatNumber(item.target)}</span>`;
     els.thresholds.append(row);
   }
 }
@@ -742,16 +775,17 @@ function renderDiagnostics(diagnostics) {
     title: `${item.severity}: ${item.title}`,
     detail: item.detail,
   })));
-  renderSimpleList(els.observationMismatch, diagnostics.observation?.status && diagnostics.observation.status !== "none"
-    ? [{
-      title: `${diagnostics.observation.status}: ${diagnostics.observation.code}`,
-      detail: diagnostics.observation.detail,
-    }]
-    : []);
+  renderObservation(diagnostics);
   renderSimpleList(els.extremeStatsList, (diagnostics.extremes ?? []).slice(0, 8).map((item) => ({
     title: `${item.severity}: ${item.stat}`,
     detail: item.interpretation,
   })));
+}
+
+function renderObservation(diagnostics) {
+  const observation = diagnostics?.observations?.[els.observedOutcomeSelect.value] ?? diagnostics?.observation;
+  renderSimpleList(els.observationMismatch, observation && observation.status !== "none"
+    ? [{ title: `${observation.status}: ${observation.code}`, detail: observation.detail }] : []);
 }
 
 function renderAssumptionComparisons(items = []) {
@@ -774,7 +808,8 @@ function renderAssumptionComparisons(items = []) {
 }
 
 function renderFightTrace(trace) {
-  const events = trace?.events ?? [];
+  const windowSeconds = Math.min(120, Math.max(5, els.traceSecondsInput.valueAsNumber || 60));
+  const events = trace?.events.filter((event) => event.time <= windowSeconds) ?? [];
   if (events.length === 0) {
     renderSimpleList(els.fightTraceList, []);
     els.fightTraceList.textContent = "No trace";
@@ -888,7 +923,7 @@ function rewardSummary(item) {
 }
 
 function renderRoutePlanner() {
-  if (state.routeIds.length === 0) {
+  if (!state.routeIds.some((id) => !state.hiddenSketchIds.has(id))) {
     els.routePlannerList.className = "breakdown-list empty-state";
     els.routePlannerList.textContent = "No route";
     return;
@@ -896,11 +931,12 @@ function renderRoutePlanner() {
   els.routePlannerList.className = "breakdown-list";
   els.routePlannerList.innerHTML = "";
   state.routeIds.forEach((id, index) => {
+    if (state.hiddenSketchIds.has(id)) return;
     const active = state.activeSketches.find((item) => item.id === id);
     const row = document.createElement("div");
     row.className = "route-item";
     row.innerHTML = `
-      <span><strong>${index + 1}. ${escapeHtml(active?.name ?? id)}</strong><small>${escapeHtml(id)}</small></span>
+      <span><strong>${els.routePlannerList.childElementCount + 1}. ${escapeHtml(active?.name ?? id)}</strong><small>${escapeHtml(id)}</small></span>
       <button class="mini-button" type="button" title="Remove from route" data-tooltip="Remove from route">Remove</button>
     `;
     row.querySelector("button").addEventListener("click", () => {
@@ -914,14 +950,16 @@ function renderRoutePlanner() {
 
 function renderRoutePreview(preview) {
   const steps = preview?.steps ?? [];
-  els.routePreviewSummary.textContent = steps.length === 0 ? "none" : `${steps.length} steps`;
+  const targetStatus = preview?.targetAvailableNow === false ? " · target unavailable this run"
+    : preview?.targetAvailableAfterRoute === false ? " · target capped after route" : "";
+  els.routePreviewSummary.textContent = steps.length === 0 ? "none" : `${steps.length} steps · assuming victories${targetStatus}`;
   if (steps.length === 0) {
     renderSimpleList(els.routePreviewList, []);
     els.routePreviewList.textContent = "No route";
     return;
   }
   renderSimpleList(els.routePreviewList, steps.map((step) => ({
-    title: `${step.index}. ${step.name}${step.status === "skipped_max_victories" ? " (victory cap reached)" : ""}`,
+    title: `${step.index}. ${step.name}${step.status === "skipped_max_victories" ? " (victory limit reached)" : step.availabilityReason ? ` (${compactDecision(step.availabilityReason)})` : ""}`,
     detail: `target win ${percent(step.targetWinRate)} | p90 ${seconds(step.p90Seconds, step.p90Censored)} | atk ${formatNumber(step.finalStats?.attack)} | hp ${formatNumber(step.finalStats?.maxHp)}`,
   })));
 }
@@ -1028,7 +1066,8 @@ function renderStrategyPlan(plan) {
     },
     {
       title: "Booster",
-      detail: bestBooster ? `${bestBooster.name}: ${bestBooster.ids.join(", ")} | win ${percent(bestBooster.winRate)}` : "no candidates",
+      detail: bestBooster ? `${bestBooster.ids.join(", ")} · win route ${percent(bestBooster.routeWinRate)} · ${bestBooster.jointWinRate == null ? "target unavailable this run" : "win route and target " + percent(bestBooster.jointWinRate)}`
+        : plan.boosters?.choices?.length ? "No booster route improved the forecast" : "No eligible booster route",
     },
   ]);
 
@@ -1484,6 +1523,7 @@ function signedNumber(value) {
 function syncAssumptionsWithItems(items) {
   const limits = new Map(items.map((item) => [item.id, Math.max(0, Number(item.remainingToMax) || 0)]));
   for (const [id, count] of [...state.assumed]) {
+    if (state.hiddenSketchIds.has(id)) continue;
     const limit = limits.get(id);
     if (limit == null || limit <= 0) {
       state.assumed.delete(id);
@@ -1504,7 +1544,7 @@ function setAssumedCount(id, value, maxCount) {
 }
 
 function assumedVictoriesPayload() {
-  return Object.fromEntries([...state.assumed].filter(([, count]) => count > 0));
+  return Object.fromEntries([...state.assumed].filter(([id, count]) => count > 0 && !state.hiddenSketchIds.has(id)));
 }
 
 function strategyFields() {

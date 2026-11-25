@@ -328,7 +328,7 @@ if (args.route) {
       player: routeResult.finalStats,
       simulation: routeResult.target.simulation,
       maxSeconds,
-      label: `Route: ${routeResult.routeIds.join(", ") || "empty"}`,
+      label: `Route: ${routeResult.routeIds.join(", ") || "empty"}${routeResult.conditional ? " (conditional forecast)" : ""}`,
     })
     : null;
 
@@ -813,9 +813,12 @@ function printStrategyPlan({ target, statSource, strategicPlan }) {
   console.log("Booster choice:");
   if (strategicPlan.boosters.recommendation) {
     const best = strategicPlan.boosters.recommendation;
-    console.log(`  Best: ${best.name} -> ${best.ids.join(", ")} win ${(best.winRate * 100).toFixed(2)}% score ${best.score}`);
+    const joint = best.jointWinRate == null ? "target unavailable this run" : `win route and target ${(best.jointWinRate * 100).toFixed(2)}%`;
+    console.log(`  Best: ${best.name} -> ${best.ids.join(", ")} | win route ${(best.routeWinRate * 100).toFixed(2)}% | ${joint} | score ${best.score}`);
+  } else if (strategicPlan.boosters.choices.length) {
+    console.log("  No booster route improved the forecast.");
   } else {
-    console.log("  none supplied; pass --booster-candidates to compare options");
+    console.log("  No eligible booster route. Use --booster-candidates to compare available sketches.");
   }
   console.log("");
 
@@ -918,6 +921,9 @@ function printRouteResult({
   console.log(`Stats source: ${statSource}${requestedStatsSource === "auto" ? " (auto)" : ""}`);
   if (statsReason) console.log(`Stats reason: ${statsReason}`);
   console.log(`Route: ${routeResult.routeIds.length > 0 ? routeResult.routeIds.join(", ") : "empty"}`);
+  if (routeResult.routeIds.length) console.log("Projected rewards assume the listed victories.");
+  if (routeResult.target?.availableNow === false) console.log("The target is unavailable in the current run.");
+  else if (routeResult.target?.availableAfterRoute === false) console.log("The route reaches the target's victory limit.");
   console.log(`Seed: ${seed}`);
   console.log(`Max fight time: ${maxSeconds}s`);
   console.log("");
@@ -925,6 +931,7 @@ function printRouteResult({
   console.log("Route steps:");
   for (const step of routeResult.steps) {
     const label = `${step.id ?? step.originalId}`.padEnd(32);
+    if (step.availabilityReason) console.log(`  ${label} ${step.availabilityReason}`);
     if (step.status !== "defeated") {
       console.log(`  ${label} ${step.status}`);
       continue;
@@ -985,7 +992,8 @@ function printRouteComparison({ target, statSource, comparison }) {
       + `${(route.timeoutRate * 100).toFixed(1)}%`.padEnd(10)
       + formatSeconds(route.p90Seconds, route.p90Censored).padEnd(10)
       + formatNumber(route.finalStats.attack).padEnd(14)
-      + formatNumber(route.finalStats.maxHp),
+      + formatNumber(route.finalStats.maxHp)
+      + (route.conditional ? "  (conditional forecast)" : ""),
     );
   }
 }
