@@ -3,8 +3,10 @@ import { createRng } from "./rng.js";
 import { toNumber } from "./save.js";
 import { readFileSync } from "node:fs";
 import { combatAssumptionsFromSave } from "./combat-assumptions.js";
+import { buildSteamEnemy, enemyFromSketch } from "./combat/steam-encounter.js";
 import { STEAM_UNIVERSES } from "./combat/steam-universes.js";
 import { normalizeFightOutcome } from "./fight-outcome.js";
+import { combatStatNumber, invalidCombatStats, isRecord } from "../web/save-format.js";
 
 export const GAME_DATA_VERSIONS = {
   "v0.874": {
@@ -331,16 +333,22 @@ export function createCalibrationReport({
       : (log.patchVersion === gameDataVersion ? dataMetadata?.platform : null)
         ?? (Object.hasOwn(GAME_DATA_VERSIONS, log.patchVersion) ? "web" : null);
     const historicalAssumptions = historicalCombatAssumptions(log.combatAssumptions, platform);
-    const tuningExclusion = patchTuningExclusion(log.patchVersion, gameDataVersion)
+    const patchExclusion = patchTuningExclusion(log.patchVersion, gameDataVersion);
+    const encounterPlatform = historicalAssumptions?.steam ? "steam" : "web";
+    const target = resolveCalibrationEnemy(log, sketches[log.targetId], {
+      catalogMatches: patchExclusion === null && (!dataMetadata?.platform || dataMetadata.platform === encounterPlatform),
+      historicalAssumptions,
+    });
+    const tuningExclusion = patchExclusion
       ?? (!hasLoggedPlayerStats(log.playerStats) ? "calibration_player_stats_missing" : null)
       ?? (log.combatAssumptions === undefined ? "calibration_combat_assumptions_missing" : null)
       ?? (!historicalAssumptions ? "calibration_combat_assumptions_invalid" : null)
-      ?? (!hasStats(log.targetStats) && !hasStats(sketches[log.targetId]?.stats) ? "missing_stats" : null);
+      ?? target.exclusion;
     // Diagnostic-only fights cannot change the RNG sequence used for tuning.
     const simulationIndex = tuningExclusion ? index : tuningIndex++;
     const comparison = compareLogToSimulation({
       log,
-      sketches,
+      target,
       fallbackPlayer: tuningExclusion ? player : {},
       assumptions: historicalAssumptions ?? fallbackAssumptions,
       trials,
@@ -361,6 +369,8 @@ export function createCalibrationReport({
     calibration_player_stats_missing: "the logs lack the recorded player health, attack, or attack speed needed for tuning",
     calibration_combat_assumptions_missing: "the logs lack per-fight combat settings",
     calibration_combat_assumptions_invalid: "the per-fight combat settings are incomplete or invalid for the combat engine",
+    calibration_target_stats_incomplete: "the recorded target stats are incomplete or invalid and cannot be confirmed against the matching catalog and encounter settings",
+    calibration_target_stats_missing: "the logs and catalog lack complete target health, attack, or attack speed",
   };
   for (const [code, reason] of Object.entries(tuningWarnings)) {
     const count = comparisons.filter((comparison) => comparison.tuningExclusion === code).length;
@@ -368,7 +378,7 @@ export function createCalibrationReport({
       warnings.push({
         code,
         count,
-        message: `Excluded ${count} combat log(s) from tuning because ${reason}. Diagnostic comparisons remain available.`,
+        message: `Excluded ${count} combat log(s) from tuning because ${reason}.`,
       });
     }
   }
@@ -595,20 +605,18 @@ export function runKnownRegressionScenarios({
 
 function compareLogToSimulation({
   log,
-  sketches,
+  target,
   fallbackPlayer,
   assumptions,
   trials,
   maxSeconds,
   seed,
 }) {
-  const sketch = sketches[log.targetId] ?? null;
   const playerStats = hasLoggedPlayerStats(log.playerStats) ? log.playerStats : fallbackPlayer;
-  const hasLoggedTargetStats = hasStats(log.targetStats);
-  const targetStats = hasLoggedTargetStats ? log.targetStats : sketch?.stats;
+  const { enemy, exclusion } = target;
   const deviations = [];
 
-  if (!hasLoggedPlayerStats(playerStats) || !hasStats(targetStats)) {
+  if (!hasLoggedPlayerStats(playerStats) || !enemy) {
     return {
       logIndex: log.index,
       targetId: log.targetId,
@@ -618,9 +626,11 @@ function compareLogToSimulation({
       simulated: null,
       deviations: [
         {
-          code: "missing_stats",
+          code: exclusion ?? "missing_stats",
           targetId: log.targetId,
-          message: "Cannot compare combat log because player or target stats are missing.",
+          message: exclusion === "calibration_target_stats_incomplete"
+            ? "Cannot compare combat log because the partial target snapshot could not be verified against the matching catalog and encounter settings."
+            : "Cannot compare combat log because complete player or target stats are missing.",
         },
       ],
     };
@@ -630,13 +640,6 @@ function compareLogToSimulation({
     ...playerStats,
     immunities: log.playerImmunities ?? fallbackPlayer?.immunities ?? [],
     vulnerability: log.playerVulnerability !== undefined ? log.playerVulnerability : fallbackPlayer?.vulnerability ?? null,
-  };
-  const enemy = {
-    ...targetStats,
-    id: log.targetId,
-    ...(hasLoggedTargetStats ? {} : { source: "catalog", rarity: sketch?.rarity }),
-    immunities: log.immunities ?? sketch?.immunities ?? [],
-    vulnerability: log.vulnerability !== undefined ? log.vulnerability : sketch?.vulnerability ?? null,
   };
   const summary = runMonteCarlo({
     assumptions,
@@ -718,6 +721,49 @@ function compareLogToSimulation({
   };
 }
 
+function resolveCalibrationEnemy(log, sketch, { catalogMatches, historicalAssumptions }) {
+  const catalogEnemy = invalidCombatStats(sketch?.stats).length === 0 ? enemyFromSketch(sketch, log.targetId) : null;
+  const hasRecordedStats = Object.keys(log.targetStats).length > 0;
+  const recordedModifiers = {
+    ...(log.immunities !== undefined && { immunities: log.immunities }),
+    ...(log.vulnerability !== undefined && { vulnerability: log.vulnerability }),
+  };
+  if (!log.targetStatsInvalid && invalidCombatStats(log.targetStats).length === 0) {
+    return {
+      enemy: {
+        ...log.targetStats,
+        id: log.targetId,
+        immunities: sketch?.immunities ?? [],
+        vulnerability: sketch?.vulnerability ?? null,
+        ...recordedModifiers,
+      },
+      exclusion: null,
+    };
+  }
+  if (!log.targetStatsInvalid && !hasRecordedStats && Object.keys(recordedModifiers).length === 0) {
+    return catalogEnemy
+      ? { enemy: { ...catalogEnemy, ...recordedModifiers }, exclusion: null }
+      : { enemy: null, exclusion: "calibration_target_stats_missing" };
+  }
+
+  // Recorded stats are effective encounter values. Verify the partial snapshot
+  // after applying historical Steam modifiers, then simulate the same values.
+  if (!log.targetStatsInvalid && catalogEnemy && catalogMatches && historicalAssumptions) {
+    const effective = buildSteamEnemy(catalogEnemy, historicalAssumptions.steam);
+    const statsMatch = Object.entries(log.targetStats).every(([key, value]) =>
+      key === "isPreciseErased" ? value === Boolean(effective[key]) : value === combatStatNumber(effective[key]));
+    const immunitiesMatch = log.immunities === undefined
+      || JSON.stringify([...log.immunities].sort()) === JSON.stringify([...(effective.immunities ?? [])].sort());
+    const vulnerabilityMatches = log.vulnerability === undefined
+      || JSON.stringify(log.vulnerability ?? []) === JSON.stringify(effective.vulnerability ?? []);
+    if (statsMatch && immunitiesMatch && vulnerabilityMatches) return { enemy: effective, exclusion: null };
+  }
+  if (!log.targetStatsInvalid && !hasRecordedStats && catalogEnemy) {
+    return { enemy: { ...catalogEnemy, ...recordedModifiers }, exclusion: "calibration_target_stats_incomplete" };
+  }
+  return { enemy: null, exclusion: "calibration_target_stats_incomplete" };
+}
+
 function normalizeLogCollection(value, sourceKey) {
   const wrappedEntries = [value?.logs, value?.entries, value?.history].find(Array.isArray);
   const entries = wrappedEntries ?? unwrapLogCollection(value);
@@ -755,6 +801,12 @@ function normalizeLogEntry(raw, sourceKey, index, collectionPatch) {
   const seconds = normalizeSeconds(raw);
   const playerStats = raw.playerStats ?? raw.player?.stats ?? raw.attackerStats;
   const targetStats = raw.targetStats ?? raw.enemyStats ?? raw.defenderStats ?? target.stats;
+  const { stats: recordedTargetStats, invalid: targetStatsInvalid } = normalizeTargetStats(targetStats);
+  const targetImmunities = raw.immunities ?? targetStats?.immunities ?? target.immunities;
+  const targetVulnerability = [raw.vulnerability, targetStats?.vulnerability, target.vulnerability]
+    .find((value) => value !== undefined);
+  const invalidModifiers = (targetImmunities != null && !isStringList(targetImmunities))
+    || (targetVulnerability != null && !Array.isArray(targetVulnerability));
   const damageBreakdown = normalizeDamageBreakdown(raw.damageBreakdown ?? raw.damage ?? raw.breakdown);
 
   if (!targetId && !targetName && outcome === "unknown" && !Number.isFinite(seconds)) {
@@ -770,7 +822,8 @@ function normalizeLogEntry(raw, sourceKey, index, collectionPatch) {
     seconds,
     reason: firstString(raw.reason, raw.cause, raw.deathCause, raw.resultReason, raw.outcomeReason),
     playerStats: numericObject(playerStats),
-    targetStats: numericObject(targetStats),
+    targetStats: recordedTargetStats,
+    targetStatsInvalid: raw.targetStatsInvalid === true || targetStatsInvalid || invalidModifiers,
     playerImmunities: [raw.playerImmunities, playerStats?.immunities, raw.player?.immunities].find(Array.isArray),
     playerVulnerability: firstVulnerability(raw.playerVulnerability, playerStats?.vulnerability, raw.player?.vulnerability),
     immunities: [raw.immunities, targetStats?.immunities, target.immunities].find(Array.isArray),
@@ -921,8 +974,24 @@ function numericObject(raw = {}) {
   return result;
 }
 
-function hasStats(stats) {
-  return Boolean(stats && typeof stats === "object" && Object.keys(stats).length > 0);
+function normalizeTargetStats(raw) {
+  if (raw == null) return { stats: {}, invalid: false };
+  if (!isRecord(raw)) return { stats: {}, invalid: true };
+
+  const metadataKeys = ["id", "name", "rarity", "source", "immunities", "vulnerability"];
+  const entries = [];
+  let invalid = false;
+  for (const [key, value] of Object.entries(raw)) {
+    if (metadataKeys.includes(key)) continue;
+    if (key === "isPreciseErased" && typeof value === "boolean") {
+      entries.push([key, value]);
+      continue;
+    }
+    const number = combatStatNumber(value);
+    if (key === "isPreciseErased" || !Number.isFinite(number)) invalid = true;
+    else entries.push([key, number]);
+  }
+  return { stats: Object.fromEntries(entries), invalid };
 }
 
 function hasLoggedPlayerStats(stats) {

@@ -1,7 +1,7 @@
 import { toNumber } from "./save.js";
 import { sketchForEncounter } from "./combat/steam-encounter.js";
 import { combatAssumptionsFromSave } from "./combat-assumptions.js";
-import { getPreciseEraserEligibility, isSketchToolUnlocked } from "./tool-rules.js";
+import { getPreciseEraserEligibility, getSketchFightEligibility, isSketchToolUnlocked } from "./tool-rules.js";
 import { remainingSketchVictories } from "./victory-limit.js";
 
 const TARGET_PROFILES = {
@@ -127,6 +127,7 @@ export function analyzeBuildAdvice({
   assumptions = combatAssumptionsFromSave(state),
   targetId,
   baseStats = null,
+  currentRows = [],
   limit = 8,
 } = {}) {
   const target = sketchForEncounter(sketches[targetId], assumptions) ?? { id: targetId, name: targetId, stats: {} };
@@ -146,8 +147,9 @@ export function analyzeBuildAdvice({
     biggestProblems: detectBuildProblems({ stats, target, profile }),
     tools: {
       guarantee: createGuaranteeAdvice({ ranked: allRanked, state, limit }),
-      booster: createBoosterAdvice({ activeItems, state, limit }),
-      eraser: activeIds.length || state.availableSketches == null ? createEraserAdvice({ target, state }) : [],
+      booster: createBoosterAdvice({ activeItems, state, currentRows, limit }),
+      eraser: activeIds.length || state.availableSketches == null
+        ? createEraserAdvice({ target: sketches[targetId], state }) : [],
       meditation: createMeditationAdvice({ sketches, state, targetId, profile, limit, activeIds }),
     },
     activeRun: {
@@ -231,7 +233,7 @@ function getActiveRunItems({ sketches, state, targetId, profile, activeIds }) {
   return rankSketches({
     sketches: Object.fromEntries(activeIds
       .filter((id) => id !== targetId)
-      .filter((id) => remainingSketchVictories(state, id) > 0)
+      .filter((id) => getSketchFightEligibility(sketches[id], state).eligible)
       .map((id) => [id, sketches[id]])
       .filter(([, sketch]) => Boolean(sketch))),
     profile,
@@ -297,30 +299,38 @@ function createGuaranteeAdvice({ ranked, state, limit }) {
     }));
 }
 
-function createBoosterAdvice({ activeItems, state, limit }) {
+function createBoosterAdvice({ activeItems, state, currentRows, limit }) {
   if (!isSketchToolUnlocked(state, "booster")) return [];
   const boosted = new Set(normalizeList(state.boostedSketchIds));
   const maxUses = 1 + toNumber(state.fundamentals?.rewardBoosterUses);
   let remainingUses = Math.max(0, maxUses - boosted.size);
+  const winRates = new Map(currentRows.filter((row) => row.winRate != null).map((row) => [row.id, row.winRate]));
   return activeItems
     .filter((item) => item.score > 0)
+    .sort((a, b) => b.score * (winRates.get(b.id) ?? 1) - a.score * (winRates.get(a.id) ?? 1))
     .slice(0, limit)
     .map((item) => {
       if (boosted.has(item.id)) return { ...item, action: "already_boosted" };
-      if (remainingUses <= 0) return { ...item, action: "save_for_later" };
+      const winRate = winRates.get(item.id) ?? null;
+      if (remainingUses <= 0 || winRate === 0) return { ...item, action: "save_for_later", winRate, conditional: true };
       remainingUses -= 1;
-      return { ...item, action: "boost" };
+      return { ...item, action: "boost", winRate, conditional: true };
     });
 }
 
 function createEraserAdvice({ target, state }) {
+  if (!target) return [];
   const erased = new Set(normalizeList(state.erasedSketchIds));
   const maxUses = 1 + toNumber(state.fundamentals?.preciseEraserUses);
   const remainingUses = Math.max(0, maxUses - erased.size);
-  const eligibility = getPreciseEraserEligibility(target, state);
+  const availability = getSketchFightEligibility(target, state);
+  const eligibility = availability.eligible ? getPreciseEraserEligibility(target, state) : availability;
   let action = "no_eraser_uses";
   let reason = "No Precise Eraser uses are currently available.";
-  if (erased.has(target.id)) {
+  if (!availability.eligible) {
+    action = "not_eligible";
+    reason = eligibility.message;
+  } else if (erased.has(target.id)) {
     action = "already_erased";
     reason = "Precise Eraser is already applied to the selected target.";
   } else if (!eligibility.eligible) {

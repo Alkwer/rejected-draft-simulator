@@ -9,7 +9,7 @@ import { RewardProjectionError, steamCurrencyPerkWinsRemaining, steamSketchRewar
 import { currencyRewardAmount, projectVictories, simulateRoute } from "./route.js";
 import { isFullSteamSave, normalizeStats, toNumber } from "./save.js";
 import { applySteamVictoryStatChanges, createSteamStatProjection } from "./steam-stat-projection.js";
-import { isSketchToolUnlocked } from "./tool-rules.js";
+import { getSketchFightEligibility, isSketchToolUnlocked } from "./tool-rules.js";
 import { remainingSketchVictories } from "./victory-limit.js";
 
 const DEFAULT_TARGET_WIN_RATE = 0.5;
@@ -19,6 +19,7 @@ const DEFAULT_COMPARE_PROFILE_IDS = ["farm-q", "3-masterpiece", "transcendent-pa
 const MAX_FARM_STEPS = 8;
 const MAX_FARM_TRIALS = 200;
 const MAX_FARM_CHECK_TRIALS = 20;
+const MIN_OPUS_FARM_VALUE_PER_MINUTE = 10;
 
 const DEFAULT_REWARD_WEIGHTS = {
   quintessence: 1,
@@ -150,6 +151,7 @@ export function createStrategyPlan({
   const stats = normalizeStats(baseStats ?? savedStats);
   const target = sketches[targetId] ?? { id: targetId, name: targetId, stats: {} };
   const currentRows = normalizeCurrentRows({ currentRun, state, sketches });
+  const targetAvailable = currentRows.some((row) => row.id === targetId);
   const profileConfig = resolveStrategyProfile(profile ?? strategyProfile, { targetId });
   const modeConfig = resolveStrategyMode(mode ?? strategyMode ?? profileConfig.defaultMode);
   const rewardWeights = resolveRewardWeights({ profile: profileConfig, mode: modeConfig });
@@ -182,7 +184,7 @@ export function createStrategyPlan({
     }
     return profileResults.get(id);
   };
-  const buildAdvice = analyzeBuildAdvice({ sketches, state, assumptions, targetId, baseStats: stats });
+  const buildAdvice = analyzeBuildAdvice({ sketches, state, assumptions, targetId, baseStats: stats, currentRows });
   const rawTargetStatWeights = Object.fromEntries(
     buildAdvice.targetPlan.priorityStats.map((item) => [item.stat, item.weight]),
   );
@@ -196,6 +198,7 @@ export function createStrategyPlan({
     targetEstimate,
     goalQuintessence: effectiveGoalQuintessence,
     goalCurrencies: normalizedGoalCurrencies,
+    targetAvailable,
   });
   const opusValues = rankOpusStrategicValue({
     sketches,
@@ -208,6 +211,7 @@ export function createStrategyPlan({
   });
   const visibleIds = new Set(currentRows.map((row) => row.id));
   const visibleOpusValues = opusValues.filter((item) => visibleIds.has(item.id));
+  const opusFarm = assessOpusFarm({ opusValues: visibleOpusValues, currentRows, rewardWeights });
   const runEV = estimateRunEV({
     sketches,
     state,
@@ -226,7 +230,7 @@ export function createStrategyPlan({
   const farmPlan = createFarmPlan({
     approach,
     runEV,
-    opusValues: visibleOpusValues,
+    opusFarm,
     state,
   });
   const profileGoal = createProfileGoal({
@@ -262,6 +266,7 @@ export function createStrategyPlan({
     baseStats: stats,
     targetId,
     candidates: boosterCandidates,
+    currentRun,
     targetStatWeights,
     trials,
     maxSeconds,
@@ -272,12 +277,13 @@ export function createStrategyPlan({
     targetId,
     targetEstimate,
     masterpieceTargetIds,
-    opusValues: visibleOpusValues,
+    opusFarm,
     targetWinRate: effectiveTargetWinRate,
   });
   const runCompletion = decideRunCompletion({
     currentRows,
-    opusValues: visibleOpusValues,
+    runEV,
+    opusFarm,
     targetId,
     targetEstimate,
   });
@@ -296,7 +302,9 @@ export function createStrategyPlan({
     targetEstimate,
     currentRows,
     runEV,
+    opusFarm,
     targetId,
+    targetAvailable,
     trials,
     maxSeconds,
     seed,
@@ -336,6 +344,7 @@ export function createStrategyPlan({
       id: targetId,
       name: target.name ?? targetId,
       rarity: target.rarity ?? "unknown",
+      availableNow: targetAvailable,
     },
     profile: {
       id: profileConfig.id,
@@ -700,7 +709,7 @@ function rankModeCandidates({ mode, currentRows, runEV, opusValues, targetId, re
   const evById = new Map((runEV.sketches ?? []).map((item) => [item.id, item]));
   const opusById = new Map((opusValues ?? []).map((item) => [item.id, item]));
   return [...currentRows]
-    .filter((row) => !row.hidden)
+    .filter((row) => row.winRate > 0)
     .map((row) => {
       const ev = evById.get(row.id) ?? {};
       const opus = opusById.get(row.id) ?? {};
@@ -780,10 +789,20 @@ function rankToolAdvice(items = [], { currentRows, rewardWeights, tool }) {
 }
 
 function decideStopFarming({
-  sketches, state, assumptions, stats, targetEstimate, currentRows, runEV,
-  targetId, trials, maxSeconds, seed,
+  sketches, state, assumptions, stats, targetEstimate, currentRows, runEV, opusFarm,
+  targetId, targetAvailable, trials, maxSeconds, seed,
 }) {
   const { current, target: targetWinRate, decision } = targetEstimate;
+  if (!targetAvailable && decision !== "below_target") {
+    return {
+      decision: "redraw",
+      reason: "target_unavailable",
+      currentWinRate: roundNumber(current),
+      targetWinRate,
+      curve: [],
+      hasUnverifiedCandidates: false,
+    };
+  }
   if (decision !== "below_target") {
     return {
       decision: decision === "ready" ? "attempt_target" : "increase_trials",
@@ -802,10 +821,21 @@ function decideStopFarming({
     return {
       decision: "farm_until_step",
       reason: "visible_rewards_project_target_ready",
+      conditional: !targetAvailable,
       currentWinRate: roundNumber(current),
       targetWinRate,
       targetStep: crossing.step,
       targetSketchId: crossing.id,
+      curve,
+      hasUnverifiedCandidates,
+    };
+  }
+  if (!improvesTarget && !hasUnverifiedCandidates && !opusFarm.worthFarming
+      && opusFarm.uncertain?.expectedValuePerMinute === 0) {
+    return {
+      ...uncertainFarmDecision(opusFarm.uncertain),
+      currentWinRate: roundNumber(current),
+      targetWinRate,
       curve,
       hasUnverifiedCandidates,
     };
@@ -816,6 +846,7 @@ function decideStopFarming({
       : improvesTarget ? "no_projected_step_reaches_target" : "no_visible_progress_path",
     currentWinRate: roundNumber(current),
     targetWinRate,
+    conditional: !targetAvailable,
     curve,
     hasUnverifiedCandidates,
   };
@@ -904,7 +935,7 @@ function assessWinRate(result, target) {
   };
 }
 
-function estimateApproachReadiness({ state, targetEstimate, goalQuintessence, goalCurrencies }) {
+function estimateApproachReadiness({ state, targetEstimate, goalQuintessence, goalCurrencies, targetAvailable }) {
   const resources = {
     quintessence: createResourceGap({
       current: toNumber(state.quintessence),
@@ -921,9 +952,11 @@ function estimateApproachReadiness({ state, targetEstimate, goalQuintessence, go
 
   const resourceReady = resources.quintessence.ready
     && Object.values(resources.currencies).every((item) => item.ready);
-  const ready = targetEstimate.decision === "ready" && resourceReady;
+  const ready = targetAvailable && targetEstimate.decision === "ready" && resourceReady;
   return {
-    decision: ready ? "ready_to_attempt" : targetEstimate.decision === "increase_trials" ? "increase_trials" : "farm_more",
+    decision: ready ? "ready_to_attempt" : !targetAvailable && targetEstimate.decision !== "below_target" ? "target_unavailable"
+      : targetEstimate.decision === "increase_trials" ? "increase_trials" : "farm_more",
+    conditional: !targetAvailable,
     winRate: { ...targetEstimate, current: roundNumber(targetEstimate.current) },
     resources,
     ready,
@@ -1086,7 +1119,36 @@ function decideSoftcapOrRedraw({ state, seconds, maxSoftcapWaitSeconds, currentR
   };
 }
 
-function createFarmPlan({ approach, runEV, opusValues, state }) {
+function assessOpusFarm({ opusValues, currentRows, rewardWeights }) {
+  const rows = new Map(currentRows.map((row) => [row.id, row]));
+  const estimates = opusValues.map((opus) => {
+    const row = rows.get(opus.id);
+    const { current, ci95Lower, ci95Upper } = assessWinRate(row, 0);
+    const rewardValue = Math.max(0, opus.statScore * toNumber(rewardWeights.combat, 1)
+      + opus.currencyScore * toNumber(rewardWeights.currency, 1));
+    const timingKnown = row.p90Seconds != null && !row.p90Censored;
+    // Compare expected reward utility over the same amount of fight time.
+    const valuePerMinute = rewardValue * 60 / Math.max(5, row.p90Seconds ?? 60);
+    return {
+      ...opus,
+      winRate: current,
+      secondsPerFight: row.p90Seconds,
+      secondsCensored: row.p90Censored,
+      expectedValuePerMinute: timingKnown && row.winRate != null ? roundNumber(current * valuePerMinute) : null,
+      lowerValuePerMinute: timingKnown ? roundNumber((ci95Lower ?? current) * valuePerMinute) : null,
+      upperValuePerMinute: roundNumber((ci95Upper ?? (row.winRate == null ? 1 : current)) * valuePerMinute),
+    };
+  }).sort((a, b) => toNumber(b.expectedValuePerMinute) - toNumber(a.expectedValuePerMinute));
+
+  return {
+    estimates,
+    worthFarming: estimates.find((item) => item.lowerValuePerMinute >= MIN_OPUS_FARM_VALUE_PER_MINUTE),
+    uncertain: estimates.filter((item) => item.upperValuePerMinute >= MIN_OPUS_FARM_VALUE_PER_MINUTE)
+      .sort((a, b) => b.upperValuePerMinute - a.upperValuePerMinute)[0],
+  };
+}
+
+function createFarmPlan({ approach, runEV, opusFarm, state }) {
   const qGap = approach.resources.quintessence;
   const missingCurrency = Object.entries(approach.resources.currencies)
     .find(([, gap]) => !gap.ready && gap.missing > 0);
@@ -1119,15 +1181,18 @@ function createFarmPlan({ approach, runEV, opusValues, state }) {
       };
 
   return {
-    decision: goal.type === "win_rate" && approach.winRate.decision === "increase_trials" ? "increase_trials"
-      : goal.missing <= 0 ? "goal_reached" : goal.estimatedSeconds == null ? "farm_best_active_rewards" : "farm_until_goal",
+    decision: approach.conditional && goal.type === "win_rate" && goal.missing <= 0 ? "target_unavailable"
+      : goal.type === "win_rate" && approach.decision === "increase_trials" ? "increase_trials"
+      : goal.missing <= 0 ? "goal_reached" : goal.estimatedSeconds != null ? "farm_until_goal"
+      : runEV.sketches.some((item) => item.expectedStatScore > 0 || Object.values(item.expectedCurrencies).some((amount) => amount > 0))
+        ? "farm_best_active_rewards" : opusFarm.uncertain ? "increase_trials" : "redraw",
     goal,
     windowSeconds: runEV.windowSeconds,
     passiveRates: {
       quintessence: quintessencePerSecond(state),
       currencies: generatorRates(state),
     },
-    bestOpusTargets: opusValues.slice(0, 5),
+    bestOpusTargets: opusFarm.estimates.slice(0, 5),
   };
 }
 
@@ -1138,62 +1203,99 @@ function compareBoosterChoices({
   baseStats,
   targetId,
   candidates,
+  currentRun,
   targetStatWeights,
   trials,
   maxSeconds,
   seed,
 }) {
   if (!isSketchToolUnlocked(state, "booster")) return { recommendation: null, choices: [] };
-  const hiddenIds = new Set(normalizeList(state.hiddenSketches));
+  const unavailable = new Set((currentRun?.targets ?? [])
+    .filter((row) => row.hidden || row.remainingToMax <= 0).map((row) => row.id));
   const existing = new Set(normalizeList(state.boostedSketchIds));
   const remaining = Math.max(0, 1 + toNumber(state.fundamentals?.rewardBoosterUses) - existing.size);
-  const eligibleCandidates = normalizeCandidates(candidates)
-    .filter((candidate) => candidate.ids.every((id) => !hiddenIds.has(id))
-      && (!isFullSteamSave(state) || new Set(candidate.ids.filter((id) => !existing.has(id))).size <= remaining));
+  const eligibleCandidates = normalizeCandidates(candidates).filter((candidate) => {
+    const counts = new Map();
+    for (const id of candidate.ids) counts.set(id, (counts.get(id) ?? 0) + 1);
+    const newUses = [...counts.keys()].filter((id) => !existing.has(id)).length;
+    return newUses > 0 && newUses <= remaining && [...counts].every(([id, count]) => !unavailable.has(id)
+      && getSketchFightEligibility(sketches[id], state).eligible && count <= remainingSketchVictories(state, id));
+  });
   const choices = eligibleCandidates.map((candidate) => {
-    const route = simulateRoute({
+    const options = {
       sketches,
       state,
       assumptions,
       baseStats,
       targetId,
       routeIds: candidate.ids,
-      boostedIds: candidate.ids,
       trials,
       maxSeconds,
       seed: `${seed}:booster`,
-    });
+      includeStepCombat: true,
+    };
+    const route = simulateRoute({ ...options, boostedIds: candidate.ids });
+    const baseline = simulateRoute(options);
     const simulation = route.target?.simulation ?? {};
-    const statValue = estimateStatsObjectValue({ stats: route.finalStats, baseStats, targetStatWeights, steam: isFullSteamSave(state) });
-    const currencyValue = estimateCurrencyBagValue(route.totalEarnedCurrencies);
-    const score = toNumber(simulation.winRate) * 1000 + statValue + currencyValue;
+    const targetAvailable = route.target?.availableAfterRoute && !unavailable.has(targetId);
+    const boosted = estimateBoosterRoute({ route, targetAvailable, targetStatWeights, steam: isFullSteamSave(state) });
+    const unboosted = estimateBoosterRoute({ route: baseline, targetAvailable, targetStatWeights, steam: isFullSteamSave(state) });
+    const retroactiveStats = Object.entries(targetStatWeights).map(([statName]) => ({
+      statName, amount: toNumber(route.opening.stats[statName]) - toNumber(baseline.opening.stats[statName]),
+    }));
+    const retroactiveValue = estimateStatRewardValue({ rewards: retroactiveStats, targetStatWeights, steam: isFullSteamSave(state) })
+      + Object.entries(route.opening.battleCurrencies).reduce((sum, [name, amount]) =>
+        sum + signedLogAmount(amount - toNumber(baseline.opening.battleCurrencies[name])), 0);
+    const score = (boosted.jointWinRate - unboosted.jointWinRate) * 1000
+      + boosted.rewardValue - unboosted.rewardValue + retroactiveValue;
     return {
       name: candidate.name,
       ids: candidate.ids,
       simulated: true,
       trials,
       winRate: roundNumber(toNumber(simulation.winRate)),
+      conditional: true,
+      targetAvailable: Boolean(targetAvailable),
+      routeWinRate: roundNumber(boosted.routeWinRate),
+      jointWinRate: targetAvailable ? roundNumber(boosted.jointWinRate) : null,
+      steps: route.steps.map(({ id, fightSimulation }) => ({ id,
+        fightSimulation: fightSimulation && { winRate: fightSimulation.winRate, winRateCi95: fightSimulation.winRateCi95,
+          trials: fightSimulation.trials, p90Seconds: fightSimulation.p90Seconds, p90Censored: fightSimulation.p90Censored } })),
       ci95HalfWidth: simulation.winRateCi95?.halfWidth ?? null,
       timeoutRate: roundNumber(toNumber(simulation.timeoutRate)),
       finalStats: route.finalStats,
       currencies: route.currencies,
       score: roundNumber(score),
     };
-  }).sort((a, b) => b.score - a.score || b.winRate - a.winRate);
+  }).sort((a, b) => b.score - a.score || b.routeWinRate - a.routeWinRate);
 
   return {
-    recommendation: choices[0] ?? null,
+    recommendation: choices.find((choice) => choice.score > 0 && choice.routeWinRate > 0) ?? null,
     choices,
   };
 }
 
-function decideMasterpieceRoll({ currentRows, targetId, targetEstimate, masterpieceTargetIds, opusValues, targetWinRate }) {
+function estimateBoosterRoute({ route, targetAvailable, targetStatWeights, steam }) {
+  let routeWinRate = 1;
+  let rewardValue = 0;
+  for (const step of route.steps) {
+    routeWinRate *= toNumber(step.fightSimulation?.winRate);
+    rewardValue += routeWinRate * (estimateStatRewardValue({ rewards: step.statRewards, targetStatWeights, steam })
+      + (step.currencyRewards ?? []).reduce((sum, reward) => sum + signedLogAmount(reward.amount), 0));
+  }
+  return { routeWinRate, rewardValue, jointWinRate: targetAvailable ? routeWinRate * toNumber(route.target?.simulation?.winRate) : 0 };
+}
+
+function decideMasterpieceRoll({ currentRows, targetId, targetEstimate, masterpieceTargetIds, opusFarm, targetWinRate }) {
   const wanted = new Set([targetId, ...normalizeList(masterpieceTargetIds)].filter(Boolean));
   const visibleMasterpieces = currentRows.filter((row) => row.rarity === "masterpiece");
-  const wantedVisible = visibleMasterpieces.find((row) => wanted.has(row.id));
-  const bestVisible = visibleMasterpieces.sort((a, b) => toNumber(b.winRate) - toNumber(a.winRate))[0] ?? null;
-  const bestOpus = opusValues[0] ?? null;
-  const wantedEstimate = wantedVisible?.id === targetId ? targetEstimate : assessWinRate(wantedVisible, targetWinRate);
+  const wantedCandidates = visibleMasterpieces.filter((row) => wanted.has(row.id))
+    .map((row) => ({ row, estimate: row.id === targetId ? targetEstimate : assessWinRate(row, targetWinRate) }))
+    .sort((a, b) => b.estimate.current - a.estimate.current);
+  const wantedDecision = wantedCandidates.find(({ estimate }) => estimate.decision === "ready")
+    ?? wantedCandidates.find(({ estimate }) => estimate.decision === "increase_trials") ?? wantedCandidates[0];
+  const bestVisible = [...visibleMasterpieces].sort((a, b) => b.winRate - a.winRate)[0] ?? null;
+  const { row: wantedVisible, estimate: wantedEstimate } = wantedDecision ?? {};
 
   if (wantedVisible && wantedEstimate.decision === "ready") {
     return {
@@ -1213,15 +1315,16 @@ function decideMasterpieceRoll({ currentRows, targetId, targetEstimate, masterpi
       visibleMasterpieces,
     };
   }
-  if (bestOpus && bestOpus.score >= 10) {
+  if (opusFarm.worthFarming) {
     return {
       decision: "keep_farm",
       reason: "strong_opus_farm_value",
-      targetId: bestVisible?.id ?? bestOpus.id,
-      bestOpus,
+      targetId: opusFarm.worthFarming.id,
+      bestOpus: opusFarm.worthFarming,
       visibleMasterpieces,
     };
   }
+  if (opusFarm.uncertain) return { ...uncertainFarmDecision(opusFarm.uncertain), visibleMasterpieces };
   return {
     decision: "redraw",
     reason: "no_wanted_masterpiece_or_strong_farm_value",
@@ -1230,7 +1333,7 @@ function decideMasterpieceRoll({ currentRows, targetId, targetEstimate, masterpi
   };
 }
 
-function decideRunCompletion({ currentRows, opusValues, targetId, targetEstimate }) {
+function decideRunCompletion({ currentRows, runEV, opusFarm, targetId, targetEstimate }) {
   const targetRow = currentRows.find((row) => row.id === targetId);
   if (targetRow && targetEstimate.decision === "ready") {
     return {
@@ -1240,9 +1343,13 @@ function decideRunCompletion({ currentRows, opusValues, targetId, targetEstimate
       winRate: roundNumber(targetEstimate.current),
     };
   }
-  const alternatives = currentRows.filter((row) => row.id !== targetId)
-    .sort((a, b) => b.winRate - a.winRate)
-    .map((row) => ({ id: row.id, estimate: assessWinRate(row, 0.5) }));
+  const rewards = new Map(runEV.sketches.map((sketch) => [sketch.id, sketch]));
+  const alternatives = currentRows.filter((row) => row.id !== targetId).map((row) => {
+    const reward = rewards.get(row.id);
+    const value = Math.max(0, toNumber(reward?.expectedStatScore) + estimateCurrencyBagValue(reward?.expectedCurrencies));
+    const valuePerMinute = row.p90Censored ? 0 : value * 60 / Math.max(5, row.p90Seconds ?? 60);
+    return { id: row.id, estimate: assessWinRate(row, 0.5), valuePerMinute };
+  }).sort((a, b) => b.valuePerMinute - a.valuePerMinute || b.estimate.current - a.estimate.current);
   const best = alternatives.find(({ estimate }) => estimate.decision === "ready");
   if (best) {
     return {
@@ -1250,6 +1357,7 @@ function decideRunCompletion({ currentRows, opusValues, targetId, targetEstimate
       reason: "best_visible_sketch_has_good_odds",
       targetId: best.id,
       winRate: roundNumber(best.estimate.current),
+      expectedValuePerMinute: roundNumber(best.valuePerMinute),
     };
   }
   const uncertain = targetRow && targetEstimate.decision === "increase_trials"
@@ -1263,19 +1371,28 @@ function decideRunCompletion({ currentRows, opusValues, targetId, targetEstimate
       winRate: roundNumber(uncertain.estimate.current),
     };
   }
-  const bestOpus = opusValues[0] ?? null;
-  if (bestOpus && bestOpus.score >= 10) {
+  if (opusFarm.worthFarming) {
     return {
       decision: "finish_opus_farm",
       reason: "active_or_available_opus_rewards_are_worth_farming",
-      targetId: bestOpus.id,
-      score: bestOpus.score,
+      targetId: opusFarm.worthFarming.id,
+      bestOpus: opusFarm.worthFarming,
     };
   }
+  if (opusFarm.uncertain) return uncertainFarmDecision(opusFarm.uncertain);
   return {
     decision: "redraw",
     reason: "no_high_odds_or_high_value_visible_sketch",
     targetId: null,
+  };
+}
+
+function uncertainFarmDecision(bestOpus) {
+  return {
+    decision: "increase_trials",
+    reason: bestOpus.secondsCensored ? "opus_farm_fight_time_censored" : "opus_farm_return_uncertain",
+    targetId: bestOpus.id,
+    bestOpus,
   };
 }
 
@@ -1498,14 +1615,13 @@ function bestStatRewards(rewards = [], targetStatWeights = {}) {
 }
 
 function normalizeCurrentRows({ currentRun, state, sketches }) {
-  const hidden = new Set(normalizeList(state.hiddenSketches));
   const rows = currentRun?.targets ?? normalizeList(state.availableSketches)
     .map((id) => sketches[id])
     .filter(Boolean)
     .map(({ id, name, rarity }) => ({ id, name, rarity }));
   return rows
-    .filter((row) => !row.hidden && !hidden.has(row.id))
-    .map((row) => normalizeCurrentRow(row, state))
+    .filter((row) => !row.hidden && getSketchFightEligibility(sketches[row.id], state).eligible)
+    .map((row) => normalizeCurrentRow({ ...row, rarity: row.rarity ?? sketches[row.id].rarity }, state))
     .filter((row) => row.remainingToMax > 0);
 }
 
@@ -1518,7 +1634,7 @@ function normalizeCurrentRow(row, state) {
     name: row.name ?? row.id,
     rarity: row.rarity ?? "unknown",
     hidden: Boolean(row.hidden),
-    winRate: toNumber(row.winRate),
+    winRate: toNumber(row.winRate, null),
     winRateCi95: row.winRateCi95,
     trials: row.trials,
     p90Seconds: p90Seconds >= 0 ? p90Seconds : medianSeconds >= 0 ? medianSeconds : null,
@@ -1614,16 +1730,6 @@ function estimatePassiveWaitValue({ state, seconds }) {
   const currency = Object.values(generatorRates(state))
     .reduce((sum, rate) => sum + Math.log10(1 + Math.max(0, rate * seconds)), 0);
   return Math.log10(1 + Math.max(0, q)) + currency;
-}
-
-function estimateStatsObjectValue({ stats, baseStats, targetStatWeights, steam }) {
-  let score = 0;
-  for (const [stat, weight] of Object.entries(targetStatWeights)) {
-    const delta = toNumber(stats[stat]) - toNumber(baseStats?.[stat]);
-    if (delta === 0) continue;
-    score += signedLogAmount(steam && stat === "attackSpeed" ? -delta : delta) * weight;
-  }
-  return score;
 }
 
 function estimateCurrencyBagValue(currencies = {}) {

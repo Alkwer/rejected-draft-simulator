@@ -1,8 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { analyzeSave } from "../src/save-analysis.js";
+import { analyzeSave, getStatsBySource } from "../src/save-analysis.js";
 import { decodeSaveText } from "../src/save.js";
+import { parseSaveEnvelope } from "../web/save-format.js";
 
 const sketches = {
   a: { id: "a", name: "A", rarity: "rough" },
@@ -44,7 +45,7 @@ function sampleSave(overrides = {}) {
 }
 
 test("save inspection serializes finite late-game stat comparisons", () => {
-  const save = sampleSave({ playerStats: { maxHp: 1e305 }, battleStats: { maxHp: 2e305 } });
+  const save = sampleSave({ playerStats: { maxHp: 1e305, attack: 0, attackSpeed: 1000 }, battleStats: { maxHp: 2e305 } });
   const { stats } = JSON.parse(JSON.stringify(analyzeSave({ save, sketches })));
   assert.deepEqual(stats.playerVsBattle.maxHp, { playerStats: 1e305, battleStats: 2e305, delta: 1e305, percentDelta: 100 });
 });
@@ -115,6 +116,40 @@ test("save decoder accepts legacy companion state and rejects broken or out-of-r
   assert.throws(() => decodeSaveText('{"state":{"saveProfile":"steam"}}'), /missing player stats/i);
   const steamState = { ...state, saveProfile: "steam", playerStats: { ...state.playerStats, attack: "1e400" } };
   assert.throws(() => decodeSaveText(JSON.stringify({ state: steamState })), /attack.*finite number/i);
+});
+
+test("legacy saves use the highest-priority complete source and preserve an explicit zero attack", () => {
+  const playerStats = { maxHp: "1000", attack: { m: 0, e: 0 }, attackSpeed: "1200" };
+  const state = {
+    playerStats,
+    currentRunStats: { maxHp: 5000 },
+    battleStats: { ...playerStats, attack: { mantissa: "", exponent: 0 } },
+    availableSketches: ["a"],
+  };
+  const decoded = decodeSaveText(JSON.stringify({ state }));
+  const { stats } = analyzeSave({ save: decoded, sketches });
+
+  assert.equal(stats.recommendedSource, "playerStats");
+  assert.deepEqual(getStatsBySource(decoded.state, "auto"), { maxHp: 1000, attack: 0, attackSpeed: 1200 });
+  assert.throws(() => getStatsBySource(decoded.state, "runStats"), /currentRunStats \(attack, attackSpeed\)/);
+  assert.throws(() => getStatsBySource(decoded.state, "battleStats"), /battleStats \(attack\)/);
+  assert.equal(analyzeSave({ save: { state: { currentRunStats: playerStats } } }).stats.recommendedSource, "runStats");
+  assert.equal(analyzeSave({ save: { state: { ...state, battleStats: playerStats } } }).stats.recommendedSource, "battleStats");
+});
+
+test("legacy import reports invalid fields when no single source has usable combat stats", () => {
+  const state = {
+    playerStats: { maxHp: "1e400", attack: 0, attackSpeed: 1000 },
+    battleStats: { maxHp: 1000, attack: " ", attackSpeed: 1000 },
+    currentRunStats: { maxHp: 1000, attack: 10, attackSpeed: 0 },
+  };
+  const message = /playerStats \(maxHp\).*battleStats \(attack\).*currentRunStats \(attackSpeed\)/;
+  for (const parse of [decodeSaveText, parseSaveEnvelope]) {
+    assert.throws(() => parse(JSON.stringify({ state })), message);
+    assert.throws(() => parse(Buffer.from(JSON.stringify(state)).toString("base64")), message);
+    assert.throws(() => parse('{"state":{}}'), /Missing or invalid combat stats.*maxHp, attack, attackSpeed/);
+  }
+  assert.throws(() => analyzeSave({ save: { state } }), message);
 });
 
 test("analyzeSave classifies active sketches and reward progress", () => {

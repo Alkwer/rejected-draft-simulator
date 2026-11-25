@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { createRunRecommendation, parseTrialsSetting, resolveTargetId, runCombatSimulation } from "./cli-convenience.js";
 import { combatAssumptionsFromSave } from "./combat-assumptions.js";
-import { createDiagnosticReport, createModelAssumptionComparisons } from "./diagnostics.js";
+import { compareObservedOutcome, createDiagnosticReport, createModelAssumptionComparisons } from "./diagnostics.js";
 import { createFightTrace } from "./fight-trace.js";
 import { createCombatReport } from "./report.js";
 import { estimateRedrawOdds, isRedrawRarityEnabled, parseMinimums } from "./redraw-planner.js";
@@ -55,6 +55,7 @@ export function createWebAnalysis({
   hiddenSketchIds = [],
   observedOutcome = null,
   traceSeconds = 60,
+  interactiveDiagnostics = false,
   identifyInputs = false,
   expectedSaveHash,
   expectedCatalogHash,
@@ -142,14 +143,21 @@ export function createWebAnalysis({
     assumptionComparisons,
   });
   appendTimeLimitDiagnostics(diagnostics, result);
+  // The dashboard filters this single seeded trace locally as the display window changes.
   const fightTrace = createFightTrace({
     player: finalStats,
     enemy: enemyFromSketch(target),
     maxSeconds: targetMaxSeconds,
-    traceSeconds: Math.min(Math.max(5, toNumber(traceSeconds, 60)), Math.max(5, targetMaxSeconds)),
+    traceSeconds: Math.min(interactiveDiagnostics ? 120 : Math.max(5, toNumber(traceSeconds, 60)), Math.max(5, targetMaxSeconds)),
+    maxEvents: interactiveDiagnostics ? 24 : undefined,
     seed: `${seed}:${resolvedTargetId}:trace`,
     assumptions: combatAssumptions,
   });
+  if (interactiveDiagnostics) {
+    diagnostics.observations = Object.fromEntries(["", "win", "loss", "timeout"].map((outcome) => [
+      outcome, compareObservedOutcome({ observedOutcome: outcome, simulation: result, diagnostics }),
+    ]));
+  }
   const currentTarget = analysis.run.active.target;
   const currentTargetVisible = currentTarget && !currentTarget.hidden && !currentTarget.defeatedThisRun;
   const currentSimulation = assumedRouteIds.length && currentTargetVisible
@@ -687,6 +695,7 @@ function createRoutePreview({ sketches, state, baseStats, routeIds, targetId, tr
     id: step.id,
     name: step.name ?? step.id,
     status: step.status,
+    availabilityReason: step.availabilityReason,
     targetWinRate: round(step.forecast.winRate ?? 0),
     p90Seconds: round(step.forecast.p90Seconds ?? 0),
     p90Censored: step.forecast.p90Censored,
@@ -696,6 +705,8 @@ function createRoutePreview({ sketches, state, baseStats, routeIds, targetId, tr
 
   return {
     routeIds: ids,
+    targetAvailableNow: route.target.availableNow,
+    targetAvailableAfterRoute: route.target.availableAfterRoute,
     steps,
     finalStats: steps.at(-1).finalStats,
     currencies: steps.at(-1).currencies,

@@ -965,6 +965,30 @@ h3 {
 
 .sketch-main {
   min-width: 0;
+  padding: 3px 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: start;
+  cursor: pointer;
+}
+
+.sketch-main:hover strong, .sketch-main:focus-visible strong {
+  text-decoration: underline;
+}
+
+#restoreSketchButton {
+  margin-top: 8px;
+  max-width: 100%;
+  white-space: normal;
+}
+
+.threshold-item {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 12px;
 }
 
 .sketch-main strong {

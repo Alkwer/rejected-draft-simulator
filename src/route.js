@@ -10,7 +10,7 @@ import {
   spendUpgradeCurrency, upgradeCost,
 } from "./shop-upgrades.js";
 import { applySteamVictoryStatChanges, createSteamStatProjection, isSteamRawStats } from "./steam-stat-projection.js";
-import { getPreciseEraserEligibility, isSketchToolUnlocked } from "./tool-rules.js";
+import { getPreciseEraserEligibility, getSketchFightEligibility, isSketchToolUnlocked } from "./tool-rules.js";
 import { remainingSketchVictories } from "./victory-limit.js";
 
 export { currencyFundamentalKey, SECRET_STASH_COST, upgradeCost };
@@ -208,6 +208,7 @@ export function simulateRoute({
   seed = "route",
   maxSeconds = 300,
   includeStepForecasts = false,
+  includeStepCombat = false,
 } = {}) {
   const fundamentals = numericObject(state.fundamentals ?? {});
   const savedStats = assumptions.steam ? state.playerStats : state.runStats ?? state.battleStats ?? state.playerStats;
@@ -272,15 +273,28 @@ export function simulateRoute({
 
   const swapState = createSwapState({ existingIds: normalizeList(state.swappedSketchIds), swapMap, fundamentals });
   const target = targetId ? buildTarget({ sketches, targetId, erasedSet, tools, steam: assumptions.steam }) : null;
+  const targetAvailability = target ? getSketchFightEligibility(sketches[targetId], state) : null;
+  const opening = includeStepCombat ? { stats: roundObject(stats), battleCurrencies: roundObject(totalBattleEarnedCurrencies) } : null;
   const forecast = () => runMonteCarlo({ player: stats, enemy: target.stats, trials, maxSeconds, seed, assumptions });
   let lastForecast;
 
   for (const originalId of normalizeList(routeIds)) {
     const { id, swapped } = resolveSwap({ originalId, sketches, swapState, tools });
     const sketch = sketches[id];
+    const availability = getSketchFightEligibility(sketch, state);
+    const fightTarget = includeStepCombat && trials > 0 && sketch?.stats
+      && remainingSketchVictories(state, id, ledger.victories[id]) > 0
+      ? buildTarget({ sketches, targetId: id, erasedSet, tools, steam: assumptions.steam }) : null;
+    const fightSimulation = fightTarget && runMonteCarlo({
+      player: stats, enemy: fightTarget.stats, trials, maxSeconds, seed: `${seed}:step:${id}:${ledger.victories[id] ?? 0}`, assumptions,
+    });
     const step = sketch
       ? { originalId, id, name: sketch.name ?? id, swapped, ...creditVictory(ledger, state, sketch, id, boostedSet.has(id)) }
       : { originalId, id, status: "missing" };
+    step.availableNow = availability.eligible;
+    step.availabilityReason = availability.reason;
+    step.conditional = ledger.newWins > 0 || targetAvailability?.eligible === false;
+    if (fightSimulation) step.fightSimulation = fightSimulation;
     if (step.status === "defeated") {
       buyAffordableUpgrades({ enabled: buyUpgrades, upgradeIds: normalizeList(buyUpgradeIds),
         stats, projection, currencies, shop, fundamentals, state, secretStash });
@@ -296,9 +310,17 @@ export function simulateRoute({
   if (target && trials > 0) {
     target.simulation = lastForecast ?? forecast();
   }
+  if (target) {
+    target.availableNow = targetAvailability.eligible;
+    target.availabilityReason = targetAvailability.reason;
+    target.availableAfterRoute = target.availableNow && remainingSketchVictories(state, targetId, victories[targetId]) > 0;
+    target.conditional = ledger.newWins > 0 || !target.availableNow;
+  }
 
   return {
     routeIds: normalizeList(routeIds),
+    conditional: ledger.newWins > 0 || Boolean(target?.conditional),
+    ...(opening && { opening }),
     finalStats: roundObject(stats),
     currencies: roundObject(currencies),
     totalEarnedCurrencies: roundObject(totalEarnedCurrencies),
@@ -360,6 +382,7 @@ export function compareRoutes({
       p90Seconds: simulation.p90Seconds ?? 0,
       p90Censored: simulation.p90Censored ?? false,
       target: result.target,
+      conditional: result.conditional,
       steps: result.steps,
       tools: result.tools,
       currencies: result.currencies,
@@ -454,6 +477,10 @@ function applyRequestedErasers({ requestedIds, existingIds, sketches, state, fun
   let uses = erasedSet.size;
 
   for (const id of requestedIds) {
+    if (!Object.hasOwn(sketches, id)) {
+      tools.erasedSkipped.push({ id, reason: "unknown_sketch" });
+      continue;
+    }
     if (erasedSet.has(id)) {
       tools.erasedApplied.push(id);
       continue;

@@ -203,7 +203,10 @@ async function loadComparisons() {
         row.insertCell().textContent = numbers.format(group.observed[outcome]);
         row.insertCell().textContent = numbers.format(group.expected[outcome]);
       }
-      section.append(heading, details, table, link);
+      const timing = document.createElement("p");
+      const range = group.durationRange;
+      timing.textContent = `Duration against each forecast’s p10–p90 range: ${range.within} within, ${range.below} shorter, ${range.above} longer, ${range.indeterminate} indeterminate at cutoff.`;
+      section.append(heading, details, table, timing, link);
       container.append(section);
     }
   } catch (error) {

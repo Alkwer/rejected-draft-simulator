@@ -156,7 +156,7 @@ async function checkSteamSlotSwitch(browser, url, dir) {
   try {
     for (const slot of [1, 2]) {
       await writeFile(path.join(dir, `slot-${slot}.json`), JSON.stringify({ version: 87, meta: { profile: "steam", slot },
-        state: { availableSketches: ["little_stapler", "rorschach_bat"],
+        state: { redrawCount: 1, availableSketches: ["little_stapler", "rorschach_bat"],
           playerStats: { maxHp: 45000, attack: slot * 100, attackSpeed: 800, berserk: 0 } } }));
     }
     const marker = path.join(dir, "last-slot.txt");
@@ -176,6 +176,38 @@ async function checkSteamSlotSwitch(browser, url, dir) {
     await analyze(page.getByRole("button", { name: "Use active Steam slot" }));
     const assumed = page.locator('[data-sketch-id="little_stapler"] .assume-one-button');
     assert.equal((await analyze(assumed)).analysis.finalStats.berserk, 0.7);
+    const stapler = page.locator('[data-sketch-id="little_stapler"]');
+    const inspect = page.getByRole("button", { name: "Inspect rewards for Rorschach Bat" });
+    await inspect.focus();
+    await inspect.press("Enter");
+    assert.equal(await inspect.getAttribute("aria-pressed"), "true");
+    assert.equal(await page.locator("#targetSelect").inputValue(), "little_stapler");
+    assert.equal(await page.locator("#routePlannerList").textContent(), "No route");
+    assert.equal((await analyze(stapler.getByText("Route", { exact: true }))).analysis.routePreview.steps.length, 1);
+    const hidden = await analyze(stapler.getByText("Hide", { exact: true }));
+    assert.deepEqual(hidden.analysis.assumedVictories, {});
+    assert.deepEqual(hidden.analysis.routePreview.steps, []);
+    const restored = await analyze(page.getByRole("button", { name: "Restore Little Stapler" }));
+    assert.equal(restored.analysis.assumedVictories.little_stapler, 1);
+    assert.deepEqual(restored.analysis.routePreview.routeIds, ["little_stapler"]);
+    await analyze(page.locator('[data-sketch-id="rorschach_bat"] .hide-button'));
+    const file = path.join(dir, "slot-1.json");
+    const slot = JSON.parse(await readFile(file, "utf8"));
+    slot.meta.savedAt = Date.now();
+    await writeFile(file, JSON.stringify(slot));
+    const sameRun = await analyze(page.locator("#analyzeButton"));
+    assert.equal(sameRun.analysis.assumedVictories.little_stapler, 1);
+    assert.deepEqual(sameRun.analysis.routePreview.routeIds, ["little_stapler"]);
+    slot.state.redrawCount++;
+    await writeFile(file, JSON.stringify(slot));
+    const redraw = await analyze(page.locator("#analyzeButton"));
+    assert.equal(redraw.runChanged, true);
+    assert.deepEqual(redraw.analysis.assumedVictories, {});
+    assert.deepEqual(redraw.analysis.routePreview.steps, []);
+    assert.equal(redraw.analysis.finalStats.berserk, 0);
+    assert.ok(redraw.analysis.activeSketches.some((item) => item.id === "rorschach_bat"));
+    assert.equal(await page.locator("#restoreSketchButton").isVisible(), false);
+    await analyze(assumed);
     await writeFile(marker, "2");
     const switched = await analyze(page.locator("#analyzeButton"));
     assert.equal(switched.slotName, "slot-2.json");
@@ -319,14 +351,27 @@ try {
     state: { availableSketches: ["little_stapler"], currencyGeneratorRates: { Graphite: 2 },
       playerStats: { maxHp: 1e20, attack: 0, attackSpeed: 1000 } } };
   await page.locator("#targetSelect").selectOption("little_stapler");
+  await page.locator("#maxSecondsInput").fill("15");
   await page.locator("#saveFile").setInputFiles({ name: "timing.json", mimeType: "application/json",
     buffer: Buffer.from(JSON.stringify(timingSave)) });
   await page.getByRole("tab", { name: "Battle", exact: true }).click();
-  await page.waitForFunction(() => document.querySelector("#fightTime").textContent.includes("p90 ≥5.0s"));
+  await page.waitForFunction(() => document.querySelector("#fightTime").textContent.includes("p90 ≥15.0s"));
   await page.getByRole("tab", { name: "Diagnostics", exact: true }).click();
   await page.locator("#modelBuildStatus").getByText(/qa-mismatch/).waitFor();
   assert.match(await page.locator("#diagnosticSample").textContent(), /95% CI.*100 attempts/);
   assert.match(await page.locator("#assumptionSample").textContent(), /100 paired trials/);
+  await page.getByRole("tab", { name: "Run", exact: true }).click();
+  const settingRequests = requests.length;
+  const traceRows = page.locator("#fightTraceList > *");
+  const initialTraceCount = await traceRows.count();
+  const winSample = await page.locator("#winRateCi").textContent();
+  await page.locator("#observedOutcomeSelect").selectOption("win");
+  await page.locator("#traceSecondsInput").fill("5");
+  await page.getByRole("tab", { name: "Diagnostics", exact: true }).click();
+  await page.locator("#observationMismatch").getByText(/Observed win/).waitFor();
+  assert.ok(await traceRows.count() < initialTraceCount);
+  assert.equal(await page.locator("#winRateCi").textContent(), winSample);
+  assert.equal(requests.length, settingRequests);
   for (const width of [1440, 768, 390]) {
     await page.setViewportSize({ width, height: 900 });
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth), width, `Diagnostics overflow at ${width}px`);

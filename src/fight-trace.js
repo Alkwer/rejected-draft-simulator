@@ -6,6 +6,7 @@ export function createFightTrace({
   enemy,
   maxSeconds = 300,
   traceSeconds = 60,
+  maxEvents,
   seed = "trace",
   assumptions = {},
   includeRng = false,
@@ -16,7 +17,7 @@ export function createFightTrace({
     enemy,
     maxSeconds,
     assumptions,
-    trace: { seconds: traceSeconds, includeRng },
+    trace: { seconds: traceSeconds, includeRng, maxEvents },
   });
   return {
     seed,

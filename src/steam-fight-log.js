@@ -329,9 +329,14 @@ function compareSavedFights(root) {
     const key = JSON.stringify([target.id, gameVersion, build, modelVersion, maxSeconds, setup]);
     if (!groups.has(key)) groups.set(key, { target, gameVersion, build, modelVersion, maxSeconds,
       universe: assumptions.steam.universeId, exampleId: id, fights: 0,
+      durationRange: { below: 0, within: 0, above: 0, indeterminate: 0 },
       observed: { win: 0, loss: 0, timeout: 0 }, expected: { win: 0, loss: 0, timeout: 0 } });
     const group = groups.get(key);
     const outcome = observation.elapsedSeconds >= maxSeconds ? "timeout" : observation.outcome;
+    const atLimit = compareSteamFightObservation(forecast, {
+      outcome, elapsedSeconds: Math.min(observation.elapsedSeconds, maxSeconds),
+    });
+    group.durationRange[atLimit.rangeStatus]++;
     group.observed[outcome]++;
     group.fights++;
     for (const name of Object.keys(group.expected)) group.expected[name] += forecast.probabilities[name];
