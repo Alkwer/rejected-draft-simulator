@@ -9,11 +9,11 @@ Static checks against the reference assets listed below. Each match covers its n
 - Main asset: main-B8xwsW5G.js
 - Store asset: game-store-fxPIKm8H.js
 - Captured: 2026-05-23
-- Generated: 2026-11-26T07:05:31.586Z
+- Generated: 2026-11-26T07:18:21.330Z
 
 ## Summary
 
-- Matched: 13
+- Matched: 14
 - Gaps: 0
 - Partial: 0
 - Unverified: 0
@@ -30,9 +30,10 @@ Static checks against the reference assets listed below. Each match covers its n
 | Energy Wave turn effect | matched | low | Periodic tick damage consumes Energy Wave stacks. The attack path grants self buffs. | Confirm the exact periodic tick cadence against a real fight fixture. |
 | Bleed, Curse and Lifesteal order | matched | medium | Simulator applies Bleed recoil, then Curse reflection, then Lifesteal. | Keep end-of-turn ordering covered by regression tests. |
 | Varnish survival | matched | low | `applyDamageToSide` uses `VarnishTriggers` for both chance penalty and restore percent. | Keep Varnish fixtures around lethal direct and status damage. |
-| Delayed Counter scheduling and direct hit | matched | low | The pending Counter uses the speed-scaled delay and the direct damage pipeline. | Verify the full Counter turn and timing against observed web fights. |
+| Delayed Counter scheduling and attack turn | matched | low | The speed-scaled queue dispatches a flagged web attack turn. That turn resolves effects and cannot queue another Counter. | Keep the traced Counter, Multistrike and skip checks. Compare dispatch timing with observed web fights. |
 | Periodic tick intervals | matched | medium | The simulator starts and advances the web regen and status deadlines at the extracted intervals. | Compare wall-clock catch-up and simultaneous events with observed web fights. |
 | Inspiration tick eligibility and caps | matched | medium | The simulator checks for active status maps and applies separate player and enemy cap rules. | Keep the traced empty-status and cap regression test. |
+| Periodic status effect order | matched | medium | Each web tick effect runs for the player and then the enemy before the next effect. | Keep the two-sided trace regression and compare lethal interactions with observed web fights. |
 | BananaSlip next attack delay | matched | medium | The delay formula and both attack branches apply and clear BananaSlip. | Keep the traced skip and next attack timestamps covered. |
 
 ## Details
@@ -127,16 +128,15 @@ Static checks against the reference assets listed below. Each match covers its n
 - Simulator evidence: `applyDamageToSide` uses `VarnishTriggers` for both chance penalty and restore percent.
 - Next action: Keep Varnish fixtures around lethal direct and status damage.
 
-### Delayed Counter scheduling and direct hit
+### Delayed Counter scheduling and attack turn
 
 - ID: `counter-delayed-effect`
 - Status: matched
 - Severity: low
 - Confidence: high
 - Game reference: The bundle queues Counter 200ms divided by combat speed after the triggering attack and runs the attack resolver with its Counter flag.
-- Simulator evidence: The pending Counter uses the speed-scaled delay and the direct damage pipeline.
-- Next action: Verify the full Counter turn and timing against observed web fights.
-- Detail: This row covers scheduling and the direct hit. The archived resolver also runs turn effects through `pt`, including Remedy and skip checks.
+- Simulator evidence: The speed-scaled queue dispatches a flagged web attack turn. That turn resolves effects and cannot queue another Counter.
+- Next action: Keep the traced Counter, Multistrike and skip checks. Compare dispatch timing with observed web fights.
 
 ### Periodic tick intervals
 
@@ -157,6 +157,16 @@ Static checks against the reference assets listed below. Each match covers its n
 - Game reference: The web status tick returns when both status maps are empty. It caps player Inspiration at 100 plus the fundamentals bonus and leaves enemy Inspiration uncapped.
 - Simulator evidence: The simulator checks for active status maps and applies separate player and enemy cap rules.
 - Next action: Keep the traced empty-status and cap regression test.
+
+### Periodic status effect order
+
+- ID: `periodic-status-order`
+- Status: matched
+- Severity: medium
+- Confidence: high
+- Game reference: The web status tick processes both sides per effect: Burn, Plague, Poison, BlackFlame, EnergyWave, Inspiration, Balloon and Irradiate.
+- Simulator evidence: Each web tick effect runs for the player and then the enemy before the next effect.
+- Next action: Keep the two-sided trace regression and compare lethal interactions with observed web fights.
 
 ### BananaSlip next attack delay
 

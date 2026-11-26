@@ -92,14 +92,21 @@ export function createWebAnalysis({
   const analysis = analyzeSave({ save: { ...save, state }, sketches, targetId: resolvedTargetId, dataMetadata });
   const statSource = analysis.stats.recommendedSource;
   const baseStats = analysis.stats.sources[statSource] ?? {};
-  const assumedVictoryPlan = normalizeAssumedVictories({
+  const requestedVictoryPlan = normalizeAssumedVictories({
     assumedVictories,
     assumedVictoryIds,
     sketches,
     state: save.state,
   });
-  const assumedRouteIds = expandAssumedVictories(assumedVictoryPlan);
-  const { stats: finalStats, state: rewardState } = projectVictories({ baseStats, sketches, state, ids: assumedRouteIds });
+  const { stats: finalStats, state: rewardState, appliedIds: assumedRouteIds, skippedUnavailableIds }
+    = projectVictories({ baseStats, sketches, state, ids: expandAssumedVictories(requestedVictoryPlan) });
+  const assumedVictoryPlan = {};
+  for (const id of assumedRouteIds) assumedVictoryPlan[id] = (assumedVictoryPlan[id] ?? 0) + 1;
+  if (skippedUnavailableIds.length) {
+    const names = [...new Set(skippedUnavailableIds)].map((id) => sketches[id].name ?? id);
+    analysis.warnings.push({ code: "assumed_victory_unavailable",
+      message: `Skipped assumed victories for sketches removed earlier in the projected run (${names.join(", ")}).` });
+  }
   const trialsSetting = parseTrialsSetting(trials, {
     defaultTrials: 200,
     initialTrials: 200,
@@ -513,15 +520,17 @@ function sourceRank(source) {
 function compareSketchRewards({ state, stats, sketches, pairedOptions, optionalProjection }) {
   const rewardBaseline = simulateTarget({ ...pairedOptions, player: stats });
   const results = new Map();
-  function simulateAfterReward(id) {
-    if (!results.has(id)) {
-      results.set(id, optionalProjection(id, () => {
-        const { stats: next, lastReward } = projectVictories({ baseStats: stats, sketches, state, ids: [id] });
+  function simulateAfterReward(id, afterRedraw = false) {
+    const key = afterRedraw ? `redraw:${id}` : id;
+    if (!results.has(key)) {
+      results.set(key, optionalProjection(id, () => {
+        const { stats: next, lastReward } = projectVictories({ baseStats: stats, sketches, state, ids: [id], afterRedraw });
+        if (lastReward?.status !== "defeated") return null;
         const changed = lastReward.statRewards?.some(({ statName }) => toNumber(next[statName]) !== toNumber(stats[statName]));
         return { simulation: changed ? simulateTarget({ ...pairedOptions, player: next }) : rewardBaseline, reward: lastReward };
       }));
     }
-    return results.get(id);
+    return results.get(key);
   }
   return { rewardBaseline, simulateAfterReward };
 }
@@ -618,7 +627,7 @@ function createRollWishlist({
 
   for (const candidate of preselected) {
     const sketch = candidate.sketch;
-    const projection = simulateAfterReward(sketch.id);
+    const projection = simulateAfterReward(sketch.id, candidate.source === "roll_pool");
     if (!projection) continue;
     const { simulation: targetResult, reward } = projection;
     const targetDelta = round((targetResult.winRate ?? 0) - (currentResult.winRate ?? 0));
@@ -696,6 +705,7 @@ function createRoutePreview({ sketches, state, baseStats, routeIds, targetId, tr
     name: step.name ?? step.id,
     status: step.status,
     availabilityReason: step.availabilityReason,
+    ...(step.availabilityChanges && { availabilityChanges: step.availabilityChanges }),
     targetWinRate: round(step.forecast.winRate ?? 0),
     p90Seconds: round(step.forecast.p90Seconds ?? 0),
     p90Censored: step.forecast.p90Censored,
@@ -707,6 +717,7 @@ function createRoutePreview({ sketches, state, baseStats, routeIds, targetId, tr
     routeIds: ids,
     targetAvailableNow: route.target.availableNow,
     targetAvailableAfterRoute: route.target.availableAfterRoute,
+    targetAvailabilityReasonAfterRoute: route.target.availabilityReasonAfterRoute,
     steps,
     finalStats: steps.at(-1).finalStats,
     currencies: steps.at(-1).currencies,

@@ -205,6 +205,10 @@ GAME_DATA_VERSIONS["main-Dmswlyp_.js"] = {
 
 const steamSnapshot = JSON.parse(readFileSync(new URL("../fixtures/sketch-snapshots.json", import.meta.url), "utf8"));
 GAME_DATA_VERSIONS[steamSnapshot.gameVersion] = steamSnapshot;
+// Both installed builds shipped identical sentinel records and the same save schema.
+GAME_DATA_VERSIONS["v0.9772"] = {
+  ...steamSnapshot, gameVersion: "v0.9772", buildId: "26885190", capturedAt: "2026-11-24",
+};
 
 export const KNOWN_REGRESSION_SCENARIOS = [
   {
@@ -329,9 +333,9 @@ export function createCalibrationReport({
   const fallbackAssumptions = combatAssumptionsFromSave(save);
   let tuningIndex = 0;
   const comparisons = filteredLogs.map((log, index) => {
-    const platform = log.patchVersion === steamSnapshot.gameVersion ? "steam"
-      : (log.patchVersion === gameDataVersion ? dataMetadata?.platform : null)
-        ?? (Object.hasOwn(GAME_DATA_VERSIONS, log.patchVersion) ? "web" : null);
+    const knownPatch = Object.hasOwn(GAME_DATA_VERSIONS, log.patchVersion) ? GAME_DATA_VERSIONS[log.patchVersion] : null;
+    const platform = knownPatch?.platform ?? (log.patchVersion === gameDataVersion ? dataMetadata?.platform : null)
+      ?? (knownPatch ? "web" : null);
     const historicalAssumptions = historicalCombatAssumptions(log.combatAssumptions, platform);
     const patchExclusion = patchTuningExclusion(log.patchVersion, gameDataVersion);
     const encounterPlatform = historicalAssumptions?.steam ? "steam" : "web";
@@ -488,7 +492,7 @@ export function checkPatchSanity({
   tolerance = 1e-9,
 } = {}) {
   const selectedVersion = version ?? dataMetadata?.gameVersion ?? latestGameDataVersion();
-  const expected = GAME_DATA_VERSIONS[selectedVersion];
+  const expected = Object.hasOwn(GAME_DATA_VERSIONS, selectedVersion) ? GAME_DATA_VERSIONS[selectedVersion] : null;
   const failures = [];
 
   if (!expected) {
@@ -506,6 +510,12 @@ export function checkPatchSanity({
     };
   }
 
+  if (dataMetadata?.buildId != null && expected.buildId != null && String(dataMetadata.buildId) !== expected.buildId) {
+    failures.push({
+      code: "build_id_mismatch", version: selectedVersion, expected: expected.buildId, actual: dataMetadata.buildId,
+      message: `Expected build ${expected.buildId} for ${selectedVersion}, got ${dataMetadata.buildId}.`,
+    });
+  }
   const saveVersion = dataMetadata?.saveVersion ?? null;
   if (saveVersion !== null && expected.saveVersion != null && saveVersion !== expected.saveVersion) {
     failures.push({
@@ -1069,6 +1079,6 @@ function median(values) {
 }
 
 function round(value) {
-  if (!Number.isFinite(value)) return value;
+  if (!Number.isFinite(value) || Number.isInteger(value)) return value;
   return Math.round(value * 1e6) / 1e6;
 }

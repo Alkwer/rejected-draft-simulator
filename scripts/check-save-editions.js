@@ -157,6 +157,7 @@ async function checkSteamSlotSwitch(browser, url, dir) {
     for (const slot of [1, 2]) {
       await writeFile(path.join(dir, `slot-${slot}.json`), JSON.stringify({ version: 87, meta: { profile: "steam", slot },
         state: { redrawCount: 1, availableSketches: ["little_stapler", "rorschach_bat"],
+          ...(slot === 2 && { multiverse: { currentUniverseId: "mv-medium-2" } }),
           playerStats: { maxHp: 45000, attack: slot * 100, attackSpeed: 800, berserk: 0 } } }));
     }
     const marker = path.join(dir, "last-slot.txt");
@@ -217,6 +218,11 @@ async function checkSteamSlotSwitch(browser, url, dir) {
     await page.getByText(/Switched to Steam slot-2.json/).waitFor();
     assert.deepEqual(await page.evaluate(() => JSON.parse(localStorage.getItem("rd-sim-history"))[0].replay.settings.assumedVictories), {});
     assert.equal((await analyze(page.locator("#analyzeButton"))).analysis.finalStats.berserk, 0);
+    const farm = page.locator('[data-sketch-id="rorschach_bat"] .route-button');
+    const projected = await analyze(farm);
+    assert.equal(projected.analysis.routePreview.targetAvailabilityReasonAfterRoute, "sketch_not_available");
+    assert.match(await page.locator("#routePreviewSummary").textContent(), /route removes target from this run/);
+    assert.match(await page.locator("#routePreviewList").textContent(), /Removed from this run: Little Stapler/);
   } finally {
     await page.close();
   }
@@ -231,11 +237,30 @@ try {
   const page = await browser.newPage();
   const errors = [];
   page.on("pageerror", (error) => errors.push(error.message));
+  await page.addInitScript(() => {
+    if (localStorage.getItem("rd-sim-history") === null) {
+      localStorage.setItem("rd-sim-history", JSON.stringify([{ target: "Archived target", replay: {
+        modelVersion: "prior-model", saveHash: "old-save", catalogHash: "old-catalog",
+        settings: { seed: "archive", trials: 100, maxSeconds: 5 },
+      } }]));
+    }
+  });
   await page.route("**/api/targets?edition=steam", (route) => route.abort("failed"), { times: 1 });
+  await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(`http://127.0.0.1:${server.address().port}/`);
   await page.locator("#messageBar").getByText(/Could not load the target catalog/).waitFor();
-  await page.locator("#importBundleButton").click();
+  await page.getByRole("button", { name: "Retry loading targets" }).press("Enter");
   await page.waitForFunction(() => document.querySelector("#targetSelect").options.length > 0);
+  assert.equal(await page.locator("#messageBar").isVisible(), false);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.getByRole("tab", { name: "Compare", exact: true }).click();
+  const archivedRow = page.locator(".history-item").filter({ hasText: "Archived target" });
+  assert.ok(await archivedRow.getByText(/replay unavailable with model/).isVisible());
+  assert.equal(await archivedRow.getByRole("button").count(), 0);
+  await page.locator("#clearHistoryButton").click();
+  await page.getByRole("tab", { name: "Battle", exact: true }).click();
+  await page.locator("#importBundleButton").click();
+  await page.locator("#messageBar").getByText("Steam catalog is current.").waitFor();
   const battleTab = page.getByRole("tab", { name: "Battle", exact: true });
   await battleTab.press("ArrowRight");
   const runTab = page.getByRole("tab", { name: "Run", exact: true });

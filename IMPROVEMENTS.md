@@ -13,6 +13,10 @@ The numbered sections record previous work and ideas. The active backlog starts 
 - [x] Validate Steam combat stats for imports and forecasts, including explicitly selected sources. Use the supplied save's edition for CLI catalog checks.
 - [x] Reject comparisons between different fight targets and retain status modifiers from nested fixture stats.
 - [x] Match the archived web Counter delay, Banana Slip attack interval and side-specific buff caps. Require source evidence for a successful static parity check.
+- [x] Verify the Steam v0.9773 catalog and encounter parameters against build 26933131. Retain patch checks and encounter settings for historical v0.9772 logs.
+- [x] Apply Steam's seeded sketch removals and retirement rules to projected victories. Show which sketch a route removes.
+- [x] Match the archived web status tick order and full Counter attack. Prevent chains of counterattacks and multiple counters on one multistrike.
+- [x] Recover from an initial target catalog failure, show which history entries can be replayed, and preserve large finite values in JSON reports.
 - [ ] Compare seeded forecasts against repeated, observed Hyena Hulk fights on the same Steam build and setup. See the [combat accuracy backlog](docs/combat-engine-accuracy-backlog.md).
 
 ## Priority 1: More Accurate Combat Engine
@@ -499,7 +503,7 @@ Started on 2026-05-23 with the observability slice: status deltas, ordered RNG t
 
 ## Best Work Order
 
-1. Collect repeatable Steam fight comparisons for build 26885190 (save schema 87), starting with Hyena Hulk. Capture the pre-fight state and archive the actual outcome and timing source. Follow the [comparison workflow](README.md#compare-a-steam-fight).
+1. Collect repeatable Steam fight comparisons for build 26933131 (save schema 87), starting with Hyena Hulk. Capture the pre-fight state and archive the actual outcome and timing source. Follow the [comparison workflow](README.md#compare-a-steam-fight).
 2. Compare repeated attempts with the seeded forecast for the same build, universe, opponent and setup. Record censored durations and the number of observed fights. Use these observations to prioritize discrepancies in tick and counter timing.
 3. After the next patch, keep the old observations tagged with their build and run a fresh comparison on the new build. Track legacy web reference checks separately in the [accuracy backlog](docs/combat-engine-accuracy-backlog.md).
 

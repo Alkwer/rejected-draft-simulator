@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { createCompanionFightFixture } from "./companion-fight-fixture.js";
 import { createTargetOptions, summarizeGameBundle } from "./web-core.js";
 import { createAnalysisRunner } from "./analysis-worker.js";
+import { ANALYSIS_MODEL_VERSION } from "./model-version.js";
 import { DEFAULT_DATA_PATH, LEGACY_DATA_PATH, updateGameData } from "./game-data-update.js";
 import { readGameBundle } from "./sketch-data.js";
 import { decodeSaveText, findActiveSteamSave, isSteamSave, readSaveFile } from "./save.js";
@@ -81,6 +82,7 @@ export function createWebServer({
           ok: true,
           bundle: summarizeGameBundle({ sketches, dataMetadata }),
           targets: createTargetOptions({ sketches }),
+          modelVersion: ANALYSIS_MODEL_VERSION,
         });
       }
       if (url.pathname === "/api/analyze" && req.method === "POST") {

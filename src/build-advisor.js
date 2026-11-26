@@ -432,5 +432,6 @@ function formatSigned(value) {
 
 function roundNumber(value) {
   if (!Number.isFinite(value)) return 0;
+  if (Number.isInteger(value)) return value;
   return Math.round(value * 1e6) / 1e6;
 }

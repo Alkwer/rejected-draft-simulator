@@ -5,6 +5,7 @@ import { currencyFundamentalKey, generatorRates } from "./currency-generators.js
 import { applyStatReward, steamCurrencyPerkWinsRemaining, steamSketchRewards } from "./reward-amounts.js";
 import { createRng } from "./rng.js";
 import { normalizeStats, toNumber } from "./save.js";
+import { applySteamVictoryAvailability } from "./steam-route-availability.js";
 import {
   areStatUpgradesAvailable, missingUpgradeSkill, SECRET_STASH_COST, SECRET_STASH_ID, shopUpgradesForState,
   spendUpgradeCurrency, upgradeCost,
@@ -131,25 +132,49 @@ const MEDITATION_EXCLUDED_STATS = new Set([
   "maxDamage",
 ]);
 
+const PROJECTED_REMOVALS = Symbol("Sketches removed during the projected run");
+
 function createRewardLedger(state, baseStats) {
   const stats = normalizeStats(baseStats);
+  const victories = numericObject(state.sketchVictories ?? {});
+  const runVictories = numericObject(state.sketchRunVictories ?? {});
   return {
     stats,
     projection: createSteamStatProjection(state, stats, { raw: isSteamRawStats(state, stats) }),
     currencies: numericObject(state.currencies ?? {}),
     totalEarnedCurrencies: numericObject(state.totalEarnedCurrencies ?? {}),
     totalBattleEarnedCurrencies: numericObject(state.totalBattleEarnedCurrencies ?? {}),
-    victories: numericObject(state.sketchVictories ?? {}),
-    runVictories: numericObject(state.sketchRunVictories ?? {}),
+    victories,
+    runVictories,
+    fightState: { ...state, sketchVictories: victories, sketchRunVictories: runVictories },
+    removedIds: new Set(state[PROJECTED_REMOVALS]),
     newWins: 0,
   };
 }
 
-function creditVictory(ledger, state, sketch, id, boosted) {
+function routeFightEligibility(ledger, sketch, id) {
+  const availability = getSketchFightEligibility(sketch, ledger.fightState);
+  if (sketch?.id && !availability.eligible && remainingSketchVictories(ledger.fightState, id) <= 0) {
+    return { eligible: false, reason: "max_victories" };
+  }
+  return availability;
+}
+
+function allowsHypotheticalVictory({ ledger, id, initialAvailability, requireAvailability, afterRedraw = false }) {
+  // An explicitly hypothetical win can start off the board, and a redraw can bring back a culled sketch.
+  return !requireAvailability && (afterRedraw || !ledger.removedIds.has(id))
+    && !initialAvailability.eligible;
+}
+
+function creditVictory({ ledger, state, sketches, id, boosted, availability, hypothetical }) {
+  const sketch = sketches[id];
   const victoriesBefore = toNumber(ledger.victories[id]);
   const runVictoriesBefore = toNumber(ledger.runVictories[id]);
   if (remainingSketchVictories(state, id, victoriesBefore) <= 0) {
     return { status: "skipped_max_victories", victoriesBefore, runVictoriesBefore };
+  }
+  if (!availability.eligible && !hypothetical) {
+    return { status: "skipped_unavailable", victoriesBefore, runVictoriesBefore };
   }
   const fundamentals = state.fundamentals ?? {};
   const steamRewards = steamSketchRewards({ state, id, sketch, victoriesBefore, boosted, newWins: ledger.newWins });
@@ -163,28 +188,44 @@ function creditVictory(ledger, state, sketch, id, boosted) {
   ledger.victories[id] = victoriesBefore + 1;
   ledger.runVictories[id] = runVictoriesBefore + 1;
   ledger.newWins += 1;
+  const availabilityChanges = availability.eligible ? applySteamVictoryAvailability({
+    state: ledger.fightState, sketches, id, victoriesBefore, runVictoriesBefore, listIds: normalizeList,
+  }) : [];
+  for (const change of availabilityChanges) ledger.removedIds.add(change.id);
   return { status: "defeated", rarity: sketch.rarity ?? "unknown", victoriesBefore, runVictoriesBefore,
-    rewardMultiplier: roundObject(rewardMultiplier), statRewards, currencyRewards };
+    rewardMultiplier: roundObject(rewardMultiplier), statRewards, currencyRewards,
+    ...(availabilityChanges.length && { availabilityChanges }) };
 }
 
-export function projectVictories({ state, baseStats, sketches, ids, boostedIds = [] }) {
+export function projectVictories({ state, baseStats, sketches, ids, boostedIds = [], requireAvailability = false, afterRedraw = false }) {
   const tools = { boostedApplied: [], boostedSkipped: [] };
-  if (!ids.length) return { state, stats: baseStats, tools };
+  const appliedIds = [];
+  const skippedUnavailableIds = [];
+  if (!ids.length) return { state, stats: baseStats, tools, appliedIds, skippedUnavailableIds };
   const ledger = createRewardLedger(state, baseStats);
   const boosters = applyRequestedBoosters({ requestedIds: boostedIds, sketches, state, ledger, tools });
   let lastReward;
   for (const id of ids) {
-    if (sketches[id]) lastReward = creditVictory(ledger, state, sketches[id], id, boosters.has(id));
+    const sketch = sketches[id];
+    if (!sketch) continue;
+    const availability = routeFightEligibility(ledger, sketch, id);
+    const hypothetical = allowsHypotheticalVictory({ ledger, id, initialAvailability: getSketchFightEligibility(sketch, state),
+      requireAvailability, afterRedraw });
+    lastReward = creditVictory({ ledger, state, sketches, id, boosted: boosters.has(id), availability, hypothetical });
+    if (lastReward.status === "defeated") appliedIds.push(id);
+    if (lastReward.status === "skipped_unavailable") skippedUnavailableIds.push(id);
   }
   const perkWins = Math.min(ledger.newWins, steamCurrencyPerkWinsRemaining(state));
   return {
     stats: ledger.stats,
     tools,
     lastReward,
-    state: { ...state, ...ledger.projection?.statePatch(), ...(tools.boostedApplied.length && { boostedSketchIds: [...boosters] }),
+    appliedIds,
+    skippedUnavailableIds,
+    state: { ...ledger.fightState, ...ledger.projection?.statePatch(), ...(tools.boostedApplied.length && { boostedSketchIds: [...boosters] }),
       currencies: ledger.currencies, totalEarnedCurrencies: ledger.totalEarnedCurrencies,
       totalBattleEarnedCurrencies: ledger.totalBattleEarnedCurrencies,
-      sketchVictories: ledger.victories, sketchRunVictories: ledger.runVictories,
+      ...(ledger.removedIds.size && { [PROJECTED_REMOVALS]: [...ledger.removedIds] }),
       ...(perkWins && { currentUniverseBoostedCurrencyWins: toNumber(state.currentUniverseBoostedCurrencyWins) + perkWins }) },
   };
 }
@@ -209,6 +250,7 @@ export function simulateRoute({
   maxSeconds = 300,
   includeStepForecasts = false,
   includeStepCombat = false,
+  requireAvailability = false,
 } = {}) {
   const fundamentals = numericObject(state.fundamentals ?? {});
   const savedStats = assumptions.steam ? state.playerStats : state.runStats ?? state.battleStats ?? state.playerStats;
@@ -281,17 +323,22 @@ export function simulateRoute({
   for (const originalId of normalizeList(routeIds)) {
     const { id, swapped } = resolveSwap({ originalId, sketches, swapState, tools });
     const sketch = sketches[id];
-    const availability = getSketchFightEligibility(sketch, state);
+    const initialAvailability = getSketchFightEligibility(sketch, state);
+    const availability = routeFightEligibility(ledger, sketch, id);
+    const hypothetical = allowsHypotheticalVictory({ ledger, id, initialAvailability, requireAvailability });
     const fightTarget = includeStepCombat && trials > 0 && sketch?.stats
+      && (availability.eligible || hypothetical)
       && remainingSketchVictories(state, id, ledger.victories[id]) > 0
       ? buildTarget({ sketches, targetId: id, erasedSet, tools, steam: assumptions.steam }) : null;
     const fightSimulation = fightTarget && runMonteCarlo({
       player: stats, enemy: fightTarget.stats, trials, maxSeconds, seed: `${seed}:step:${id}:${ledger.victories[id] ?? 0}`, assumptions,
     });
     const step = sketch
-      ? { originalId, id, name: sketch.name ?? id, swapped, ...creditVictory(ledger, state, sketch, id, boostedSet.has(id)) }
+      ? { originalId, id, name: sketch.name ?? id, swapped,
+        ...creditVictory({ ledger, state, sketches, id, boosted: boostedSet.has(id), availability, hypothetical }) }
       : { originalId, id, status: "missing" };
-    step.availableNow = availability.eligible;
+    step.availableNow = initialAvailability.eligible;
+    step.availableAtStep = availability.eligible;
     step.availabilityReason = availability.reason;
     step.conditional = ledger.newWins > 0 || targetAvailability?.eligible === false;
     if (fightSimulation) step.fightSimulation = fightSimulation;
@@ -311,9 +358,11 @@ export function simulateRoute({
     target.simulation = lastForecast ?? forecast();
   }
   if (target) {
+    const finalAvailability = routeFightEligibility(ledger, sketches[targetId], targetId);
     target.availableNow = targetAvailability.eligible;
     target.availabilityReason = targetAvailability.reason;
-    target.availableAfterRoute = target.availableNow && remainingSketchVictories(state, targetId, victories[targetId]) > 0;
+    target.availableAfterRoute = finalAvailability.eligible;
+    target.availabilityReasonAfterRoute = finalAvailability.reason;
     target.conditional = ledger.newWins > 0 || !target.availableNow;
   }
 
@@ -390,6 +439,8 @@ export function compareRoutes({
   });
 
   compared.sort((a, b) => {
+    const reachable = Number(b.target?.availableAfterRoute === true) - Number(a.target?.availableAfterRoute === true);
+    if (reachable) return reachable;
     if (b.winRate !== a.winRate) return b.winRate - a.winRate;
     const attackDelta = toNumber(b.finalStats.attack) - toNumber(a.finalStats.attack);
     if (attackDelta !== 0) return attackDelta;

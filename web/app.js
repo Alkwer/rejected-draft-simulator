@@ -146,6 +146,7 @@ const state = {
   seed: null,
   platform: null,
   targetRequest: 0,
+  modelVersion: null,
 };
 
 const emptyResultFields = [
@@ -166,11 +167,7 @@ async function init() {
   setMobileTab("results");
   renderHistory();
   renderUiDiagnostics();
-  try {
-    await loadTargets();
-  } catch (error) {
-    showMessage(`Could not load the target catalog. Use Refresh Steam data to retry. ${error.message}`);
-  }
+  await loadCatalogWithRetry("steam");
   renderUiDiagnostics();
 }
 
@@ -352,19 +349,44 @@ function syncExportTargets() {
     state.targetRequest += 1;
     return;
   }
-  loadTargets(isSteamSave(save) ? "steam" : "web").catch((error) => showMessage(error.message));
+  void loadCatalogWithRetry(isSteamSave(save) ? "steam" : "web");
+}
+
+async function loadCatalogWithRetry(platform) {
+  try {
+    await loadTargets(platform);
+  } catch (error) {
+    showMessage(`Could not load the target catalog. ${error.message}`);
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "mini-button";
+    button.textContent = "Retry loading targets";
+    button.addEventListener("click", () => {
+      hideMessage();
+      void loadCatalogWithRetry(platform);
+    });
+    els.messageBar.append(" ", button);
+  }
 }
 
 async function loadTargets(platform = "steam", refresh = false) {
   const request = ++state.targetRequest;
   if (state.platform === platform && !refresh) return;
-  const data = await api(`/api/targets?edition=${encodeURIComponent(platform)}`);
+  let data;
+  try {
+    data = await api(`/api/targets?edition=${encodeURIComponent(platform)}`);
+  } catch (error) {
+    if (request !== state.targetRequest) return;
+    throw error;
+  }
   if (request !== state.targetRequest) return;
   if (state.platform && state.platform !== data.bundle.platform) els.targetFilterInput.value = "";
   state.platform = data.bundle.platform;
   renderBundle(data.bundle);
   state.targetOptions = data.targets;
   renderTargetOptions();
+  state.modelVersion = data.modelVersion;
+  renderHistory();
 }
 
 function renderTargetOptions() {
@@ -950,18 +972,28 @@ function renderRoutePlanner() {
 
 function renderRoutePreview(preview) {
   const steps = preview?.steps ?? [];
-  const targetStatus = preview?.targetAvailableNow === false ? " · target unavailable this run"
-    : preview?.targetAvailableAfterRoute === false ? " · target capped after route" : "";
+  let targetStatus = "";
+  if (preview?.targetAvailableNow === false) targetStatus = " · target unavailable this run";
+  else if (preview?.targetAvailableAfterRoute === false) {
+    targetStatus = preview.targetAvailabilityReasonAfterRoute === "max_victories"
+      ? " · target capped after route" : " · route removes target from this run";
+  }
   els.routePreviewSummary.textContent = steps.length === 0 ? "none" : `${steps.length} steps · assuming victories${targetStatus}`;
   if (steps.length === 0) {
     renderSimpleList(els.routePreviewList, []);
     els.routePreviewList.textContent = "No route";
     return;
   }
-  renderSimpleList(els.routePreviewList, steps.map((step) => ({
-    title: `${step.index}. ${step.name}${step.status === "skipped_max_victories" ? " (victory limit reached)" : step.availabilityReason ? ` (${compactDecision(step.availabilityReason)})` : ""}`,
-    detail: `target win ${percent(step.targetWinRate)} | p90 ${seconds(step.p90Seconds, step.p90Censored)} | atk ${formatNumber(step.finalStats?.attack)} | hp ${formatNumber(step.finalStats?.maxHp)}`,
-  })));
+  renderSimpleList(els.routePreviewList, steps.map((step) => {
+    const changes = (step.availabilityChanges ?? []).map(({ id, retired }) => {
+      const name = state.targetOptions.find((entry) => entry.id === id)?.name ?? id;
+      return `${retired ? "Retired" : "Removed from this run"}: ${name}`;
+    });
+    return {
+      title: `${step.index}. ${step.name}${step.status === "skipped_max_victories" ? " (victory limit reached)" : step.availabilityReason ? ` (${compactDecision(step.availabilityReason)})` : ""}`,
+      detail: [`target win ${percent(step.targetWinRate)} | p90 ${seconds(step.p90Seconds, step.p90Censored)} | atk ${formatNumber(step.finalStats?.attack)} | hp ${formatNumber(step.finalStats?.maxHp)}`, ...changes].join(" | "),
+    };
+  }));
 }
 
 function renderBuildComparison(items) {
@@ -1187,8 +1219,11 @@ function renderHistory() {
       const details = document.createElement("span");
       const version = item.replay.modelVersion;
       details.textContent = `Seed ${settings.seed} · trials ${settings.trials} · limit ${settings.maxSeconds} s · ${version ? "model " + version : "model version unknown"}`;
+      if (version && state.modelVersion && version !== state.modelVersion) {
+        details.textContent += ` · replay unavailable with model ${state.modelVersion}`;
+      }
       row.firstElementChild.append(details);
-      if (version) {
+      if (version && version === state.modelVersion) {
         const repeat = document.createElement("button");
         repeat.type = "button";
         repeat.className = "mini-button";

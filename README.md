@@ -1,6 +1,6 @@
 # Rejected Draft Simulator
 
-Local Monte Carlo combat simulator for the full Steam edition of Rejected Draft. The included catalog covers **v0.9772, Steam build 26885190, save schema 87**. It contains 232 sketches, four training dummies and 53 stat upgrades.
+Local Monte Carlo combat simulator for the full Steam edition of Rejected Draft. The included catalog covers **v0.9773, Steam build 26933131, save schema 87**. It contains 232 sketches, four training dummies and 53 stat upgrades.
 
 ## Requirements
 
@@ -205,6 +205,8 @@ npm.cmd run simulate -- --save "C:\path\to\save.txt" --target duct_taped_banana 
 Farm window earnings include passive generation for the entire window and payouts from fights projected to finish within it. Full-route earnings cover one attempt per eligible sketch in planner order. The planner budgets the p90 duration of each fight, using its median when p90 is absent. A missing or censored time makes subsequent finish times uncertain. The report marks incomplete window totals and shows battle-only full-route earnings when it cannot time passive generation.
 
 Farm decisions weigh the projected Opus reward per minute against the win-rate interval. Booster comparisons estimate the chance of winning each prerequisite from the stats available at that step and compare the route with the same route unboosted. The manual route planner can still show hypothetical rewards after listed victories. Immediate fight and tool recommendations check the active roster.
+
+Steam route previews apply seeded sketch removals in Medium 2 and Madman and retirement in Brutal 1. The preview names the affected sketches and skips later victories against opponents the route removed. Route comparisons rank options that retain the target first. For runs with possible removals, the reward forecast follows fight order and weights later rewards by the chance their opponents remain available. It uses the starting odds for each fight.
 
 Steam saves supply generator unlocks and accumulated battle income. The planner uses these values for flat and income-based generators and applies the active speed and generator multipliers.
 

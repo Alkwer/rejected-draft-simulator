@@ -1,5 +1,6 @@
 // Reference build for the modeled encounter parameters. Real-fight calibration is separate.
-export const VERIFIED_STEAM_BUILD = "26885190";
+export const VERIFIED_STEAM_BUILD = "26933131";
+export const VERIFIED_STEAM_BUILDS = new Set(["26885190", VERIFIED_STEAM_BUILD]);
 export const STEAM_UNIVERSES = {
   "mv-original": {},
   "mv-easy-1": {currencyRewardMultiplier: 0.0001, currencyRewardOnly: ["Graphite", "Wax", "Charcoal", "Coffee", "Ink"], disabledRarities: ["framed", "opus", "masterpiece"]},

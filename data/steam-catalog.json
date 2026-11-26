@@ -2,16 +2,16 @@
   "metadata": {
     "platform": "steam",
     "appId": "4574820",
-    "buildId": "26885190",
-    "rendererBuildId": "1251a545ef764112376a8fa1d7980b8b72a34cd3:45328558623:1",
-    "gameVersion": "v0.9772",
+    "buildId": "26933131",
+    "rendererBuildId": "b37c7d75d56fa009a5b6dbfc848119074579bc1a:45713333544:1",
+    "gameVersion": "v0.9773",
     "saveVersion": 87,
-    "asset": "data-sketches-p3CipYSf.js",
-    "mainAsset": "main-C8jKhEiF.js",
-    "storeAsset": "game-store-BX3gavfL.js",
-    "shopAsset": "data-skill-tree-Dc8Ect5l.js",
+    "asset": "data-sketches-BEzDrsQ4.js",
+    "mainAsset": "main-j07tsG4a.js",
+    "storeAsset": "game-store-BF-TsoL-.js",
+    "shopAsset": "data-skill-tree-BMPR6qco.js",
     "sourceUrl": "https://store.steampowered.com/app/4574820/",
-    "capturedAt": "2026-11-24"
+    "capturedAt": "2026-11-26"
   },
   "sketches": {
     "stick man": {

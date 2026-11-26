@@ -50,6 +50,15 @@ const REGEN_TICK_SECONDS = 1.001;
 const STATUS_TICK_SECONDS = 1.002;
 const COUNTER_DELAY_SECONDS = 0.2;
 const TIME_EPSILON = 1e-9;
+const COMBAT_SIDES = ["player", "enemy"];
+const PERIODIC_DAMAGE_TICKS = [applyBurnTick, applyPlagueTick, applyPoisonTick, applyBlackFlameTick];
+const WEB_STATUS_TICKS = [
+  ...PERIODIC_DAMAGE_TICKS,
+  applyEnergyWaveTick,
+  applyInspirationTick,
+  applyBalloonTick,
+  applyIrradiateTick,
+];
 
 export const DEFAULT_COMBAT_ASSUMPTIONS = {
   exportedEnemyStatusChanceScale: 1 / EXPORTED_SKETCH_CHANCE_SCALE,
@@ -425,11 +434,16 @@ function applyRegenerationTick(combat, rng) {
 }
 
 function applyStatusTick(combat, rng) {
-  if (!combat.assumptions.steam
-      && Object.keys(combat.playerStatuses).length === 0
-      && Object.keys(combat.enemyStatuses).length === 0) return;
+  if (!combat.assumptions.steam) {
+    if (Object.keys(combat.playerStatuses).length === 0
+        && Object.keys(combat.enemyStatuses).length === 0) return;
+    for (const tick of WEB_STATUS_TICKS) {
+      for (const side of COMBAT_SIDES) tick(combat, side, rng);
+    }
+    return;
+  }
 
-  if (combat.assumptions.steam && combat.playerHp > 0 && combat.enemyHp > 0) {
+  if (combat.playerHp > 0 && combat.enemyHp > 0) {
     applySteamStatusTransitions(combat.player, combat.playerStatuses, rng);
     applySteamStatusTransitions(combat.enemy, combat.enemyStatuses, rng);
     spreadSteamDiseases({
@@ -439,10 +453,13 @@ function applyStatusTick(combat, rng) {
       onMechanic: (mechanic) => recordMechanic(combat, mechanic),
     });
   }
-  applyPeriodicStatusTick(combat, "player", 1, rng);
-  applyPeriodicStatusTick(combat, "enemy", 1, rng);
-  applyInspirationTick(combat, "player", rng);
-  applyInspirationTick(combat, "enemy", rng);
+  for (const side of COMBAT_SIDES) {
+    for (const tick of PERIODIC_DAMAGE_TICKS) tick(combat, side, rng);
+    applyEnergyWaveTick(combat, opposingSide(side), rng);
+    applyBalloonTick(combat, side);
+    applyIrradiateTick(combat, side, rng);
+  }
+  for (const side of COMBAT_SIDES) applyInspirationTick(combat, side, rng);
 }
 
 function applyRegenerationWithFreeze(combat, side, healing, deltaSeconds, rng) {
@@ -511,108 +528,92 @@ function applyRegenerationWithFreeze(combat, side, healing, deltaSeconds, rng) {
   }
 }
 
-function applyPeriodicStatusTick(combat, side, deltaSeconds, rng) {
+function opposingSide(side) {
+  return side === "player" ? "enemy" : "player";
+}
+
+function applyBurnTick(combat, side, rng) {
   const target = combat[side];
-  const sourceSide = side === "player" ? "enemy" : "player";
-  const source = combat[sourceSide];
+  const source = combat[opposingSide(side)];
   const statuses = combat[`${side}Statuses`];
-  const sourceStatuses = combat[`${sourceSide}Statuses`];
-  const scale = combat.assumptions.dotScale;
-  const alive = () => combat[`${side}Hp`] > 0;
-
-  if ((statuses.Burn ?? 0) > 0 && alive()) {
-    applyDamageToSide(
-      combat,
-      side,
-      periodicBurnDamage({ source, target, statuses, deltaSeconds }) * scale,
-      rng,
-      "status",
-      { tags: ["periodic", "Burn"] },
-    );
-  }
-
-  if ((statuses.Plague ?? 0) > 0 && alive()) {
-    const stacks = statuses.Plague;
-    applyDamageToSide(combat, side, stacks * deltaSeconds * scale, rng, "status", {
-      tags: ["periodic", "Plague"],
-    });
-    growStatusOverTime(rng, target, statuses, "Plague", stacks * 10 * deltaSeconds, { combat, side, deltaSeconds });
-  }
-
-  if ((statuses.Poison ?? 0) > 0 && alive()) {
-    const stacks = statuses.Poison;
-    const damage = combatantMaxHp(target) * 0.001 * stacks * deltaSeconds
-      * vulnerabilityMultiplier(target, "poisonChance", "poisonDamage");
-    applyDamageToSide(combat, side, damage * scale, rng, "status", {
-      tags: ["periodic", "Poison"],
-    });
-  }
-
-  if ((statuses.BlackFlame ?? 0) > 0 && alive()) {
-    const stacks = statuses.BlackFlame;
-    const damage = combat[`${side}Hp`] * 0.01 * stacks * deltaSeconds
-      * vulnerabilityMultiplier(target, "blackFlameChance", "blackFlameDamage");
-    applyDamageToSide(combat, side, damage * scale, rng, "status", {
-      tags: ["periodic", "BlackFlame"],
-    });
-  }
-
-  applyEnergyWaveTick({ combat, side: sourceSide, defenderSide: side, deltaSeconds, rng, source, target, statuses: sourceStatuses });
-
-  if ((statuses.Balloon ?? 0) > 0) {
-    const before = statuses.Balloon;
-    const growth = Math.ceil(statuses.Balloon * 0.25 * isolationMultiplier(target) * deltaSeconds);
-    if (growth > 0) {
-      addStatus(statuses, "Balloon", growth);
-      recordMechanic(combat, {
-        type: "status_growth",
-        side,
-        status: "Balloon",
-        deltaSeconds,
-        before,
-        growth,
-        after: statuses.Balloon ?? 0,
-        chance: null,
-      });
-    }
-  }
-
-  if ((statuses.Irradiate ?? 0) > 0 && alive()) {
-    const stacks = statuses.Irradiate;
-    const damage = irradiateDamage(target, stacks) * deltaSeconds;
-    applyDamageToSide(combat, side, damage * scale, rng, "status", {
-      tags: ["periodic", "Irradiate"],
-    });
-    growStatusOverTime(rng, target, statuses, "Irradiate", stacks * 15 * deltaSeconds, { combat, side, deltaSeconds });
-  }
-}
-
-function periodicBurnDamage({ source, target, statuses, deltaSeconds }) {
   const stacks = statuses.Burn ?? 0;
-  if (stacks <= 0) return 0;
-  const storedDamage = statuses.BurnDamage ?? null;
-  const perSecond = storedDamage ?? stacks * stat(source, "burnDamage", 1);
-  return perSecond * deltaSeconds * vulnerabilityMultiplier(target, "burnChance", "burnDamage");
+  if (stacks <= 0 || combat[`${side}Hp`] <= 0) return;
+  const damage = (statuses.BurnDamage ?? stacks * stat(source, "burnDamage", 1))
+    * vulnerabilityMultiplier(target, "burnChance", "burnDamage");
+  applyPeriodicDamage(combat, side, damage, "Burn", rng);
 }
 
-function irradiateDamage(target, stacks) {
-  if (target.vulnerability?.[0] === "irradiateChance") {
-    return stacks * vulnerabilityMultiplier(target, "irradiateChance", "irradiateDamage");
-  }
-  return Math.sqrt(stacks);
+function applyPlagueTick(combat, side, rng) {
+  const stacks = combat[`${side}Statuses`].Plague ?? 0;
+  if (stacks <= 0 || combat[`${side}Hp`] <= 0) return;
+  applyPeriodicDamage(combat, side, stacks, "Plague", rng);
+  growStatusOverTime(combat, side, "Plague", stacks * 10, rng);
 }
 
-function growStatusOverTime(rng, target, statuses, status, chance, options = {}) {
-  const effectiveChance = chance * isolationMultiplier(target);
+function applyPoisonTick(combat, side, rng) {
+  const stacks = combat[`${side}Statuses`].Poison ?? 0;
+  if (stacks <= 0 || combat[`${side}Hp`] <= 0) return;
+  const target = combat[side];
+  const damage = combatantMaxHp(target) * 0.001 * stacks
+    * vulnerabilityMultiplier(target, "poisonChance", "poisonDamage");
+  applyPeriodicDamage(combat, side, damage, "Poison", rng);
+}
+
+function applyBlackFlameTick(combat, side, rng) {
+  const stacks = combat[`${side}Statuses`].BlackFlame ?? 0;
+  const hp = combat[`${side}Hp`];
+  if (stacks <= 0 || hp <= 0) return;
+  const damage = hp * 0.01 * stacks * vulnerabilityMultiplier(combat[side], "blackFlameChance", "blackFlameDamage");
+  applyPeriodicDamage(combat, side, damage, "BlackFlame", rng);
+}
+
+function applyBalloonTick(combat, side) {
+  const statuses = combat[`${side}Statuses`];
+  const before = statuses.Balloon ?? 0;
+  const growth = Math.ceil(before * 0.25 * isolationMultiplier(combat[side]));
+  if (growth <= 0) return;
+  addStatus(statuses, "Balloon", growth);
+  recordMechanic(combat, {
+    type: "status_growth",
+    side,
+    status: "Balloon",
+    deltaSeconds: 1,
+    before,
+    growth,
+    after: statuses.Balloon ?? 0,
+    chance: null,
+  });
+}
+
+function applyIrradiateTick(combat, side, rng) {
+  const stacks = combat[`${side}Statuses`].Irradiate ?? 0;
+  if (stacks <= 0 || combat[`${side}Hp`] <= 0) return;
+  const target = combat[side];
+  const damage = target.vulnerability?.[0] === "irradiateChance"
+    ? stacks * vulnerabilityMultiplier(target, "irradiateChance", "irradiateDamage")
+    : Math.sqrt(stacks);
+  applyPeriodicDamage(combat, side, damage, "Irradiate", rng);
+  growStatusOverTime(combat, side, "Irradiate", stacks * 15, rng);
+}
+
+function applyPeriodicDamage(combat, side, damage, status, rng) {
+  applyDamageToSide(combat, side, damage * combat.assumptions.dotScale, rng, "status", {
+    tags: ["periodic", status],
+  });
+}
+
+function growStatusOverTime(combat, side, status, chance, rng) {
+  const statuses = combat[`${side}Statuses`];
+  const effectiveChance = chance * isolationMultiplier(combat[side]);
   const before = statuses[status] ?? 0;
   const stacks = rollStacks(rng, effectiveChance, `tick.${status}.growth`);
   if (stacks > 0) {
     addStatus(statuses, status, stacks);
-    recordMechanic(options.combat, {
+    recordMechanic(combat, {
       type: "status_growth",
-      side: options.side,
+      side,
       status,
-      deltaSeconds: options.deltaSeconds,
+      deltaSeconds: 1,
       before,
       growth: stacks,
       after: statuses[status] ?? 0,
@@ -625,7 +626,11 @@ function isolationMultiplier(combatant) {
   return Math.max(0, 1 - stat(combatant, "isolation") / 100);
 }
 
-function applyEnergyWaveTick({ combat, side, defenderSide, deltaSeconds, rng, source, target, statuses }) {
+function applyEnergyWaveTick(combat, side, rng) {
+  const defenderSide = opposingSide(side);
+  const source = combat[side];
+  const target = combat[defenderSide];
+  const statuses = combat[`${side}Statuses`];
   const stacks = statuses.EnergyWave ?? 0;
   if (stacks <= 0 || combat[`${side}Hp`] <= 0 || combat[`${defenderSide}Hp`] <= 0) return;
 
@@ -641,7 +646,7 @@ function applyEnergyWaveTick({ combat, side, defenderSide, deltaSeconds, rng, so
     type: "energy_wave_tick",
     attackerSide: side,
     defenderSide,
-    deltaSeconds,
+    deltaSeconds: 1,
     stacksBefore: stacks,
     consumed,
     stacksAfter: statuses.EnergyWave ?? 0,
@@ -687,9 +692,19 @@ function applyInspirationTick(combat, side, rng) {
   });
 }
 
-function performAttack({ rng, combat, attackerSide, defenderSide }) {
+function performAttack({ rng, combat, attackerSide, defenderSide, counterEffect = null }) {
   const attacker = combat[attackerSide];
   const attackerStatuses = combat[`${attackerSide}Statuses`];
+  const steam = Boolean(combat.assumptions.steam);
+  // The web resolver reads these conditions from its turn-start status object.
+  const initialStatuses = steam ? attackerStatuses : {
+    Hinder: attackerStatuses.Hinder,
+    BananaPeel: attackerStatuses.BananaPeel,
+    Hypnotize: attackerStatuses.Hypnotize,
+    HotPotato: attackerStatuses.HotPotato,
+    Bleed: attackerStatuses.Bleed,
+    Curse: attackerStatuses.Curse,
+  };
   let targetSide = defenderSide;
   let target = combat[targetSide];
   let targetStatuses = combat[`${targetSide}Statuses`];
@@ -697,20 +712,19 @@ function performAttack({ rng, combat, attackerSide, defenderSide }) {
   const remedyTrace = applyRemedy(rng, attacker, attackerStatuses);
   if (remedyTrace) {
     recordMechanic(combat, { ...remedyTrace, side: attackerSide });
-    if (combat.assumptions.steam) {
+    if (steam) {
       const removedStacks = Object.values(remedyTrace.removed).reduce((sum, removed) => sum + removed, 0);
       const stacks = rollSteamBuffConversion(rng, removedStacks, 0.02, "self.Remedy.inspiration");
       if (stacks > 0) applyCombatBuff({ combat, rng, status: "Inspiration", stacks, intendedSide: attackerSide });
     }
   }
-  const steam = Boolean(combat.assumptions.steam);
   if (steam && shouldSkipForParalysis(rng, attackerStatuses)) {
     return { type: "skip_turn", reason: "paralysis", damage: 0 };
   }
-  const skip = shouldSkipTurn(rng, attacker, attackerStatuses, steam);
+  const skip = shouldSkipTurn(rng, attacker, attackerStatuses, steam, initialStatuses);
   if (skip.skipped) return { type: "skip_turn", damage: 0 };
 
-  const hypnotize = resolveHypnotize(rng, attackerStatuses);
+  const hypnotize = resolveHypnotize(rng, attackerStatuses, initialStatuses);
   if (hypnotize.redirected) {
     targetSide = attackerSide;
     target = attacker;
@@ -724,32 +738,37 @@ function performAttack({ rng, combat, attackerSide, defenderSide }) {
   }
 
   const hitCount = rollMultistrikeHitCount(rng, stat(attacker, "multiStrikeChance"), `${attackerSide}.multiStrike`);
-  let hotPotatoPassStacks = applyHotPotatoBeforeAttack({ rng, combat, attackerSide, defenderSide: targetSide });
+  let hotPotatoPassStacks = applyHotPotatoBeforeAttack({ rng, combat, attackerSide, initialStacks: initialStatuses.HotPotato ?? 0 });
   if (combat[`${attackerSide}Hp`] <= 0) {
     return { type: "self_status", damage: 0, hitCount };
   }
 
-  const isSurreal =
+  const rollSurreal = () =>
     rollPercent(rng, stat(attacker, "surrealism"), `${attackerSide}.surrealism`) && !target.immunities.has("surrealism");
+  const steamSurreal = steam && rollSurreal();
 
   let totalDamage = 0;
+  let totalRequestedDamage = 0;
   let originalDefenderDamage = 0;
   let landedHits = 0;
   let dodgedHits = 0;
   let parriedHits = 0;
+  let webCounterChance = 0;
   for (let hit = 0; hit < hitCount; hit += 1) {
     const targetHpKey = `${targetSide}Hp`;
     const targetHp = combat[targetHpKey];
     if (targetHp <= 0 || combat[`${attackerSide}Hp`] <= 0) break;
     const targetHpBeforeHit = targetHp;
+    const isSurreal = steam ? steamSurreal : rollSurreal();
 
     const offenseTrace = {
       type: "offense",
       attackerSide,
       defenderSide: targetSide,
       isSelfAttack: targetSide === attackerSide,
+      ...(counterEffect && { isCounter: true }),
     };
-    let damage = baseAttackDamage(rng, attacker, attackerStatuses, offenseTrace);
+    let damage = baseAttackDamage(rng, attacker, attackerStatuses, offenseTrace, counterEffect?.amount);
     damage = applyOffensiveMultipliers(
       rng,
       damage,
@@ -815,10 +834,13 @@ function performAttack({ rng, combat, attackerSide, defenderSide }) {
       capture: directModifierCapture,
     });
 
-    const appliedDamage = applyDamageToSide(combat, targetSide, damage + electrocuteDamage, rng, "direct", {
+    const requestedDamage = damage + electrocuteDamage;
+    const tags = directDamageTags(offenseTrace, mitigationCapture.trace, directModifierCapture.trace, electrocuteTrace);
+    if (counterEffect) tags.push("counter");
+    const appliedDamage = applyDamageToSide(combat, targetSide, requestedDamage, rng, counterEffect ? "reflect" : "direct", {
       attackerSide,
       defenderSide: targetSide,
-      tags: directDamageTags(offenseTrace, mitigationCapture.trace, directModifierCapture.trace, electrocuteTrace),
+      tags,
     });
     if (mitigationCapture.damageWithoutExecute != null && appliedDamage > 0) {
       const baseline = mitigationCapture.damageWithoutExecute * paralysisMultiplier;
@@ -830,15 +852,15 @@ function performAttack({ rng, combat, attackerSide, defenderSide }) {
       }
     }
     totalDamage += appliedDamage;
+    totalRequestedDamage += requestedDamage;
     if (targetSide === defenderSide) originalDefenderDamage += appliedDamage;
 
-    applyReactiveDamage({
-      rng,
-      combat,
-      attackerSide,
-      defenderSide: targetSide,
-      isSurreal,
-    });
+    if (steam) {
+      applySteamReactiveDamage({ rng, combat, attackerSide, defenderSide: targetSide, isSurreal });
+    } else {
+      const chance = rollCounterChance({ rng, combat, attackerSide, defenderSide: targetSide, isSurreal });
+      if (chance > 0) webCounterChance = chance;
+    }
 
     landedHits += 1;
     applyStatuses(rng, attacker, target, targetStatuses, combat.assumptions, {
@@ -861,6 +883,7 @@ function performAttack({ rng, combat, attackerSide, defenderSide }) {
     }
     applyBalloonPop({ rng, combat, attacker, defender: target, defenderSide: targetSide });
     growBrittleAfterHit({ combat, defenderSide: targetSide, defenderHpBeforeHit: targetHpBeforeHit });
+    if (!steam) applyThorns({ rng, combat, attackerSide, defenderSide: targetSide });
     applySelfBuffs({ rng, combat, attackerSide, attacker });
   }
 
@@ -881,7 +904,7 @@ function performAttack({ rng, combat, attackerSide, defenderSide }) {
     });
   }
 
-  const bleedStacks = attackerStatuses.Bleed ?? 0;
+  const bleedStacks = initialStatuses.Bleed ?? 0;
   if (bleedStacks > 0 && originalDefenderDamage > 0) {
     const multiplier = vulnerabilityMultiplier(attacker, "bleedChance", "bleedRecoil");
     applyDamageToSide(combat, attackerSide, originalDefenderDamage * bleedStacks * 0.01 * multiplier, rng, "status", {
@@ -889,7 +912,7 @@ function performAttack({ rng, combat, attackerSide, defenderSide }) {
     });
   }
 
-  const curseStacks = attackerStatuses.Curse ?? 0;
+  const curseStacks = initialStatuses.Curse ?? 0;
   if (curseStacks > 0) {
     const reflectedDamage = stat(combat[defenderSide], "attack") * (curseStacks / 100);
     if (reflectedDamage > 0) {
@@ -923,6 +946,10 @@ function performAttack({ rng, combat, attackerSide, defenderSide }) {
     });
   }
 
+  if (webCounterChance > 0 && !counterEffect) {
+    scheduleCounter({ combat, attackerSide, defenderSide, chance: webCounterChance });
+  }
+
   return {
     type: landedHits > 0 ? totalDamage > 0 ? "hit" : "blocked_or_absorbed" : "missed",
     hitCount,
@@ -932,6 +959,7 @@ function performAttack({ rng, combat, attackerSide, defenderSide }) {
     totalDamage,
     targetSide,
     isHypnotized: hypnotize.redirected,
+    ...(counterEffect && { totalRequestedDamage }),
   };
 }
 
@@ -1260,55 +1288,67 @@ function resolveEvasion({ rng, combat, attackerSide, defenderSide, damage, isSur
   return { type: "hit", damage };
 }
 
-function applyReactiveDamage({ rng, combat, attackerSide, defenderSide, isSurreal }) {
+function applySteamReactiveDamage({ rng, combat, attackerSide, defenderSide, isSurreal }) {
   if (isSurreal) return;
+  const chance = rollCounterChance({ rng, combat, attackerSide, defenderSide, isSurreal });
+  if (chance > 0) scheduleCounter({ combat, attackerSide, defenderSide, chance });
+  applyThorns({ rng, combat, attackerSide, defenderSide });
+}
 
+function rollCounterChance({ rng, combat, attackerSide, defenderSide, isSurreal }) {
+  const chance = isSurreal ? 0 : stat(combat[defenderSide], "counter");
+  return rollPercent(rng, chance, "reactive.counter") && !combat[attackerSide].immunities.has("counter") ? chance : 0;
+}
+
+function scheduleCounter({ combat, attackerSide, defenderSide, chance }) {
+  const delaySeconds = COUNTER_DELAY_SECONDS / combatSpeedAtTime(combat.assumptions, combat.time);
+  const scheduledTime = combat.time + delaySeconds;
+  const amount = stat(combat[defenderSide], "attack");
+  combat.pendingEffects.push({
+    type: "counter",
+    time: scheduledTime,
+    counterSide: defenderSide,
+    targetSide: attackerSide,
+    amount,
+    chance,
+  });
+  recordMechanic(combat, {
+    type: "counter_scheduled",
+    defenderSide,
+    attackerSide,
+    chance,
+    success: true,
+    delaySeconds,
+    scheduledTime: roundTraceNumber(scheduledTime),
+    damage: roundTraceNumber(amount),
+    dealtDamage: 0,
+  });
+}
+
+function applyThorns({ rng, combat, attackerSide, defenderSide }) {
   const attacker = combat[attackerSide];
-  const defender = combat[defenderSide];
-  const defenderStatuses = combat[`${defenderSide}Statuses`];
-
-  const counterChance = stat(defender, "counter");
-  const counterSuccess = rollPercent(rng, counterChance, "reactive.counter");
-  if (counterSuccess && !attacker.immunities.has("counter")) {
-    const delaySeconds = COUNTER_DELAY_SECONDS / combatSpeedAtTime(combat.assumptions, combat.time);
-    const scheduledTime = combat.time + delaySeconds;
-    combat.pendingEffects.push({
-      type: "counter",
-      time: scheduledTime,
-      counterSide: defenderSide,
-      targetSide: attackerSide,
-      amount: stat(defender, "attack"),
-      chance: counterChance,
-    });
-    recordMechanic(combat, {
-      type: "counter_scheduled",
-      defenderSide,
-      attackerSide,
-      chance: counterChance,
-      success: counterSuccess,
-      delaySeconds,
-      scheduledTime: roundTraceNumber(scheduledTime),
-      damage: roundTraceNumber(stat(defender, "attack")),
-      dealtDamage: 0,
-    });
-  }
-
-  const thornsStacks = defenderStatuses.Thorns ?? 0;
-  if (thornsStacks > 0 && !attacker.immunities.has("thornsChance")) {
-    const multiplier = vulnerabilityMultiplier(attacker, "thornsChance", "thornsDamage");
-    const damage = thornsStacks * multiplier;
-    const dealtDamage = applyDamageToSide(combat, attackerSide, damage, rng, "reflect", {
-      tags: ["thorns"],
-    });
-    recordMechanic(combat, {
-      type: "thorns",
-      defenderSide,
-      attackerSide,
-      stacks: thornsStacks,
-      vulnerabilityMultiplier: multiplier,
-      damage,
-      dealtDamage,
-    });
+  const thornsStacks = combat[`${defenderSide}Statuses`].Thorns ?? 0;
+  if (thornsStacks <= 0 || attacker.immunities.has("thornsChance")) return;
+  const multiplier = vulnerabilityMultiplier(attacker, "thornsChance", "thornsDamage");
+  const damage = thornsStacks * multiplier;
+  const dealtDamage = applyDamageToSide(combat, attackerSide, damage, rng, "reflect", {
+    tags: ["thorns"],
+  });
+  recordMechanic(combat, {
+    type: "thorns",
+    defenderSide,
+    attackerSide,
+    stacks: thornsStacks,
+    vulnerabilityMultiplier: multiplier,
+    damage,
+    dealtDamage,
+  });
+  if (!combat.assumptions.steam && rollPercent(rng, Math.log10(thornsStacks), "reactive.thorns.debuffs")) {
+    for (const status of ["Bleed", "Hinder", "Frailty", "Slow"]) {
+      if (!attacker.immunities.has(STATUS_TO_STAT[status]) && !attacker.immunities.has(status)) {
+        addStatus(combat[`${attackerSide}Statuses`], status, 1);
+      }
+    }
   }
 }
 
@@ -1333,7 +1373,8 @@ function performCounterEffect({ rng, combat, effect }) {
     });
     return { type: "counter", attackerSide, defenderSide, skipped: true, reason: "dead_side", damage: 0 };
   }
-  if (combat.assumptions.steam && shouldSkipForParalysis(rng, attackerStatuses)) {
+  if (!combat.assumptions.steam) return performWebCounter({ rng, combat, effect, attackerSide, defenderSide });
+  if (shouldSkipForParalysis(rng, attackerStatuses)) {
     return { type: "counter", attackerSide, defenderSide, skipped: true, reason: "paralysis", damage: 0 };
   }
 
@@ -1353,7 +1394,7 @@ function performCounterEffect({ rng, combat, effect }) {
     combat[`${defenderSide}Hp`],
     combatantMaxHp(defender),
     offenseTrace,
-    combat.assumptions.steam ? combat[`${attackerSide}Hp`] : null,
+    combat[`${attackerSide}Hp`],
   );
   recordMechanic(combat, offenseTrace);
 
@@ -1417,10 +1458,8 @@ function performCounterEffect({ rng, combat, effect }) {
     defenderSide,
     tags: [...directDamageTags(offenseTrace, mitigationCapture.trace, directModifierCapture.trace, electrocuteTrace), "counter"],
   });
-  if (combat.assumptions.steam) {
-    applyStatuses(rng, attacker, defender, defenderStatuses, combat.assumptions, { combat, defenderSide });
-    applySelfBuffs({ rng, combat, attackerSide, attacker });
-  }
+  applyStatuses(rng, attacker, defender, defenderStatuses, combat.assumptions, { combat, defenderSide });
+  applySelfBuffs({ rng, combat, attackerSide, attacker });
   recordMechanic(combat, {
     type: "counter",
     defenderSide: attackerSide,
@@ -1440,25 +1479,49 @@ function performCounterEffect({ rng, combat, effect }) {
   };
 }
 
-function applyHotPotatoBeforeAttack({ rng, combat, attackerSide }) {
+function performWebCounter({ rng, combat, effect, attackerSide, defenderSide }) {
+  const { type, totalDamage = 0, totalRequestedDamage = 0, ...turn } = performAttack({
+    rng, combat, attackerSide, defenderSide, counterEffect: effect,
+  });
+  let outcome = type;
+  if (type === "missed") {
+    if (turn.dodgedHits > 0 && turn.parriedHits === 0) outcome = "dodge";
+    if (turn.parriedHits > 0 && turn.dodgedHits === 0) outcome = "parry";
+  }
+  const skipped = type === "skip_turn";
+  recordMechanic(combat, {
+    type: "counter",
+    defenderSide: attackerSide,
+    attackerSide: defenderSide,
+    chance: effect.chance,
+    success: true,
+    scheduledTime: roundTraceNumber(effect.time),
+    outcome,
+    skipped,
+    damage: roundTraceNumber(totalRequestedDamage),
+    dealtDamage: roundTraceNumber(totalDamage),
+  });
+  return { ...turn, type: "counter", attackerSide, defenderSide, damage: totalDamage, outcome, skipped };
+}
+
+function applyHotPotatoBeforeAttack({ rng, combat, attackerSide, initialStacks: stacks }) {
   const attacker = combat[attackerSide];
   const attackerStatuses = combat[`${attackerSide}Statuses`];
-  const stacks = attackerStatuses.HotPotato ?? 0;
   if (stacks <= 0) return 0;
 
   const roll = rng("hotPotato.branch");
   if (roll < 0.5) {
-    addStatus(attackerStatuses, "HotPotato", 1);
+    attackerStatuses.HotPotato = stacks + 1;
     recordHotPotatoBranch(combat, attackerSide, "add_1", stacks, attackerStatuses.HotPotato, { roll });
     return 0;
   }
   if (roll < 0.6) {
-    addStatus(attackerStatuses, "HotPotato", 5);
+    attackerStatuses.HotPotato = stacks + 5;
     recordHotPotatoBranch(combat, attackerSide, "add_5", stacks, attackerStatuses.HotPotato, { roll });
     return 0;
   }
   if (roll < 0.65) {
-    addStatus(attackerStatuses, "HotPotato", 10);
+    attackerStatuses.HotPotato = stacks + 10;
     recordHotPotatoBranch(combat, attackerSide, "add_10", stacks, attackerStatuses.HotPotato, { roll });
     return 0;
   }

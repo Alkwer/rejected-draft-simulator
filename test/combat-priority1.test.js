@@ -59,6 +59,20 @@ test("glancing blow reduces incoming crit damage", () => {
   assert.notEqual(withGlance.winner, "enemy");
 });
 
+test("archived web Hot Potato growth uses the turn-start stacks when Remedy clears them", () => {
+  for (const [roll, extra] of [[0.25, 1], [0.55, 5], [0.62, 10]]) {
+    const { trace } = simulateFight({
+      rng: (label) => label === "hotPotato.branch" ? roll : 0.5,
+      player: { maxHp: 1000, attack: 1, attackSpeed: 700, hotPotatoChance: 1000 },
+      enemy: { maxHp: 1000, attack: 1, attackSpeed: 900, remedy: 1000 },
+      maxSeconds: 1, trace: { seconds: 1 },
+    });
+    const turn = trace.find(({ event, attackerSide }) => event === "attack" && attackerSide === "enemy");
+    assert.equal(turn.mechanics.find(({ type }) => type === "remedy").removed.HotPotato, 10);
+    assert.equal(turn.statuses.enemy.HotPotato, 10 + extra);
+  }
+});
+
 test("counter punishes attackers", () => {
   const result = simulateFight({
     rng: createRng("counter-thorns"),
@@ -86,6 +100,53 @@ test("archived web Counter delay scales with combat speed", () => {
   assert.equal(trace.find((event) => event.event === "pending_effect").time, 0.6);
 });
 
+test("archived web Multistrike queues one Counter that runs a full turn without chaining", () => {
+  const stats = { maxHp: 1000, attack: 10, counter: 100, multiStrikeChance: 100 };
+  const { trace } = simulateFight({
+    rng: () => 0.5,
+    player: { ...stats, attackSpeed: 700, poisonChance: 100, thornsChance: 100 },
+    enemy: { ...stats, attackSpeed: 5000, remedy: 100, burnChance: 100, burnDamage: 1, hasteChance: 100 },
+    maxSeconds: 1,
+    trace: { seconds: 1, includeRng: true },
+  });
+
+  const attack = trace.find((event) => event.event === "attack");
+  assert.equal(attack.action.landedHits, 2);
+  assert.equal(attack.mechanics.filter(({ type }) => type === "counter_scheduled").length, 1);
+  assert.equal(attack.statuses.enemy.Poison, 2);
+  const counters = trace.filter((event) => event.event === "pending_effect");
+  assert.equal(counters.length, 1);
+  const [counter] = counters;
+  assert.equal(counter.action.type, "counter");
+  assert.equal(counter.action.landedHits, 2);
+  assert.equal(counter.action.damage, 20);
+  assert.equal(counter.statuses.enemy.Poison, 1);
+  assert.equal(counter.statuses.enemy.Haste, 2);
+  assert.equal(counter.statuses.player.Burn, 2);
+  assert.equal(counter.mechanics.filter(({ type }) => type === "thorns").length, 2);
+  assert.equal(counter.rng.filter(({ label, success }) => label === "reactive.counter" && success).length, 2);
+  assert.equal(counter.rng.filter(({ label }) => label === "enemy.surrealism").length, 2);
+  assert.equal(counter.mechanics.some(({ type }) => type === "counter_scheduled"), false);
+  assert.equal(counter.damageEvents.filter(({ tags }) => tags.includes("counter")).length, 2);
+});
+
+test("archived web Hinder can skip a queued Counter", () => {
+  const { trace } = simulateFight({
+    rng: () => 0.5,
+    player: { maxHp: 1000, attack: 10, attackSpeed: 700, hinderChance: 100000 },
+    enemy: { maxHp: 1000, attack: 10, attackSpeed: 5000, counter: 100, remedy: 100000 },
+    maxSeconds: 1,
+    trace: { seconds: 1 },
+  });
+
+  const counter = trace.find((event) => event.event === "pending_effect");
+  assert.equal(counter.action.skipped, true);
+  assert.equal(counter.action.damage, 0);
+  assert.deepEqual(counter.mechanics.find(({ type }) => type === "remedy").removed, { Hinder: 1000 });
+  assert.equal(counter.statuses.enemy.Hinder, 500);
+  assert.equal(counter.playerHp, 1000);
+});
+
 test("archived web Inspiration ticks require a status and cap only the player", () => {
   const base = { maxHp: 1000, attack: 1, attackSpeed: 1100, inspirationChance: 20000 };
   const { trace } = simulateFight({
@@ -104,6 +165,39 @@ test("archived web Inspiration ticks require a status and cap only the player", 
   assert.equal(tick.time, 2.004);
   assert.equal(tick.statuses.player.Inspiration, 125);
   assert.equal(tick.statuses.enemy.Inspiration, 200);
+});
+
+test("archived web status ticks process the player then enemy for each effect", () => {
+  const stats = {
+    maxHp: 1000, attack: 1, attackSpeed: 800,
+    burnChance: 1000, burnDamage: 1, plagueChance: 1000, poisonChance: 1000, blackFlameChance: 1000,
+    energyWaveChance: 1000, inspirationChance: 100, balloonChance: 1000, irradiateChance: 1000,
+  };
+  const { trace } = simulateFight({
+    rng: () => 0.5,
+    player: stats,
+    enemy: stats,
+    maxSeconds: 1.1,
+    trace: { seconds: 1.1 },
+  });
+
+  const tick = trace.find((event) => event.event === "tick");
+  assert.deepEqual(tick.damageEvents.map(({ side, tags }) => [side, tags.at(-1)]), [
+    ["player", "Burn"], ["enemy", "Burn"],
+    ["player", "Plague"], ["enemy", "Plague"],
+    ["player", "Poison"], ["enemy", "Poison"],
+    ["player", "BlackFlame"], ["enemy", "BlackFlame"],
+    ["enemy", "energyWave"], ["player", "energyWave"],
+    ["player", "Irradiate"], ["enemy", "Irradiate"],
+  ]);
+  assert.deepEqual(tick.mechanics.map(({ status, side, attackerSide }) =>
+    [status ?? "EnergyWave", side ?? attackerSide]), [
+    ["Plague", "player"], ["Plague", "enemy"],
+    ["EnergyWave", "player"], ["EnergyWave", "enemy"],
+    ["Inspiration", "player"], ["Inspiration", "enemy"],
+    ["Balloon", "player"], ["Balloon", "enemy"],
+    ["Irradiate", "player"], ["Irradiate", "enemy"],
+  ]);
 });
 
 test("archived web BananaSlip doubles only the next attack interval", () => {
