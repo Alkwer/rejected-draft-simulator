@@ -118,6 +118,21 @@ test("save decoder accepts legacy companion state and rejects broken or out-of-r
   assert.throws(() => decodeSaveText(JSON.stringify({ state: steamState })), /attack.*finite number/i);
 });
 
+test("Steam imports reject unusable effective stats in both decoders and explicit CLI sources", () => {
+  const base = { maxHp: 10, attack: { m: 0, e: 0 }, attackSpeed: 1000 };
+  for (const profile of ["steam", "steam-demo"]) {
+    for (const changes of [{ maxHp: 0 }, { attack: -1 }, { attackSpeed: 0 }, { attack: " " },
+      { accuracy: { m: false, e: 0 } }]) {
+      const text = JSON.stringify({ meta: { profile }, state: { playerStats: { ...base, ...changes } } });
+      for (const parse of [parseSaveEnvelope, decodeSaveText]) assert.throws(() => parse(text), /stat/i);
+    }
+  }
+  const state = { saveProfile: "steam", playerStats: base, battleStats: { attack: 1 } };
+  assert.equal(getStatsBySource(state, "playerStats").attack, 0);
+  assert.throws(() => getStatsBySource(state, "battleStats"), /battleStats \(maxHp, attackSpeed\)/);
+  assert.throws(() => getStatsBySource(state, "runStats"), /currentRunStats/);
+});
+
 test("legacy saves use the highest-priority complete source and preserve an explicit zero attack", () => {
   const playerStats = { maxHp: "1000", attack: { m: 0, e: 0 }, attackSpeed: "1200" };
   const state = {

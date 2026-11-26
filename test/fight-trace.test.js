@@ -912,6 +912,8 @@ test("fight trace applies Inspiration on the status tick instead of on hit", () 
       accuracy: 100,
       minDamage: 100,
       maxDamage: 100,
+      // The archived status clock only runs when at least one side has a status.
+      hasteChance: 100,
       inspirationChance: 100,
     },
     enemy: {

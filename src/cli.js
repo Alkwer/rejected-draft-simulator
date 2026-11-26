@@ -60,8 +60,11 @@ if (args.help || !args.save && !args["list-targets"] && !args["patch-sanity"]) {
   process.exit(args.help ? 0 : 1);
 }
 
-const needsSave = !args["list-targets"] && !args["patch-sanity"];
-const save = needsSave ? readSaveFile(resolveSavePath(args.save, { downloadsDir: args["downloads-dir"] })) : null;
+if (args.save === true) {
+  console.error("--save requires a file path or latest.");
+  process.exit(1);
+}
+const save = args.save ? readSaveFile(resolveSavePath(args.save, { downloadsDir: args["downloads-dir"] })) : null;
 const dataPath = args.data ?? (save && !isSteamSave(save) ? LEGACY_DATA_PATH : DEFAULT_DATA_PATH);
 const { sketches, dataMetadata, shopUpgrades } = readGameBundle(dataPath);
 if (save && shopUpgrades) save.state[STEAM_SHOP_CATALOG] = shopUpgrades;

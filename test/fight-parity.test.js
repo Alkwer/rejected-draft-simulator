@@ -65,6 +65,34 @@ test("fight parity recognizes terminal HP codes in both nested and flat observat
   assert.equal(normalizeFightFixture({ result: { status: "timeout_stall" } }).observed.outcome, "timeout");
 });
 
+test("conflicting target identities never compare another encounter's stats", () => {
+  for (const overrides of [
+    { targetId: "other" },
+    { observed: { outcome: "win", targetId: "other" } },
+    { enemy: { ...deterministicWinFixture.enemy, id: "other" } },
+    { targetId: "other", enemy: undefined },
+  ]) {
+    const parity = compareFightParityFixture({ targetId: "training_target", enemy: deterministicWinFixture.enemy,
+      fixture: { ...deterministicWinFixture, ...overrides } });
+    assert.equal(parity.status, "target_mismatch");
+    assert.equal(parity.comparedFields, 0);
+    assert.equal(parity.trace, null);
+  }
+});
+
+test("fixture parsing preserves nested status modifiers and ignores blank numeric observations", () => {
+  const stats = { ...deterministicWinFixture.enemy, immunities: ["bleedChance"], vulnerability: ["burnChance", 2],
+    vulnerabilityEffects: { burnChance: ["burnDamage"] } };
+  const fixture = { ...deterministicWinFixture, enemy: { id: stats.id, stats }, observed: { enemyHp: " " } };
+  const normalized = normalizeFightFixture(fixture);
+  assert.deepEqual(normalized.enemy.immunities, stats.immunities);
+  assert.deepEqual(normalized.enemy.vulnerability, stats.vulnerability);
+  assert.deepEqual(normalized.enemy.vulnerabilityEffects, stats.vulnerabilityEffects);
+  assert.equal(compareFightParityFixture({ fixture }).status, "no_observation");
+  fixture.observed = { damageBreakdown: { enemy: { unknown: 0 } } };
+  assert.equal(compareFightParityFixture({ fixture }).status, "no_observation");
+});
+
 test("fight parity compares full fight damage when the event trace ends before combat", () => {
   const parity = compareFightParityFixture({
     fixture: deterministicWinFixture,

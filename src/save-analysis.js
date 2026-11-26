@@ -1,7 +1,7 @@
 import { extractStats, isSteamSave, toNumber } from "./save.js";
 import { STEAM_UNIVERSES, VERIFIED_STEAM_BUILD } from "./combat/steam-universes.js";
 import { maxSketchVictories, remainingSketchVictories } from "./victory-limit.js";
-import { invalidCombatStats, validateLegacyStatSources } from "../web/save-format.js";
+import { invalidCombatStats, validateCombatStatSources } from "../web/save-format.js";
 
 export function analyzeSave({ save, sketches = {}, targetId = null, dataMetadata = null }) {
   const state = save?.state ?? {};
@@ -48,7 +48,7 @@ export function getStatsBySource(state, source) {
     return sources[recommendedSource] ?? {};
   }
   const rawSource = source === "runStats" ? "currentRunStats" : source;
-  if (!isSteamSave({ state })) validateLegacyStatSources(state, [rawSource]);
+  validateCombatStatSources(state, [rawSource]);
   return extractStats(state, rawSource);
 }
 
@@ -74,7 +74,7 @@ function chooseStatsSource(state, steamSave) {
   if (hasRunStats) {
     return { source: "runStats", reason: "fallback_current_run_stats" };
   }
-  validateLegacyStatSources(state);
+  validateCombatStatSources(state);
 }
 
 function compareStats(base, current) {

@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { simulateFight } from "../src/combat.js";
+import { combatAssumptionsFromSave } from "../src/combat-assumptions.js";
 import { createRng } from "../src/rng.js";
 
 test("vulnerability amplifies status application enough to beat absorb walls", () => {
@@ -67,6 +68,61 @@ test("counter punishes attackers", () => {
   });
 
   assert.equal(result.winner, "enemy");
+});
+
+test("archived web Counter delay scales with combat speed", () => {
+  const { trace } = simulateFight({
+    rng: () => 0.5,
+    player: { maxHp: 1000, attack: 10, attackSpeed: 1000 },
+    enemy: { maxHp: 1000, attack: 10, attackSpeed: 5000, counter: 100 },
+    assumptions: combatAssumptionsFromSave({ fundamentals: { timeAcceleration: 2 } }),
+    maxSeconds: 0.7,
+    trace: { seconds: 0.7 },
+  });
+
+  const attack = trace.find((event) => event.event === "attack");
+  const scheduled = attack.mechanics.find((mechanic) => mechanic.type === "counter_scheduled");
+  assert.equal(scheduled.delaySeconds, 0.1);
+  assert.equal(trace.find((event) => event.event === "pending_effect").time, 0.6);
+});
+
+test("archived web Inspiration ticks require a status and cap only the player", () => {
+  const base = { maxHp: 1000, attack: 1, attackSpeed: 1100, inspirationChance: 20000 };
+  const { trace } = simulateFight({
+    rng: () => 0.5,
+    player: { ...base, hasteChance: 100 },
+    enemy: base,
+    assumptions: combatAssumptionsFromSave({ fundamentals: { inspirationCapBonus: 25 } }),
+    maxSeconds: 2.1,
+    trace: { seconds: 2.1 },
+  });
+
+  const firstAttack = trace.find((event) => event.event === "attack");
+  assert.equal(firstAttack.statuses.player.Inspiration, undefined);
+  assert.equal(firstAttack.statuses.enemy.Inspiration, undefined);
+  const tick = trace.find((event) => event.event === "tick");
+  assert.equal(tick.time, 2.004);
+  assert.equal(tick.statuses.player.Inspiration, 125);
+  assert.equal(tick.statuses.enemy.Inspiration, 200);
+});
+
+test("archived web BananaSlip doubles only the next attack interval", () => {
+  let applications = 0;
+  const { trace } = simulateFight({
+    rng: (label) => {
+      if (label === "skip.BananaPeel") return 0;
+      if (label === "status.BananaPeel.apply.fractional" && applications++ === 0) return 0;
+      return 0.5;
+    },
+    player: { maxHp: 1000, attack: 1, attackSpeed: 1000, bananaPeelChance: 50 },
+    enemy: { maxHp: 1000, attack: 1, attackSpeed: 2000 },
+    maxSeconds: 8.1,
+    trace: { seconds: 8.1 },
+  });
+
+  const attacks = trace.filter((event) => event.event === "attack" && event.attackerSide === "enemy");
+  assert.deepEqual(attacks.map((event) => [event.time, event.statuses.enemy.BananaSlip]),
+    [[2, 1], [6, undefined], [8, undefined]]);
 });
 
 test("varnish prevents one fatal blow", () => {

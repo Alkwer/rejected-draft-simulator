@@ -16,6 +16,18 @@ const syntheticReferenceMarkdown = `# Combat Engine Reference
 - Main asset: main-TestHash.js
 - Store asset: game-store-TestHash.js
 
+## Status Caps And Sets
+
+\`\`\`js
+Fa={Haste:1e3,Inspiration:100,Leap:1e3,EnergyWave:1e3}
+\`\`\`
+
+## Varnish Survival
+
+\`\`\`js
+Zt=(n)=>{const chance=50-n;return{varnishTriggered:chance>0}}
+\`\`\`
+
 ## Damage Resolution
 
 Notes:
@@ -32,6 +44,18 @@ Notes:
 
 \`\`\`js
 pt=(t,s,e,n,a,r,o,i,c,f,u)=>{const $=t.remedy||new l(0);const de=f.Hinder||0;const ye=f.BananaPeel||0;const se=f.Hypnotize||0;if(se>0){j=t;re=r;b=a;oe=I}const _=t.multiStrikeChance||new l(0);let G=1;const ge=f.HotPotato||0;for(let H=0;H<G;H++){const I=Va(t,j,b,re,o,h,oe,v,x,d,m)}const At=f.Bleed||0;const P=f.Curse||0;h=Y(h,"curse",mt,O);const me=t.lifesteal||new l(0)}
+\`\`\`
+
+## Status Tick Resolution
+
+\`\`\`js
+qn=(t,s)=>{return [s.EnergyWave,t.inspirationChance,s.Balloon]}
+\`\`\`
+
+## Combat Loop Timing
+
+\`\`\`js
+consolidateCombatTick:(t,s)=>{return [1001-s.lastRegenTick,1002-s.lastStatusTick]}
 \`\`\`
 `;
 
@@ -111,6 +135,9 @@ test("buildCombatParityMap classifies current combat parity gaps", () => {
   assert.equal(byId["lifesteal-turn-order"].status, "gap");
   assert.equal(byId["varnish-survival"].status, "matched");
   assert.equal(byId["counter-delayed-effect"].status, "gap");
+  assert.equal(byId["periodic-tick-cadence"].status, "gap");
+  assert.equal(byId["inspiration-tick-caps"].status, "gap");
+  assert.equal(byId["banana-slip-delay"].status, "gap");
 });
 
 test("renderCombatParityMapMarkdown includes summary and concrete next actions", () => {
@@ -124,7 +151,7 @@ test("renderCombatParityMapMarkdown includes summary and concrete next actions",
 
   assert.match(markdown, /# Combat Engine Parity Map/);
   assert.match(markdown, /Matched: 3/);
-  assert.match(markdown, /Gaps: 7/);
+  assert.match(markdown, /Gaps: 10/);
   assert.match(markdown, /Curse reflection/);
   assert.match(markdown, /Move Curse out of direct-hit mitigation/);
 });
@@ -135,8 +162,9 @@ test("buildCombatParityMap marks delayed Counter effects as matched", () => {
       ...source,
       source: `${source.source}
         const COUNTER_DELAY_SECONDS = 0.2;
-        function performAttack() {
-          combat.pendingEffects.push({ type: "counter", time: combat.time + COUNTER_DELAY_SECONDS });
+        function applyReactiveDamage() {
+          const delay = COUNTER_DELAY_SECONDS / combatSpeedAtTime(combat.assumptions, combat.time);
+          combat.pendingEffects.push({ type: "counter", time: combat.time + delay });
           recordMechanic(combat, { type: "counter_scheduled" });
         }
         function processPendingEffect() {
@@ -160,15 +188,23 @@ test("buildCombatParityMap marks delayed Counter effects as matched", () => {
   const counter = map.checks.find((check) => check.id === "counter-delayed-effect");
 
   assert.equal(counter.status, "matched");
-  assert.match(counter.simulatorEvidence, /pending effect queue/);
+  assert.match(counter.simulatorEvidence, /speed-scaled delay/);
 });
 
-test("buildCombatParityMap marks Energy Wave matched when only the tick model remains", () => {
+test("buildCombatParityMap requires a reachable Energy Wave tick with stack consumption", () => {
   const tickOnlySources = simulatorSources.map((source) => source.path === "src/combat.js"
     ? {
       ...source,
       source: `${source.source.replace("const waveDamage = energyWaveDamage();", "")}
-        function applyEnergyWaveTick() {}`,
+        function applyPeriodicStatusTick() {
+          applyEnergyWaveTick();
+        }
+        function applyEnergyWaveTick() {
+          const stacks = statuses.EnergyWave;
+          const consumed = Math.max(1, Math.floor(stacks * 0.1));
+          applyDamageToSide(consumed);
+          statuses.EnergyWave -= consumed;
+        }`,
     }
     : source);
 
@@ -180,8 +216,26 @@ test("buildCombatParityMap marks Energy Wave matched when only the tick model re
   const energyWave = map.checks.find((check) => check.id === "energy-wave-turn-effect");
 
   assert.equal(energyWave.status, "matched");
-  assert.match(energyWave.simulatorEvidence, /tick model/);
+  assert.match(energyWave.simulatorEvidence, /Periodic tick damage/);
   assert.match(energyWave.nextAction, /tick cadence/);
+});
+
+test("buildCombatParityMap requires extracted reference code and positive simulator evidence", () => {
+  const noReference = buildCombatParityMap({ simulatorSources });
+  assert.deepEqual(noReference.summary.statusCounts, { unverified: noReference.checks.length });
+
+  const truncatedReference = syntheticReferenceMarkdown.replace(
+    /## Combat Loop Timing[\s\S]+$/,
+    "## Combat Loop Timing\n\nNotes only.",
+  );
+  const map = buildCombatParityMap({
+    referenceMarkdown: truncatedReference,
+    simulatorSources: simulatorSources.map(({ path }) => ({ path, source: "" })),
+  });
+  assert.equal(map.checks.find((check) => check.id === "periodic-tick-cadence").status, "unverified");
+  assert.equal(map.checks.find((check) => check.id === "curse-reflection").status, "gap");
+  assert.equal(map.checks.find((check) => check.id === "hypnotize-self-attack").status, "gap");
+  assert.equal(map.summary.statusCounts.matched, undefined);
 });
 
 test("buildCombatParityMap detects electrocute ordering after status variable renames", () => {

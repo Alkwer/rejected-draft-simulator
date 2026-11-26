@@ -16,17 +16,33 @@ export function parseSaveEnvelope(text, decodeBase64 = decodeBase64Text) {
   if (!isRecord(save) || !isRecord(save.state)) {
     throw new Error("Invalid Rejected Draft save. Missing game state.");
   }
-  if (!isSteamSave(save)) validateLegacyStatSources(save.state);
+  if (isSteamSave(save)) validateSteamPlayerStats(save.state.playerStats);
+  else validateCombatStatSources(save.state);
   return save;
 }
 
-export function validateLegacyStatSources(state, sources = LEGACY_STAT_SOURCES) {
+export function validateCombatStatSources(state, sources = LEGACY_STAT_SOURCES) {
   const invalidBySource = sources.map((source) => invalidCombatStats(state?.[source]));
   if (invalidBySource.some((fields) => fields.length === 0)) return;
 
   const details = sources.map((source, index) => `${source} (${invalidBySource[index].join(", ")})`);
   throw new Error(`Invalid Rejected Draft save. Missing or invalid combat stats in ${details.join("; ")}. `
     + "Expected one source with positive maxHp and attackSpeed and non-negative attack.");
+}
+
+export { validateCombatStatSources as validateLegacyStatSources };
+
+export function validateSteamPlayerStats(stats) {
+  if (!isRecord(stats) || ["maxHp", "attack", "attackSpeed"].some((key) => !Object.hasOwn(stats, key))) {
+    throw new Error("Invalid Rejected Draft Steam save. Missing player stats.");
+  }
+  for (const [key, raw] of Object.entries(stats)) {
+    if (key === "immunities" || key === "vulnerability") continue;
+    if (!Number.isFinite(combatStatNumber(raw))) {
+      throw new Error(`Steam player stat ${key} cannot be represented as a finite number.`);
+    }
+  }
+  validateCombatStatSources({ playerStats: stats }, ["playerStats"]);
 }
 
 export function invalidCombatStats(stats) {

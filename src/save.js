@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { isRecord, isSteamSave, parseSaveEnvelope } from "../web/save-format.js";
+import { isSteamSave, parseSaveEnvelope } from "../web/save-format.js";
 export { isFullSteamSave, isSteamSave } from "../web/save-format.js";
 
 const STEAM_SLOT_COUNT = 6;
@@ -57,22 +57,9 @@ export function decodeSaveText(text) {
   const save = parseSaveEnvelope(text, (value) => Buffer.from(value, "base64").toString("utf8"));
   if (isSteamSave(save)) {
     save.state.saveProfile ??= save.meta?.profile;
-    validateSteamPlayerStats(save.state.playerStats);
   }
 
   return save;
-}
-
-function validateSteamPlayerStats(stats) {
-  if (!isRecord(stats) || ["maxHp", "attack", "attackSpeed"].some((key) => !Object.hasOwn(stats, key))) {
-    throw new Error("Invalid Rejected Draft Steam save. Missing player stats.");
-  }
-  for (const [key, value] of Object.entries(stats)) {
-    if (key === "immunities" || key === "vulnerability") continue;
-    if (!Number.isFinite(toNumber(value, NaN))) {
-      throw new Error(`Steam player stat ${key} cannot be represented as a finite number.`);
-    }
-  }
 }
 
 export function toNumber(value, fallback = 0) {

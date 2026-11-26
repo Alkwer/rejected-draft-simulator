@@ -12,7 +12,7 @@ const SECTION_DEFINITIONS = [
     confidence: "high",
     notes: [
       "Defines active self-buff caps and the harmful/self-buff status sets used by combat.",
-      "Current visible caps: Haste 1000, Inspiration 100 base plus scaling, Leap 1000, EnergyWave 1000.",
+      "Player buff base caps are Haste 1000, Inspiration 100, Leap 1000 and EnergyWave 1000. The attack resolver leaves enemy buffs uncapped.",
       "This section is a dependency for status application, Remedy filtering and player stack cap checks.",
     ],
   },
@@ -45,8 +45,8 @@ const SECTION_DEFINITIONS = [
     confidence: "high",
     notes: [
       "Resolves a full attacker turn around the direct-hit resolver.",
-      "Order visible in this bundle: Remedy, Hinder, BananaPeel, Hypnotize, MultiStrike, HotPotato branch, repeated direct hits, on-hit harmful statuses, self buffs, EnergyWave, Lifesteal, Bleed self-damage, Balloon, Brittle growth, Thorns and Counter.",
-      "This block is the main target for future RNG-order parity checks.",
+      "The resolver handles Remedy, Hinder, BananaPeel, Hypnotize, then MultiStrike and the HotPotato branch before repeated hits.",
+      "Each hit can apply statuses, pop Balloon, grow Brittle, apply Thorns, record Counter and grant self buffs. The turn ends with Bleed recoil, Curse reflection and Lifesteal.",
     ],
   },
   {
@@ -58,6 +58,7 @@ const SECTION_DEFINITIONS = [
       "Runs harmful periodic statuses, EnergyWave consumption, Inspiration tick rolls, Balloon growth and Irradiate growth.",
       "EnergyWave consumes max(1, floor(stacks * 0.1)) per status tick and uses attacker attack times Inspiration.",
       "Inspiration is rolled on the status tick; Haste, Leap, EnergyWave and Thorns are rolled in the attack resolver.",
+      "The status tick exits early when both status maps are empty. Player Inspiration adds the fundamentals cap bonus to its base 100, while enemy Inspiration is uncapped.",
     ],
   },
   {
@@ -81,6 +82,7 @@ const SECTION_DEFINITIONS = [
       "The loop processes ready attacks, then regen ticks and status ticks against the current wall-clock target time.",
       "Regen cadence is 1001ms divided by the speed multiplier; status cadence is 1002ms divided by the speed multiplier.",
       "Attack delay uses attackSpeed times Slow as 0.1% per stack and divided by Haste as 0.1% per stack.",
+      "Counter is scheduled 200ms divided by combat speed after the triggering attack and executes the attack resolver with the Counter flag.",
     ],
   },
 ];
@@ -199,6 +201,9 @@ export async function writeCombatReferenceDocument({
     sources,
     generatedAt: typeof now === "function" ? now() : now,
   });
+  if (reference.sections.length === 0) {
+    throw new Error(`No combat reference sections found for ${metadata.storeAsset ?? "the selected assets"} in ${assetDir}.`);
+  }
   fs.mkdirSync(path.dirname(outputPath), { recursive: true });
   fs.writeFileSync(outputPath, renderCombatReferenceMarkdown(reference));
   return {
@@ -263,29 +268,20 @@ function sortSourcesForSection(definition, sources) {
 function extractWindowSnippet(source, marker, endMarker) {
   const start = source.indexOf(marker);
   if (start < 0) return null;
-  const end = endMarker ? source.indexOf(endMarker, start + marker.length) : -1;
-  const raw = end > start ? source.slice(start, end) : source.slice(start, start + 3000);
-  return cleanSnippet(raw);
+  const end = source.indexOf(endMarker, start + marker.length);
+  return end > start ? cleanSnippet(source.slice(start, end)) : null;
 }
 
 function extractAssignedArrowSnippet(source, name) {
-  const start = findAssignmentStart(source, name);
-  if (start < 0) return null;
-  const arrowIndex = source.indexOf("=>", start);
-  if (arrowIndex < 0) return null;
-  const bodyStart = source.indexOf("{", arrowIndex);
-  if (bodyStart < 0) return null;
+  const assignment = new RegExp(
+    `(?:\\b(?:const|let|var)\\s+|[,;]\\s*)${escapeRegExp(name)}\\s*=\\s*\\([^(){}]*\\)\\s*=>\\s*\\{`,
+  ).exec(source);
+  if (!assignment) return null;
+  const start = assignment.index + (/^[,;]/.test(assignment[0]) ? 1 : 0);
+  const bodyStart = assignment.index + assignment[0].length - 1;
   const bodyEnd = findMatchingBrace(source, bodyStart);
   if (bodyEnd < 0) return null;
   return cleanSnippet(source.slice(start, bodyEnd + 1));
-}
-
-function findAssignmentStart(source, name) {
-  const re = new RegExp(`(?:const\\s+|let\\s+|var\\s+|[,;]\\s*)${escapeRegExp(name)}\\s*=`, "g");
-  const match = re.exec(source);
-  if (!match) return -1;
-  const rawStart = match.index;
-  return source[rawStart] === "," || source[rawStart] === ";" ? rawStart + 1 : rawStart;
 }
 
 function findMatchingBrace(source, openIndex) {

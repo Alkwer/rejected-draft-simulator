@@ -1,7 +1,8 @@
 import { combatAssumptionsFromSave } from "./combat-assumptions.js";
 import { runMonteCarlo } from "./combat.js";
 import { buildSteamEnemy, enemyFromSketch } from "./combat/steam-encounter.js";
-import { extractStats, isFullSteamSave, toNumber } from "./save.js";
+import { extractStats, isFullSteamSave } from "./save.js";
+import { validateSteamPlayerStats } from "../web/save-format.js";
 import { validateDataCompatibility } from "./save-analysis.js";
 import { ANALYSIS_MODEL_VERSION } from "./model-version.js";
 
@@ -32,11 +33,7 @@ export function validateSteamFightForecastInput({
   if (typeof seed !== "string" || !seed.trim()) {
     throw new Error("The forecast seed must be a non-empty string.");
   }
-  const rawPlayer = save.state.playerStats;
-  if (["maxHp", "attack", "attackSpeed"].some((key) => !Number.isFinite(toNumber(rawPlayer?.[key], NaN)))
-    || toNumber(rawPlayer.maxHp) <= 0 || toNumber(rawPlayer.attackSpeed) <= 0) {
-    throw new Error("The Steam save must contain valid effective player stats.");
-  }
+  validateSteamPlayerStats(save.state.playerStats);
   return { save, sketches, dataMetadata, targetId, trials, maxSeconds, seed };
 }
 

@@ -45,6 +45,11 @@ test("CLI list and inspection support both JSON output flags", () => {
   assert.deepEqual(targets, runJson(listArgs, ["--json"]));
   assert.ok(targets.every(({ rarity }) => rarity === "masterpiece"));
   assert.ok(targets.some(({ id }) => id === "duct_taped_banana"));
+  const steamTargets = runJson(["--list-targets"], ["--json"]);
+  const legacyTargets = runJson(["--list-targets", "--save", fixtureSave], ["--json"]);
+  assert.ok(steamTargets.some(({ id }) => id === "little_stapler"));
+  assert.ok(legacyTargets.some(({ id }) => id === "duct_taped_banana"));
+  assert.ok(!legacyTargets.some(({ id }) => id === "little_stapler"));
 
   const inspectArgs = ["--save", fixtureSave, "--inspect-save"];
   const analysis = runJson(inspectArgs, ["--export", "json"]);

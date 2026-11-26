@@ -17,6 +17,13 @@ The catalog shipped here covers build 26885190, game v0.9772 and save schema 87.
 - Reference extraction: `docs/combat-engine-reference.md`
 - Simulator parity map: `docs/combat-engine-parity-map.md`
 
+With the captured main and store assets in the ignored `tmp/` directory, rebuild the archived reference and parity map using the pinned capture metadata:
+
+```powershell
+npm.cmd run combat-reference -- --metadata docs/combat-engine-reference-source.json
+npm.cmd run combat-parity
+```
+
 ## Started Slice
 
 - Added status-state delta tracing per fight event.
@@ -111,8 +118,10 @@ Markdown traces include `Damage Events`, `Mechanics` and `RNG` columns, limited 
 ## Known Limitations
 
 - RNG labels are simulator-side labels. The random order is now visible, but still needs to be compared against the current minified bundle.
-- The generated parity map now shows no remaining static gaps in the checked attack-resolution items, but this is not the same as full combat parity.
-- Combat loop timing now follows the extracted fixed regen/status tick clocks and delayed Counter queue, and the CLI can compare a single observed fight fixture, but actual game log coverage is still needed to prove wall-clock drift and simultaneous-event behavior.
+- Each static map result covers a named check. A check is unverified when its required extracted code is missing.
+- The simulator advances one tick deadline at a time. The archived web loop processes all due attacks before regen and status catch-up batches, so delayed frame handling can produce different event order.
+- The simulator runs periodic statuses by affected side and then rolls Inspiration. The archived web status tick handles each status for both sides, then EnergyWave, Inspiration, Balloon and Irradiate in that order. Compare simultaneous status damage and growth, healing and RNG order with observed fights.
+- The simulator resolves delayed Counter through its direct damage pipeline. The archived web game dispatches Counter through the full attack-turn resolver with a flag, so Remedy, skip checks and other turn effects can differ.
 - Mechanic traces do not yet cover every system. Remaining trace gaps should be found from current bundle extraction and real fight comparisons.
 - Damage events expose source tags and overkill, but they do not yet allocate exact numeric contribution per modifier when several multipliers stack in one direct hit.
 
@@ -121,5 +130,5 @@ Markdown traces include `Damage Events`, `Mechanics` and `RNG` columns, limited 
 1. Capture real observed fight fixtures through the companion with `Combat Logging` enabled for Duct, Rose, Mobius, Abe Linkin, Vinchy, Joan of Art, Kahlo and Transcendent Paragon.
 2. Compare fixed tick timestamps, simultaneous attacks and delayed Counter actions against those real fixtures.
 3. Compare detailed damage event tags and overkill numbers against real combat logs, then add exact per-modifier contribution accounting if the game exposes it.
-4. Extend the parity map beyond the current checked blocks into periodic ticks, Inspiration tick rolls, Energy Wave consumption, Counter/Thorns chains and other delayed effects.
-5. Verify enemy-only caps and talent-modified caps, especially Inspiration cap behavior on player vs enemy statuses.
+4. Compare periodic status order and the full Counter/Thorns turn against traced fights. Extend the map as individual paths get verified.
+5. Verify side-specific caps during real fights, including the player Inspiration fundamentals bonus and uncapped enemy Inspiration.
