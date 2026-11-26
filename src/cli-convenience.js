@@ -23,7 +23,9 @@ export function resolveTargetId(value, sketches) {
   const raw = String(value).trim();
   if (sketches && Object.hasOwn(sketches, raw)) return raw;
   const normalized = normalizeTargetName(raw);
-  if (Object.hasOwn(TARGET_ALIASES, normalized)) return TARGET_ALIASES[normalized];
+  if (Object.hasOwn(TARGET_ALIASES, normalized) && (!sketches || Object.hasOwn(sketches, TARGET_ALIASES[normalized]))) {
+    return TARGET_ALIASES[normalized];
+  }
   if (sketches) {
     const matches = Object.entries(sketches).filter(([id, sketch]) =>
       normalizeTargetName(id) === normalized || (sketch.name && normalizeTargetName(sketch.name) === normalized));

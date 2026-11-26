@@ -29,6 +29,7 @@ test("target resolution accepts unique catalog labels and preserves ambiguous na
   assert.equal(resolveTargetId("Stick-Man", sketches), "stick man");
   assert.equal(resolveTargetId("Mobius Strip", sketches), "mobius_strip");
   assert.equal(resolveTargetId("Boss", sketches), "Boss");
+  assert.equal(resolveTargetId("Rose", { flower: { name: "Rose" } }), "flower");
   assert.equal(resolveTargetId("constructor", sketches), "constructor");
 });
 

@@ -426,7 +426,7 @@ test("web server companion fixture includes diagnostics when no observed fight i
           companionVersion: "test-version",
           saveHistory: [{ capturedAt: "2026-05-23T19:05:00.000Z", saveText }],
           localStorageCandidates: [
-            { key: "some-combat-key", value: "{\"empty\":true}" },
+            { key: "some-combat-key", value: JSON.stringify({ outcome: "loss", seconds: 4 }) },
           ],
         },
       }),
@@ -441,6 +441,15 @@ test("web server companion fixture includes diagnostics when no observed fight i
     assert.equal(payload.fixtureCapture.fixture.captureDiagnostics.saveCombatLogCount, 0);
     assert.equal(payload.fixtureCapture.fixture.captureDiagnostics.saveHistoryCount, 1);
     assert.deepEqual(payload.fixtureCapture.fixture.captureDiagnostics.localStorageCandidateKeys, ["some-combat-key"]);
+    const identified = await fetch(`http://127.0.0.1:${port}/api/companion/fight-fixture`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ saveText, targetId: "duct", browserSnapshot: {
+        localStorageCandidates: [{ value: JSON.stringify({ enemyName: "Duct-Taped Banana", result: { outcome: "loss" } }) }],
+      } }),
+    });
+    const captured = (await identified.json()).fixtureCapture;
+    assert.equal(captured.source, "browser_local_storage");
+    assert.equal(captured.fixture.observed.targetId, "duct_taped_banana");
   } finally {
     await new Promise((resolve) => server.close(resolve));
   }

@@ -108,21 +108,21 @@ function buildCaptureDiagnostics({ save, browserSnapshot, observedSource, combat
 }
 
 function selectObservedFight({ save, sketches, targetId, observed, browserSnapshot }) {
-  const provided = normalizeObservedCandidate(observed);
+  const provided = normalizedObservation(observed, sketches);
   if (provided) return { source: "provided_observation", observed: provided, warnings: [] };
 
-  const browser = normalizeObservedCandidate(browserSnapshot?.observed)
-    ?? normalizeObservedCandidate(browserSnapshot?.lastFight)
-    ?? normalizeObservedCandidate(browserSnapshot);
+  const browser = [browserSnapshot?.observed, browserSnapshot?.lastFight, browserSnapshot]
+    .map((raw) => normalizedObservation(raw, sketches))
+    .find((entry) => entry?.targetId === targetId);
   if (browser) return { source: "browser_snapshot", observed: browser, warnings: [] };
 
   const visibleCombatLog = normalizeVisibleCombatLog(browserSnapshot?.visibleCombatLog, sketches, targetId);
   if (visibleCombatLog) return { source: "browser_visible_combat_log", observed: visibleCombatLog, warnings: [] };
 
-  const localStorageLog = latestLocalStorageCandidate(browserSnapshot, targetId);
+  const localStorageLog = latestLocalStorageCandidate(browserSnapshot, targetId, sketches);
   if (localStorageLog) return { source: "browser_local_storage", observed: localStorageLog, warnings: [] };
 
-  const saveLog = latestSaveCombatLog(save, targetId);
+  const saveLog = latestSaveCombatLog(save, targetId, sketches);
   if (saveLog) return { source: "save_combat_log", observed: saveLog, warnings: [] };
 
   const saveHistory = latestSaveHistoryObservation({ save, browserSnapshot, targetId });
@@ -138,13 +138,11 @@ function selectObservedFight({ save, sketches, targetId, observed, browserSnapsh
   };
 }
 
-function latestSaveCombatLog(save, targetId) {
-  const logs = extractCombatLogs(save)
-    .filter((log) => !targetId || log.targetId === targetId || !log.targetId);
-  const latest = logs.at(-1);
+function latestSaveCombatLog(save, targetId, sketches) {
+  const latest = extractCombatLogs(save).findLast((log) => resolveTargetId(log.targetId ?? log.targetName, sketches) === targetId);
   if (!latest) return null;
   return {
-    targetId: latest.targetId ?? targetId,
+    targetId,
     targetName: latest.targetName,
     outcome: latest.outcome,
     seconds: Number.isFinite(latest.seconds) ? latest.seconds : null,
@@ -156,15 +154,15 @@ function latestSaveCombatLog(save, targetId) {
   };
 }
 
-function latestLocalStorageCandidate(browserSnapshot, targetId) {
+function latestLocalStorageCandidate(browserSnapshot, targetId, sketches) {
   const candidates = Array.isArray(browserSnapshot?.localStorageCandidates)
     ? browserSnapshot.localStorageCandidates
     : [];
   for (let index = candidates.length - 1; index >= 0; index -= 1) {
     const candidate = candidates[index];
     const parsed = parseJsonLike(candidate?.value);
-    const observed = normalizeObservedCandidate(parsed);
-    if (observed && (!targetId || observed.targetId === targetId || !observed.targetId)) return observed;
+    const observed = normalizedObservation(parsed, sketches);
+    if (observed?.targetId === targetId) return observed;
   }
   return null;
 }
@@ -227,11 +225,24 @@ function compareSaveHistoryPair(beforeEntry, afterEntry, targetId) {
   };
 }
 
+function normalizedObservation(raw, sketches) {
+  const observed = normalizeObservedCandidate(raw);
+  if (!observed) return null;
+  return { ...observed, targetId: resolveTargetId(observed.targetId ?? observed.targetName, sketches) };
+}
+
 function normalizeObservedCandidate(raw) {
   const parsed = parseJsonLike(raw);
   if (!parsed || typeof parsed !== "object") return null;
   const nested = parseJsonLike(parsed.observed ?? parsed.actual ?? parsed.result);
-  if (nested && typeof nested === "object" && nested !== parsed) return normalizeObservedCandidate(nested);
+  if (nested && typeof nested === "object" && nested !== parsed) {
+    const entry = normalizeObservedCandidate(nested);
+    if (entry) {
+      entry.targetId ??= firstString(parsed.targetId, parsed.enemyId, parsed.sketchId, parsed.target?.id);
+      entry.targetName ??= firstString(parsed.targetName, parsed.enemyName, parsed.sketchName, parsed.target?.name);
+    }
+    return entry;
+  }
 
   const activeBattleLog = normalizeArray(parsed.activeBattleLog ?? parsed.events ?? parsed.logEvents);
   const combatState = parsed.combatState ?? parsed.state?.combatState ?? {};
@@ -274,8 +285,9 @@ function inferTargetId({ save, sketches, targetId, observed, browserSnapshot }) 
   if (requested) return requested;
   const visibleCombatLog = normalizeVisibleCombatLog(browserSnapshot?.visibleCombatLog, sketches);
   const candidates = [
-    normalizeObservedCandidate(observed)?.targetId,
-    normalizeObservedCandidate(browserSnapshot?.observed)?.targetId,
+    normalizedObservation(observed, sketches)?.targetId,
+    normalizedObservation(browserSnapshot?.observed, sketches)?.targetId,
+    normalizedObservation(browserSnapshot?.lastFight, sketches)?.targetId,
     visibleCombatLog?.targetId,
     browserSnapshot?.targetId,
     save?.state?.lastEnemyId,
@@ -302,7 +314,7 @@ function normalizeVisibleCombatLog(raw, sketches, expectedTargetId = null) {
   const explicitId = firstString(source?.targetId, source?.enemyId);
   const identified = resolveTargetId(explicitId ?? targetName, sketches);
   const targetId = identified && Object.hasOwn(sketches, identified) ? identified : explicitId ?? targetNameToId(targetName);
-  if (expectedTargetId && targetId && targetId !== expectedTargetId) return null;
+  if (expectedTargetId && targetId !== expectedTargetId) return null;
 
   const detailIndex = text.search(/Enemy:|Events:|Time:/i);
   const detailText = detailIndex >= 0 ? text.slice(detailIndex) : text;
