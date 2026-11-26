@@ -1511,17 +1511,17 @@ function applyHotPotatoBeforeAttack({ rng, combat, attackerSide, initialStacks: 
 
   const roll = rng("hotPotato.branch");
   if (roll < 0.5) {
-    addStatus(attackerStatuses, "HotPotato", 1);
+    attackerStatuses.HotPotato = stacks + 1;
     recordHotPotatoBranch(combat, attackerSide, "add_1", stacks, attackerStatuses.HotPotato, { roll });
     return 0;
   }
   if (roll < 0.6) {
-    addStatus(attackerStatuses, "HotPotato", 5);
+    attackerStatuses.HotPotato = stacks + 5;
     recordHotPotatoBranch(combat, attackerSide, "add_5", stacks, attackerStatuses.HotPotato, { roll });
     return 0;
   }
   if (roll < 0.65) {
-    addStatus(attackerStatuses, "HotPotato", 10);
+    attackerStatuses.HotPotato = stacks + 10;
     recordHotPotatoBranch(combat, attackerSide, "add_10", stacks, attackerStatuses.HotPotato, { roll });
     return 0;
   }

@@ -59,6 +59,20 @@ test("glancing blow reduces incoming crit damage", () => {
   assert.notEqual(withGlance.winner, "enemy");
 });
 
+test("archived web Hot Potato growth uses the turn-start stacks when Remedy clears them", () => {
+  for (const [roll, extra] of [[0.25, 1], [0.55, 5], [0.62, 10]]) {
+    const { trace } = simulateFight({
+      rng: (label) => label === "hotPotato.branch" ? roll : 0.5,
+      player: { maxHp: 1000, attack: 1, attackSpeed: 700, hotPotatoChance: 1000 },
+      enemy: { maxHp: 1000, attack: 1, attackSpeed: 900, remedy: 1000 },
+      maxSeconds: 1, trace: { seconds: 1 },
+    });
+    const turn = trace.find(({ event, attackerSide }) => event === "attack" && attackerSide === "enemy");
+    assert.equal(turn.mechanics.find(({ type }) => type === "remedy").removed.HotPotato, 10);
+    assert.equal(turn.statuses.enemy.HotPotato, 10 + extra);
+  }
+});
+
 test("counter punishes attackers", () => {
   const result = simulateFight({
     rng: createRng("counter-thorns"),
