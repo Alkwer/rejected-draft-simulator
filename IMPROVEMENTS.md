@@ -10,6 +10,9 @@ The numbered sections record previous work and ideas. The active backlog starts 
 - [x] Validate static file locations and uploaded saves. Limit catalog refresh requests to the local simulator.
 - [x] Check Steam catalog provenance and rebuild damaged caches from the installation. Check legacy web bundle imports and cached sketch records.
 - [x] Reject invalid benchmark settings and measure direct hits, status effects and regen walls independently.
+- [x] Validate Steam combat stats for imports and forecasts, including explicitly selected sources. Use the supplied save's edition for CLI catalog checks.
+- [x] Reject comparisons between different fight targets and retain status modifiers from nested fixture stats.
+- [x] Match the archived web Counter delay, Banana Slip attack interval and side-specific buff caps. Require source evidence for a successful static parity check.
 - [ ] Compare seeded forecasts against repeated, observed Hyena Hulk fights on the same Steam build and setup. See the [combat accuracy backlog](docs/combat-engine-accuracy-backlog.md).
 
 ## Priority 1: More Accurate Combat Engine

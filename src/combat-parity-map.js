@@ -16,20 +16,19 @@ export function buildCombatParityMap({
   generatedAt = DEFAULT_GENERATED_AT(),
 } = {}) {
   const sources = normalizeSources(simulatorSources);
-  const combinedSource = sources.map((source) => source.source).join("\n");
-  const combatSource = findSource(sources, "combat.js") ?? combinedSource;
-  const statusSource = findSource(sources, path.join("combat", "statuses.js")) ?? combinedSource;
-  const performAttackSource = extractFunctionWindow(combatSource, "performAttack") ?? combatSource;
-  const mitigationSource = extractFunctionWindow(combatSource, "applyDefensiveMitigation") ?? combatSource;
-  const damageToSideSource = extractFunctionWindow(combatSource, "applyDamageToSide") ?? combatSource;
-  const skipTurnSource = extractFunctionWindow(statusSource, "shouldSkipTurn") ?? statusSource;
+  const combatSource = findSource(sources, "combat.js") ?? "";
+  const statusSource = findSource(sources, path.join("combat", "statuses.js")) ?? "";
+  const timingSource = findSource(sources, path.join("combat", "timing.js")) ?? "";
+  const performAttackSource = extractFunctionWindow(combatSource, "performAttack") ?? "";
+  const mitigationSource = extractFunctionWindow(combatSource, "applyDefensiveMitigation") ?? "";
+  const damageToSideSource = extractFunctionWindow(combatSource, "applyDamageToSide") ?? "";
+  const skipTurnSource = extractFunctionWindow(statusSource, "shouldSkipTurn") ?? "";
+  const referenceSections = parseReferenceSections(referenceMarkdown);
 
   const context = {
-    referenceMarkdown,
-    sources,
-    combinedSource,
     combatSource,
     statusSource,
+    timingSource,
     performAttackSource,
     mitigationSource,
     damageToSideSource,
@@ -37,17 +36,20 @@ export function buildCombatParityMap({
   };
 
   const checks = [
-    statusCapsCheck(context),
-    remedyOrderCheck(context),
-    electrocuteOrderCheck(context),
-    curseReflectionCheck(context),
-    hotPotatoMultistrikeCheck(context),
-    hypnotizeSelfAttackCheck(context),
-    energyWaveTurnEffectCheck(context),
-    lifestealOrderCheck(context),
-    varnishSurvivalCheck(context),
-    counterDelayedEffectCheck(context),
-  ];
+    [statusCapsCheck(context), ["Status Caps And Sets"]],
+    [remedyOrderCheck(context), ["Attack Resolution"]],
+    [electrocuteOrderCheck(context), ["Damage Resolution"]],
+    [curseReflectionCheck(context), ["Attack Resolution"]],
+    [hotPotatoMultistrikeCheck(context), ["Attack Resolution"]],
+    [hypnotizeSelfAttackCheck(context), ["Attack Resolution"]],
+    [energyWaveTurnEffectCheck(context), ["Attack Resolution", "Status Tick Resolution"]],
+    [lifestealOrderCheck(context), ["Attack Resolution"]],
+    [varnishSurvivalCheck(context), ["Varnish Survival"]],
+    [counterDelayedEffectCheck(context), ["Combat Loop Timing"]],
+    [tickCadenceCheck(context), ["Combat Loop Timing"]],
+    [inspirationTickCheck(context), ["Status Tick Resolution"]],
+    [bananaSlipCheck(context), ["Attack Resolution", "Combat Loop Timing"]],
+  ].map(([check, sections]) => checkAgainstReference(check, sections, referenceSections));
 
   return {
     version: parseReferenceVersion(referenceMarkdown),
@@ -78,6 +80,7 @@ export function renderCombatParityMapMarkdown(map) {
   lines.push(`- Matched: ${map.summary.statusCounts.matched ?? 0}`);
   lines.push(`- Gaps: ${map.summary.statusCounts.gap ?? 0}`);
   lines.push(`- Partial: ${map.summary.statusCounts.partial ?? 0}`);
+  lines.push(`- Unverified: ${map.summary.statusCounts.unverified ?? 0}`);
   lines.push(`- Needs real fight: ${map.summary.statusCounts["needs-real-fight"] ?? 0}`);
   lines.push("");
   lines.push("| Check | Status | Severity | Simulator evidence | Next action |");
@@ -141,16 +144,17 @@ function statusCapsCheck({ statusSource }) {
     ["Hypnotize", 1000],
     ["BananaPeel", 1000],
   ];
-  const missing = requiredCaps.filter(([status, cap]) => !new RegExp(`${status}\\s*:\\s*${cap}\\b`).test(statusSource));
+  const caps = /\bconst STATUS_CAPS\s*=\s*\{([^}]+)\}/.exec(statusSource)?.[1] ?? "";
+  const missing = requiredCaps.filter(([status, cap]) => !new RegExp(`\\b${status}\\s*:\\s*${cap}\\b`).test(caps));
   return createCheck({
     id: "status-caps",
-    title: "Status caps",
+    title: "Base status cap constants",
     status: missing.length === 0 ? "matched" : "gap",
     severity: missing.length === 0 ? "low" : "high",
     confidence: "high",
     gameReference: "The bundle status-cap block defines Haste, EnergyWave, Leap, Inspiration, BlackFlame and skip-status caps.",
     simulatorEvidence: missing.length === 0
-      ? "STATUS_CAPS contains the visible bundle caps."
+      ? "STATUS_CAPS contains the base constants used for web player buffs and capped debuffs."
       : `Missing cap evidence for ${missing.map(([status]) => status).join(", ")}.`,
     nextAction: missing.length === 0
       ? "Keep caps covered by tests when status handling changes."
@@ -179,132 +183,131 @@ function remedyOrderCheck({ performAttackSource }) {
 function electrocuteOrderCheck({ performAttackSource, mitigationSource }) {
   const mitigationHasFrailtyBrittle = mitigationSource.includes("defenderStatuses.Frailty")
     && mitigationSource.includes("defenderStatuses.Brittle");
-  const mitigationIndex = performAttackSource.indexOf("applyDefensiveMitigation");
-  const electrocuteAfterMitigation = mitigationIndex >= 0
-    && /\.Electrocute\b/.test(performAttackSource.slice(mitigationIndex));
-  const hasDirectStatusModifiers = performAttackSource.includes("applyDirectStatusDamageModifiers");
-  const gap = mitigationHasFrailtyBrittle && electrocuteAfterMitigation;
+  const matched = !mitigationHasFrailtyBrittle && Boolean(mitigationSource) && tokensAppearInOrder(
+    performAttackSource, ["applyDefensiveMitigation(", ".Electrocute", "applyDirectStatusDamageModifiers("],
+  );
   return createCheck({
     id: "electrocute-frailty-brittle-order",
     title: "Electrocute before Frailty and Brittle",
-    status: gap ? "gap" : "matched",
-    severity: gap ? "high" : "medium",
+    status: matched ? "matched" : "gap",
+    severity: matched ? "medium" : "high",
     confidence: "high",
     gameReference: "Direct damage resolves Armor/Absorb, then Electrocute, then adds Frailty and Brittle to the direct damage event.",
-    simulatorEvidence: gap
-      ? "`applyDefensiveMitigation` applies Frailty/Brittle before `performAttack` adds Electrocute."
-      : hasDirectStatusModifiers
-        ? "`performAttack` applies Electrocute before `applyDirectStatusDamageModifiers` handles Frailty/Brittle."
-        : "Simulator evidence does not show Frailty/Brittle before Electrocute.",
-    nextAction: gap
-      ? "Split Frailty and Brittle out of mitigation so Electrocute is calculated from post-mitigation direct damage first."
-      : "Keep the numeric trace fixture that locks this order.",
+    simulatorEvidence: matched
+      ? "`performAttack` applies Electrocute before `applyDirectStatusDamageModifiers` handles Frailty/Brittle."
+      : "The mitigation, Electrocute and direct-status sequence could not be established.",
+    nextAction: matched
+      ? "Keep the numeric trace fixture that locks this order."
+      : "Check that Electrocute uses post-mitigation damage before Frailty and Brittle.",
   });
 }
 
 function curseReflectionCheck({ mitigationSource, performAttackSource }) {
   const directCurse = mitigationSource.includes("defenderStatuses.Curse") || mitigationSource.includes("trace.curse");
-  const hasReflection = /Curse Reflection|curse_reflection|type:\s*["']curse["']/.test(performAttackSource)
-    && tokensAppearInOrder(performAttackSource, ["Bleed", "Curse", "lifesteal"]);
+  const hasReflection = tokensAppearInOrder(performAttackSource, [".Bleed", ".Curse", "curse_reflection", "const lifesteal"]);
+  const matched = !directCurse && Boolean(mitigationSource) && hasReflection;
   return createCheck({
     id: "curse-reflection",
     title: "Curse reflection",
-    status: directCurse && !hasReflection ? "gap" : "matched",
-    severity: directCurse && !hasReflection ? "critical" : "medium",
+    status: matched ? "matched" : "gap",
+    severity: matched ? "medium" : "critical",
     confidence: "high",
     gameReference: "The bundle applies Curse near the end of the attacker turn as reflection based on attack, after Bleed recoil and before Lifesteal.",
     simulatorEvidence: directCurse
       ? "Simulator currently treats Curse as a direct damage multiplier in mitigation."
       : hasReflection
         ? "Simulator resolves `curse_reflection` outside direct-hit mitigation."
-        : "Simulator does not expose Curse in direct mitigation.",
-    nextAction: directCurse && !hasReflection
-      ? "Move Curse out of direct-hit mitigation and implement end-of-turn Curse reflection."
-      : "Verify Curse numbers against a traced real fight.",
+        : "No end-of-turn Curse reflection was detected.",
+    nextAction: matched
+      ? "Verify Curse numbers against a traced real fight."
+      : "Move Curse out of direct-hit mitigation and implement end-of-turn Curse reflection.",
   });
 }
 
 function hotPotatoMultistrikeCheck({ performAttackSource }) {
-  const hotBeforeMulti = tokensAppearInOrder(performAttackSource, [
-    "applyHotPotatoBeforeAttack",
-    "rollMultistrikeHitCount",
+  const matched = tokensAppearInOrder(performAttackSource, [
+    "rollMultistrikeHitCount(",
+    "applyHotPotatoBeforeAttack(",
   ]);
   return createCheck({
     id: "hot-potato-multistrike-order",
     title: "Hot Potato vs Multistrike order",
-    status: hotBeforeMulti ? "gap" : "matched",
-    severity: hotBeforeMulti ? "high" : "medium",
+    status: matched ? "matched" : "gap",
+    severity: matched ? "medium" : "high",
     confidence: "high",
     gameReference: "The bundle resolves MultiStrike count before the HotPotato branch, then loops over direct hits.",
-    simulatorEvidence: hotBeforeMulti
-      ? "`performAttack` runs `applyHotPotatoBeforeAttack` before `rollMultistrikeHitCount`."
-      : "Simulator shows MultiStrike before the Hot Potato branch.",
-    nextAction: hotBeforeMulti
-      ? "Move Hot Potato branch resolution after Multistrike count without changing the branch probabilities."
-      : "Keep RNG-order coverage for Multistrike and Hot Potato.",
+    simulatorEvidence: matched
+      ? "Simulator shows MultiStrike before the Hot Potato branch."
+      : "The expected Multistrike and Hot Potato call order was not detected.",
+    nextAction: matched
+      ? "Keep RNG-order coverage for Multistrike and Hot Potato."
+      : "Check the Multistrike and Hot Potato sequence in `performAttack`.",
   });
 }
 
 function hypnotizeSelfAttackCheck({ skipTurnSource, performAttackSource }) {
   const rawAttackDamage = skipTurnSource.includes("Hypnotize") && skipTurnSource.includes("stat(attacker, \"attack\")");
-  const swapsCombatants = performAttackSource.includes("hypnotize") && performAttackSource.includes("attackerSide") && performAttackSource.includes("defenderSide");
+  const swapsCombatants = tokensAppearInOrder(performAttackSource, ["resolveHypnotize(", "hypnotize.redirected", "targetSide = attackerSide"]);
+  const matched = !rawAttackDamage && Boolean(skipTurnSource) && swapsCombatants;
   return createCheck({
     id: "hypnotize-self-attack",
     title: "Hypnotize self attack",
-    status: rawAttackDamage && !swapsCombatants ? "gap" : "matched",
-    severity: rawAttackDamage && !swapsCombatants ? "critical" : "medium",
+    status: matched ? "matched" : "gap",
+    severity: matched ? "medium" : "critical",
     confidence: "high",
     gameReference: "Hypnotize redirects the turn into a full self attack path by swapping attacker and defender context, not by applying raw attack once.",
     simulatorEvidence: rawAttackDamage
       ? "`shouldSkipTurn` deletes Hypnotize and returns raw attacker attack as self damage."
-      : "Simulator does not use the raw-attack shortcut for Hypnotize.",
-    nextAction: rawAttackDamage && !swapsCombatants
-      ? "Replace Hypnotize skip damage with a self-targeted normal attack path using the same hit resolver."
-      : "Keep the mitigated self-attack regression test and add real-fight confirmation when available.",
+      : matched
+        ? "`performAttack` redirects the normal hit path by assigning the attacker as target."
+        : "The self-targeted attack branch was not detected.",
+    nextAction: matched
+      ? "Keep the mitigated self-attack regression test and add real-fight confirmation when available."
+      : "Verify that Hypnotize redirects through the normal hit resolver.",
   });
 }
 
-function energyWaveTurnEffectCheck({ performAttackSource, combinedSource }) {
+function energyWaveTurnEffectCheck({ performAttackSource, combatSource }) {
   const immediateHitDamage = performAttackSource.includes("energyWaveDamage");
-  const hasTickModel = combinedSource.includes("applyEnergyWaveTick");
-  const grantsStacks = performAttackSource.includes("EnergyWave") && performAttackSource.includes("energyWaveChance");
-  const status = immediateHitDamage || !hasTickModel ? "gap" : "matched";
+  const tick = extractFunctionWindow(combatSource, "applyPeriodicStatusTick") ?? "";
+  const wave = extractFunctionWindow(combatSource, "applyEnergyWaveTick") ?? "";
+  const hasTickModel = tick.includes("applyEnergyWaveTick(") && tokensAppearInOrder(
+    wave, ["statuses.EnergyWave", "Math.floor(stacks * 0.1)", "applyDamageToSide(", "statuses.EnergyWave -= consumed"],
+  );
+  const matched = !immediateHitDamage && hasTickModel && performAttackSource.includes("applySelfBuffs(");
   return createCheck({
     id: "energy-wave-turn-effect",
     title: "Energy Wave turn effect",
-    status,
-    severity: status === "matched" ? "low" : "medium",
+    status: matched ? "matched" : "gap",
+    severity: matched ? "low" : "medium",
     confidence: "high",
     gameReference: "The bundle attack resolver grants EnergyWave stacks during the self-buff phase; damage is emitted by the periodic consumption block, not by the hit resolver.",
     simulatorEvidence: immediateHitDamage
       ? "`performAttack` still applies immediate `energyWaveDamage`, which double-counts the tick model."
-      : hasTickModel
-        ? `Simulator uses a tick model and no immediate hit damage was detected${grantsStacks ? " after stack grants" : ""}.`
-        : "No Energy Wave damage model was detected.",
-    nextAction: status === "matched"
+      : matched
+        ? "Periodic tick damage consumes Energy Wave stacks. The attack path grants self buffs."
+        : "The periodic damage and stack consumption path was not established.",
+    nextAction: matched
       ? "Confirm the exact periodic tick cadence against a real fight fixture."
       : "Remove immediate on-hit EnergyWave damage and keep periodic stack consumption as the only damage path.",
   });
 }
 
 function lifestealOrderCheck({ performAttackSource }) {
-  const lifestealBeforeBleed = tokensAppearInOrder(performAttackSource, ["const lifesteal", "const bleedStacks"]);
-  const bleedBeforeCurseBeforeLifesteal = tokensAppearInOrder(performAttackSource, ["Bleed", "Curse", "lifesteal"]);
+  const matched = tokensAppearInOrder(performAttackSource, ["const bleedStacks", "const curseStacks", "const lifesteal"]);
   return createCheck({
     id: "lifesteal-turn-order",
     title: "Bleed, Curse and Lifesteal order",
-    status: lifestealBeforeBleed && !bleedBeforeCurseBeforeLifesteal ? "gap" : "matched",
-    severity: lifestealBeforeBleed ? "high" : "medium",
+    status: matched ? "matched" : "gap",
+    severity: matched ? "medium" : "high",
     confidence: "high",
     gameReference: "The bundle applies Bleed recoil, then Curse reflection, then Lifesteal at the end of the turn.",
-    simulatorEvidence: lifestealBeforeBleed
-      ? "`performAttack` heals Lifesteal before applying Bleed recoil and has no Curse reflection block."
-      : bleedBeforeCurseBeforeLifesteal
-        ? "Simulator applies Bleed recoil, then Curse reflection, then Lifesteal."
-        : "Simulator evidence does not show Lifesteal before Bleed recoil.",
-    nextAction: lifestealBeforeBleed
-      ? "Move Lifesteal after Bleed recoil and new Curse reflection."
-      : "Keep end-of-turn ordering covered by regression tests.",
+    simulatorEvidence: matched
+      ? "Simulator applies Bleed recoil, then Curse reflection, then Lifesteal."
+      : "The expected Bleed, Curse and Lifesteal blocks were not detected in order.",
+    nextAction: matched
+      ? "Keep end-of-turn ordering covered by regression tests."
+      : "Verify that Lifesteal follows Bleed recoil and Curse reflection.",
   });
 }
 
@@ -328,14 +331,17 @@ function varnishSurvivalCheck({ damageToSideSource }) {
   });
 }
 
-function counterDelayedEffectCheck({ combatSource, combinedSource }) {
-  const counterEffectSource = extractFunctionWindow(combatSource, "performCounterEffect") ?? combinedSource;
-  const hasPendingQueue = combinedSource.includes("pendingEffects");
-  const hasDelayConstant = combinedSource.includes("COUNTER_DELAY_SECONDS");
-  const schedulesCounter = combinedSource.includes("combat.pendingEffects.push")
-    && combinedSource.includes("counter_scheduled");
-  const processesCounter = combinedSource.includes("processPendingEffect")
-    && combinedSource.includes("performCounterEffect");
+function counterDelayedEffectCheck({ combatSource }) {
+  const counterEffectSource = extractFunctionWindow(combatSource, "performCounterEffect") ?? "";
+  const reactiveSource = extractFunctionWindow(combatSource, "applyReactiveDamage") ?? "";
+  const pendingEffectSource = extractFunctionWindow(combatSource, "processPendingEffect") ?? "";
+  const schedulesCounter = /\bconst COUNTER_DELAY_SECONDS\s*=\s*0\.2\s*;/.test(combatSource)
+    && tokensAppearInOrder(reactiveSource, [
+      "COUNTER_DELAY_SECONDS / combatSpeedAtTime(",
+      "combat.pendingEffects.push(",
+      "counter_scheduled",
+    ]);
+  const processesCounter = pendingEffectSource.includes("performCounterEffect(");
   const usesDirectPipeline = tokensAppearInOrder(counterEffectSource, [
     "baseAttackDamage",
     "applyOffensiveMultipliers",
@@ -343,25 +349,135 @@ function counterDelayedEffectCheck({ combatSource, combinedSource }) {
     "applyDefensiveMitigation",
     "applyDamageToSide",
   ]);
-  const matched = hasPendingQueue && hasDelayConstant && schedulesCounter && processesCounter && usesDirectPipeline;
+  const matched = schedulesCounter && processesCounter && usesDirectPipeline;
 
   return createCheck({
     id: "counter-delayed-effect",
-    title: "Delayed Counter effect",
+    title: "Delayed Counter scheduling and direct hit",
     status: matched ? "matched" : "gap",
     severity: matched ? "low" : "high",
     confidence: "high",
-    gameReference: "The bundle schedules Counter in `pendingCombatEffects` about 200ms after the triggering hit, then resolves it through the direct hit pipeline.",
+    gameReference: "The bundle queues Counter 200ms divided by combat speed after the triggering attack and runs the attack resolver with its Counter flag.",
     simulatorEvidence: matched
-      ? "Simulator uses a pending effect queue, `COUNTER_DELAY_SECONDS`, `counter_scheduled` trace entries and `performCounterEffect` through the direct damage pipeline."
-      : "Simulator evidence is missing a pending effect queue, delayed scheduling or direct-pipeline Counter resolution.",
+      ? "The pending Counter uses the speed-scaled delay and the direct damage pipeline."
+      : "The speed-scaled queue delay or direct-pipeline Counter resolution was not established.",
     nextAction: matched
-      ? "Confirm counter timing against a real fight fixture and check chained counter edge cases."
-      : "Replace immediate Counter damage with a delayed pending effect that resolves through the direct damage pipeline.",
+      ? "Verify the full Counter turn and timing against observed web fights."
+      : "Check speed-scaled Counter scheduling and direct damage resolution.",
     details: matched
-      ? "Counter is now observable as a scheduled attack event followed by a `pending_effect` trace event."
+      ? "This row covers scheduling and the direct hit. The archived resolver also runs turn effects through `pt`, including Remedy and skip checks."
       : "",
   });
+}
+
+function tickCadenceCheck({ combatSource }) {
+  const matched = [
+    ["REGEN", "Regen", "1.001"],
+    ["STATUS", "Status", "1.002"],
+  ].every(([key, name, seconds]) =>
+    combatSource.includes(`const ${key}_TICK_SECONDS = ${seconds};`)
+    && combatSource.includes(`next${name}Tick: ${key}_TICK_SECONDS / initialSpeed`)
+    && combatSource.includes(`combat.next${name}Tick += ${key}_TICK_SECONDS / initialSpeed`));
+  return createCheck({
+    id: "periodic-tick-cadence",
+    title: "Periodic tick intervals",
+    status: matched ? "matched" : "gap",
+    severity: "medium",
+    confidence: "high",
+    gameReference: "The bundle uses 1001ms for regen and 1002ms for status ticks, each divided by combat speed.",
+    simulatorEvidence: matched
+      ? "The simulator starts and advances the web regen and status deadlines at the extracted intervals."
+      : "The expected speed-scaled values or deadline updates were not detected.",
+    nextAction: matched
+      ? "Compare wall-clock catch-up and simultaneous events with observed web fights."
+      : "Check the web regen and status deadlines against the two extracted intervals.",
+  });
+}
+
+function inspirationTickCheck({ combatSource }) {
+  const tick = extractFunctionWindow(combatSource, "applyStatusTick") ?? "";
+  const inspiration = extractFunctionWindow(combatSource, "applyInspirationTick") ?? "";
+  const buff = extractFunctionWindow(combatSource, "applyCombatBuff") ?? "";
+  const matched = tokensAppearInOrder(tick, [
+    "!combat.assumptions.steam",
+    "Object.keys(combat.playerStatuses).length === 0",
+    "Object.keys(combat.enemyStatuses).length === 0",
+    "return;",
+    "applyInspirationTick(combat, \"player\"",
+    "applyInspirationTick(combat, \"enemy\"",
+  ]) && tokensAppearInOrder(inspiration, ["rollStacks(", "applyCombatBuff(", "capBonus: combat.assumptions.inspirationCapBonus"])
+    && tokensAppearInOrder(buff, ['intendedSide === "player" ?', "STATUS_CAPS[status]", "+ capBonus", ": Infinity"]);
+  return createCheck({
+    id: "inspiration-tick-caps",
+    title: "Inspiration tick eligibility and caps",
+    status: matched ? "matched" : "gap",
+    severity: "medium",
+    confidence: "high",
+    gameReference: "The web status tick returns when both status maps are empty. It caps player Inspiration at 100 plus the fundamentals bonus and leaves enemy Inspiration uncapped.",
+    simulatorEvidence: matched
+      ? "The simulator checks for active status maps and applies separate player and enemy cap rules."
+      : "The empty-status guard, tick roll or side-specific cap was not detected.",
+    nextAction: matched
+      ? "Keep the traced empty-status and cap regression test."
+      : "Check tick eligibility and cap handling for both sides.",
+  });
+}
+
+function bananaSlipCheck({ combatSource, timingSource, skipTurnSource }) {
+  const fight = extractFunctionWindow(combatSource, "simulateFight") ?? "";
+  const delay = extractFunctionWindow(timingSource, "attackDelay") ?? "";
+  const matched = tokensAppearInOrder(skipTurnSource, [".BananaPeel", "statuses.BananaSlip = 1"])
+    && delay.includes("if (statuses.BananaSlip > 0) delayMs *= 2;")
+    && ["player", "enemy"].every((side) => tokensAppearInOrder(fight, [
+      `delete combat.${side}Statuses.BananaSlip;`,
+      "performAttack(",
+      `attackerSide: "${side}"`,
+    ]));
+  return createCheck({
+    id: "banana-slip-delay",
+    title: "BananaSlip next attack delay",
+    status: matched ? "matched" : "gap",
+    severity: "medium",
+    confidence: "high",
+    gameReference: "BananaPeel skips a turn. BananaSlip doubles the following attack interval and is cleared when that attack is processed.",
+    simulatorEvidence: matched
+      ? "The delay formula and both attack branches apply and clear BananaSlip."
+      : "The web delay formula or turn cleanup could not be established.",
+    nextAction: matched
+      ? "Keep the traced skip and next attack timestamps covered."
+      : "Check BananaSlip handling in the shared attack delay and the web loop.",
+  });
+}
+
+const REFERENCE_MARKERS = {
+  "Status Caps And Sets": ["Haste:", "Inspiration:", "EnergyWave:"],
+  "Varnish Survival": ["50-", "varnishTriggered"],
+  "Damage Resolution": ["Electrocute", "Frailty", "Brittle"],
+  "Attack Resolution": ["remedy", "Hypnotize", "multiStrikeChance", "HotPotato"],
+  "Status Tick Resolution": ["EnergyWave", "inspirationChance", "Balloon"],
+  "Combat Loop Timing": ["consolidateCombatTick:", "lastRegenTick", "lastStatusTick"],
+};
+
+function parseReferenceSections(markdown) {
+  const sections = new Set();
+  for (const section of markdown.split(/^## /m).slice(1)) {
+    const title = section.slice(0, section.indexOf("\n")).trim();
+    const snippet = /^\x60\x60\x60js\r?\n([\s\S]*?)^\x60\x60\x60[ \t]*\r?$/m.exec(section)?.[1] ?? "";
+    if (REFERENCE_MARKERS[title]?.every((marker) => snippet.includes(marker))) sections.add(title);
+  }
+  return sections;
+}
+
+function checkAgainstReference(check, sections, referenceSections) {
+  const missing = sections.filter((section) => !referenceSections.has(section));
+  if (missing.length === 0) return check;
+  return {
+    ...check,
+    status: "unverified",
+    confidence: "low",
+    gameReference: `Missing extracted code for ${missing.join(", ")}.`,
+    nextAction: "Extract the required sections from the archived store bundle.",
+  };
 }
 
 function createCheck(check) {
@@ -401,7 +517,10 @@ function normalizeSources(input) {
 
 function findSource(sources, suffix) {
   const normalizedSuffix = normalizePath(suffix);
-  return sources.find((source) => normalizePath(source.path).endsWith(normalizedSuffix))?.source ?? null;
+  return sources.find(({ path: sourcePath }) => {
+    const normalizedPath = normalizePath(sourcePath);
+    return normalizedPath === normalizedSuffix || normalizedPath.endsWith(`/${normalizedSuffix}`);
+  })?.source ?? null;
 }
 
 function normalizePath(filePath) {
@@ -419,10 +538,10 @@ function tokensAppearInOrder(source, tokens) {
 }
 
 function extractFunctionWindow(source, name) {
-  const marker = `function ${name}`;
-  const start = source.indexOf(marker);
-  if (start < 0) return null;
-  const open = findFunctionBodyOpen(source, start + marker.length);
+  const marker = new RegExp(`\\bfunction\\s+${name}\\s*\\(`).exec(source);
+  if (!marker) return null;
+  const start = marker.index;
+  const open = findFunctionBodyOpen(source, start + marker[0].length - 1);
   if (open < 0) return null;
   const close = findMatchingBrace(source, open);
   if (close < 0) return null;

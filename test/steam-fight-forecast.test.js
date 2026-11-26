@@ -80,6 +80,8 @@ test("Steam forecast requires the full Steam profile, valid timing settings, and
   }), /Steam sketch catalog/);
   assert.throws(() => createSteamFightForecast({ ...input, trials: 5001 }), /Trials must/);
   assert.throws(() => createSteamFightForecast({ ...input, maxSeconds: 0 }), /time limit/);
+  input.save.state.playerStats.attack = " ";
+  assert.throws(() => createSteamFightForecast(input), /attack.*finite number/);
 });
 
 test("Steam forecasts retain the standard analysis compatibility warnings", () => {

@@ -30,6 +30,7 @@ import {
 import {
   HARMFUL_STATUSES,
   SELF_BUFF_TO_STAT,
+  STATUS_CAPS,
   STATUS_TO_STAT,
   addStatus,
   applyRemedy,
@@ -262,7 +263,7 @@ export function simulateFight({ rng = Math.random, player, enemy, maxSeconds = 3
       });
     } else if (isDue(combat.nextPlayerAttack, combat.time) && combat.nextPlayerAttack <= combat.nextEnemyAttack + TIME_EPSILON) {
       const beforeAttack = traceSnapshot(combat);
-      if (steam) delete combat.playerStatuses.BananaSlip;
+      delete combat.playerStatuses.BananaSlip;
       const action = performAttack({ rng: fightRng, combat, attackerSide: "player", defenderSide: "enemy" });
       recordTraceDelta(combat, "attack", beforeAttack, { attackerSide: "player", defenderSide: "enemy", action });
       if (steam) {
@@ -273,7 +274,7 @@ export function simulateFight({ rng = Math.random, player, enemy, maxSeconds = 3
       }
     } else if (isDue(combat.nextEnemyAttack, combat.time)) {
       const beforeAttack = traceSnapshot(combat);
-      if (steam) delete combat.enemyStatuses.BananaSlip;
+      delete combat.enemyStatuses.BananaSlip;
       const action = performAttack({ rng: fightRng, combat, attackerSide: "enemy", defenderSide: "player" });
       recordTraceDelta(combat, "attack", beforeAttack, { attackerSide: "enemy", defenderSide: "player", action });
       if (steam) lastEnemyAttack = combat.time;
@@ -354,6 +355,7 @@ function normalizeCombatAssumptions(input = {}) {
     flowStateActive: input.flowStateActive === true,
     flowStateLevel: Math.max(0, toFiniteNumber(input.flowStateLevel, DEFAULT_COMBAT_ASSUMPTIONS.flowStateLevel)),
     flowStateKnownTargetIds: normalizeStringSet(input.flowStateKnownTargetIds),
+    inspirationCapBonus: Math.max(0, toFiniteNumber(input.inspirationCapBonus, 0)),
     steam,
   };
 }
@@ -423,6 +425,10 @@ function applyRegenerationTick(combat, rng) {
 }
 
 function applyStatusTick(combat, rng) {
+  if (!combat.assumptions.steam
+      && Object.keys(combat.playerStatuses).length === 0
+      && Object.keys(combat.enemyStatuses).length === 0) return;
+
   if (combat.assumptions.steam && combat.playerHp > 0 && combat.enemyHp > 0) {
     applySteamStatusTransitions(combat.player, combat.playerStatuses, rng);
     applySteamStatusTransitions(combat.enemy, combat.enemyStatuses, rng);
@@ -661,7 +667,14 @@ function applyInspirationTick(combat, side, rng) {
   const stacks = rollStacks(rng, rawChance, `tick.${side}.Inspiration.apply`);
   if (stacks <= 0) return;
 
-  const buff = applyCombatBuff({ combat, rng, status: "Inspiration", stacks, intendedSide: side });
+  const buff = applyCombatBuff({
+    combat,
+    rng,
+    status: "Inspiration",
+    stacks,
+    intendedSide: side,
+    capBonus: combat.assumptions.inspirationCapBonus,
+  });
   if (!buff) return;
   recordMechanic(combat, {
     type: "self_buff_tick",
@@ -1257,9 +1270,7 @@ function applyReactiveDamage({ rng, combat, attackerSide, defenderSide, isSurrea
   const counterChance = stat(defender, "counter");
   const counterSuccess = rollPercent(rng, counterChance, "reactive.counter");
   if (counterSuccess && !attacker.immunities.has("counter")) {
-    const delaySeconds = combat.assumptions.steam
-      ? COUNTER_DELAY_SECONDS / combatSpeedAtTime(combat.assumptions, combat.time)
-      : COUNTER_DELAY_SECONDS;
+    const delaySeconds = COUNTER_DELAY_SECONDS / combatSpeedAtTime(combat.assumptions, combat.time);
     const scheduledTime = combat.time + delaySeconds;
     combat.pendingEffects.push({
       type: "counter",
@@ -1647,7 +1658,7 @@ function applySelfBuffs({ rng, combat, attackerSide, attacker }) {
   }
 }
 
-function applyCombatBuff({ combat, rng, status, stacks, intendedSide, allowIntercept = true }) {
+function applyCombatBuff({ combat, rng, status, stacks, intendedSide, allowIntercept = true, capBonus = 0 }) {
   if (combat.assumptions.steam) {
     const result = applySteamBuff({ combat, rng, status, stacks, intendedSide, allowIntercept });
     if (result?.intercepted) {
@@ -1657,8 +1668,10 @@ function applyCombatBuff({ combat, rng, status, stacks, intendedSide, allowInter
   }
   const statuses = combat[`${intendedSide}Statuses`];
   const before = statuses[status] ?? 0;
-  addStatus(statuses, status, stacks);
-  return { side: intendedSide, before, after: statuses[status] ?? 0 };
+  const cap = intendedSide === "player" ? (STATUS_CAPS[status] ?? Infinity) + capBonus : Infinity;
+  const after = Math.min(before + stacks, cap);
+  statuses[status] = after;
+  return { side: intendedSide, before, after };
 }
 
 function applyBalloonPop({ rng, combat, defender, defenderSide }) {

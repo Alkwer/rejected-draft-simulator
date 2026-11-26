@@ -12,7 +12,7 @@ export function attackDelay(combatant, statuses = {}, speedMultiplier = 1, delay
   if (slow > 0) delayMs *= 1 + slow * 0.001;
   const haste = statuses.Haste ?? 0;
   if (haste > 0) delayMs /= 1 + haste * 0.001;
-  if (steam && statuses.BananaSlip > 0) delayMs *= 2;
+  if (statuses.BananaSlip > 0) delayMs *= 2;
   const speed = Number.isFinite(Number(speedMultiplier)) && Number(speedMultiplier) > 0 ? Number(speedMultiplier) : 1;
   const delay = Number.isFinite(Number(delayMultiplier)) && Number(delayMultiplier) > 0 ? Number(delayMultiplier) : 1;
   const seconds = delayMs * delay / speed / 1000;

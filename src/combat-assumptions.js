@@ -7,9 +7,11 @@ export function combatAssumptionsFromSave(save = {}) {
   const battleSpeedup = steam && battleSpeedupFromState(state);
   const flowTarget = steam ? steamFlowTarget(state, save.meta?.savedAt ?? state.lastSaveTime) : null;
   const knownTargets = normalizeStringList(state.glossaryUnlocks);
+  const inspirationCapBonus = steam ? 0 : positiveFiniteOrDefault(state.fundamentals?.inspirationCapBonus, 0);
   return {
     combatSpeedMultiplier: steam ? baseCombatSpeedMultiplier(state) : combatSpeedMultiplierFromState(state),
     ...(battleSpeedup && { battleSpeedup }),
+    ...(inspirationCapBonus > 0 && { inspirationCapBonus }),
     flowStateActive: steam ? Boolean(flowTarget) : flowStateActiveFromState(state),
     flowStateLevel: positiveFiniteOrDefault(state.fundamentals?.flowStateLevel, 0),
     flowStateKnownTargetIds: steam ? knownTargets.filter((id) => id === flowTarget) : knownTargets,

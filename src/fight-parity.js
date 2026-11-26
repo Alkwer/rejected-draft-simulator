@@ -1,6 +1,6 @@
 import { createFightTrace } from "./fight-trace.js";
 import { normalizeFightOutcome } from "./fight-outcome.js";
-import { toNumber } from "./save.js";
+import { combatStatNumber, isRecord } from "../web/save-format.js";
 
 const DEFAULT_TOLERANCES = {
   seconds: 0.05,
@@ -25,11 +25,15 @@ export function compareFightParityFixture({
   const effectiveTolerances = { ...DEFAULT_TOLERANCES, ...(normalized.tolerances ?? {}), ...tolerances };
   const deviations = [];
 
-  if (!hasStats(normalized.player) || !hasStats(normalized.enemy)) {
+  const targetIds = new Set([targetId, normalized.targetId, normalized.observed.targetId,
+    normalized.enemy.id, enemy?.id].filter(Boolean));
+  const mismatchedTarget = targetIds.size > 1;
+  if (mismatchedTarget || !hasStats(normalized.player) || !hasStats(normalized.enemy)) {
+    const status = mismatchedTarget ? "target_mismatch" : "missing_stats";
     return {
       mode: "fight-parity",
       ok: false,
-      status: "missing_stats",
+      status,
       comparedFields: 0,
       fixtureId: normalized.id,
       targetId: normalized.targetId,
@@ -41,9 +45,10 @@ export function compareFightParityFixture({
       simulated: null,
       trace: null,
       deviations: [{
-        code: "missing_stats",
+        code: status,
         targetId: normalized.targetId,
-        message: "Cannot run fight parity fixture because player or enemy stats are missing.",
+        message: mismatchedTarget ? `Conflicting fight targets: ${[...targetIds].join(", ")}.`
+          : "Cannot run fight parity fixture because player or enemy stats are missing.",
       }],
     };
   }
@@ -242,16 +247,21 @@ function normalizeObserved(fixture) {
 function normalizeCombatant(raw, fallbackId = null) {
   if (!raw || typeof raw !== "object") return {};
   const statsSource = raw.stats && typeof raw.stats === "object" ? raw.stats : raw;
+  const effects = raw.vulnerabilityEffects ?? statsSource.vulnerabilityEffects;
   return {
+    ...numericObject(statsSource),
     ...raw.source === "catalog" && { source: raw.source, rarity: raw.rarity },
     id: firstString(raw.id, raw.sketchId, raw.targetId, fallbackId),
     name: firstString(raw.name, raw.sketchName, raw.targetName),
-    ...numericObject(statsSource),
     ...(statsSource.isPreciseErased === true && { isPreciseErased: true }),
-    immunities: Array.isArray(raw.immunities) ? raw.immunities : [],
-    vulnerability: Array.isArray(raw.vulnerability) ? raw.vulnerability : null,
-    vulnerabilityEffects: Array.isArray(raw.vulnerabilityEffects) ? raw.vulnerabilityEffects : [],
+    immunities: arrayField(raw.immunities ?? statsSource.immunities, []),
+    vulnerability: arrayField(raw.vulnerability ?? statsSource.vulnerability, null),
+    vulnerabilityEffects: isRecord(effects) ? effects : {},
   };
+}
+
+function arrayField(value, fallback) {
+  return Array.isArray(value) ? value : fallback;
 }
 
 function summarizeTrace(trace) {
@@ -337,7 +347,7 @@ function compareBreakdown({ observed, simulated, tolerances, deviations, targetI
         code: "damage_breakdown_mismatch",
         label: `${side}.${key} damage`,
         actual: observedSide[key],
-        expected: toNumber(simulatedSide[key], 0),
+        expected: simulatedSide[key],
         absoluteTolerance: tolerances.damageAbsolute,
         relativeTolerance: tolerances.damageRelative,
         deviations,
@@ -452,14 +462,14 @@ function numericObject(raw = {}) {
   if (!raw || typeof raw !== "object") return {};
   const result = {};
   for (const [key, value] of Object.entries(raw)) {
-    const number = toNumber(value, NaN);
+    const number = combatStatNumber(value);
     if (Number.isFinite(number)) result[key] = number;
   }
   return result;
 }
 
 function hasStats(stats) {
-  return Boolean(stats && typeof stats === "object" && Object.keys(numericObject(stats)).length > 0);
+  return Number.isFinite(stats?.maxHp) && stats.maxHp > 0;
 }
 
 function firstString(...values) {
@@ -471,14 +481,14 @@ function firstString(...values) {
 
 function firstFiniteOrNull(...values) {
   for (const value of values) {
-    const number = toNumber(value, NaN);
+    const number = combatStatNumber(value);
     if (Number.isFinite(number)) return number;
   }
   return null;
 }
 
 function finiteOrNull(value) {
-  const number = toNumber(value, NaN);
+  const number = combatStatNumber(value);
   return Number.isFinite(number) ? number : null;
 }
 

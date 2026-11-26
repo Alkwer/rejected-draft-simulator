@@ -91,6 +91,18 @@ test("renderCombatReferenceMarkdown produces a compact reference document", () =
   assert.match(markdown, /```js\nVa=/);
 });
 
+test("extractCombatReference skips an unrelated assignment and rejects incomplete windows", () => {
+  const reference = extractCombatReference({
+    sources: [{
+      kind: "store",
+      source: 'const Va=7,unrelated=(x)=>{return x};const Va=(t,s)=>{return t+s};Fa={Haste:1e3};',
+    }],
+  });
+  const damage = reference.sections.find((section) => section.id === "damage-resolution");
+  assert.equal(damage.snippet, "const Va=(t,s)=>{return t+s}");
+  assert.ok(reference.missing.some((section) => section.id === "status-caps"));
+});
+
 test("writeCombatReferenceDocument writes a reference markdown file from local assets", async (t) => {
   const dir = path.join(process.cwd(), "tmp", `combat-reference-test-${Date.now()}-${Math.random().toString(16).slice(2)}`);
   const assetDir = path.join(dir, "assets");
@@ -119,4 +131,16 @@ test("writeCombatReferenceDocument writes a reference markdown file from local a
   assert.match(markdown, /# Combat Engine Reference/);
   assert.match(markdown, /Damage Resolution/);
   assert.deepEqual(result.sourceNames, ["game-store-TestHash.js"]);
+
+  fs.unlinkSync(path.join(assetDir, "game-store-TestHash.js"));
+  await assert.rejects(
+    writeCombatReferenceDocument({
+      metadataPath: path.join(dir, "metadata.json"),
+      assetDir,
+      outputPath: result.outputPath,
+      fetchImpl: null,
+    }),
+    /No combat reference sections found for game-store-TestHash\.js/,
+  );
+  assert.equal(fs.readFileSync(result.outputPath, "utf8"), markdown);
 });
