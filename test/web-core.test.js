@@ -111,6 +111,29 @@ test("web route previews serialize finite late-game currency balances", () => {
   assert.equal(JSON.parse(JSON.stringify(analysis.routePreview)).currencies.Photon, 2e307);
 });
 
+test("web assumptions and routes report Medium 2 removals without crediting the removed sketch", () => {
+  const victim = { ...sketches.farm_a, id: "victim", name: "Victim" };
+  const state = { saveProfile: "steam", playerStats: { maxHp: 1000, attack: 100, attackSpeed: 1000 },
+    availableSketches: ["farm_a", "victim"], multiverse: { currentUniverseId: "mv-medium-2" } };
+  const options = { save: { state }, sketches: { ...sketches, victim }, targetId: "victim", trials: 1, maxSeconds: 5 };
+  const route = createWebAnalysis({ ...options, routeIds: ["farm_a", "victim"] });
+  assert.equal(route.routePreview.targetAvailableNow, true);
+  assert.equal(route.routePreview.targetAvailableAfterRoute, false);
+  assert.equal(route.routePreview.targetAvailabilityReasonAfterRoute, "sketch_not_available");
+  assert.deepEqual(route.routePreview.steps[0].availabilityChanges, [{ id: "victim", retired: false }]);
+  assert.equal(route.routePreview.steps[1].status, "skipped_unavailable");
+  assert.equal(route.activeDeltas.victim, undefined);
+
+  let primary;
+  const assumed = createWebAnalysis({ ...options, assumedVictories: { farm_a: 1, victim: 1 } }, (result) => { primary = result; });
+  assert.deepEqual(assumed.assumedVictories, { farm_a: 1 });
+  assert.deepEqual(assumed.assumedVictoryIds, ["farm_a"]);
+  assert.equal(assumed.finalStats.attack, route.routePreview.finalStats.attack);
+  assert.equal(assumed.strategicPlan.target.availableNow, false);
+  assert.ok(assumed.warnings.some(({ code, message }) => code === "assumed_victory_unavailable" && message.includes("Victim")));
+  assert.deepEqual(primary.warnings, assumed.warnings);
+});
+
 test("an unrepresentable optional reward preserves the primary fight and the other reward forecasts", () => {
   const state = { saveProfile: "steam", availableSketches: ["farm_a", "giant"],
     playerStats: { attackSpeed: 1000, maxHp: 100, attack: 1e308 } };
@@ -441,9 +464,11 @@ test("a precise sample still reports an unverified Steam build", () => {
   assert.equal(diagnostics.sample.trials, 1000);
   assert.equal(diagnostics.modelBuild.status, "unverified");
   assert.notEqual(diagnostics.confidence.level, "high");
-  const matched = createWebAnalysis({ ...input, dataMetadata: { ...dataMetadata, buildId: "26885190" } });
-  assert.equal(matched.diagnostics.modelBuild.status, "verified");
-  assert.deepEqual(matched.diagnostics.sample, diagnostics.sample);
+  for (const buildId of ["26885190", "26933131"]) {
+    const matched = createWebAnalysis({ ...input, dataMetadata: { ...dataMetadata, buildId } });
+    assert.equal(matched.diagnostics.modelBuild.status, "verified");
+    assert.deepEqual(matched.diagnostics.sample, diagnostics.sample);
+  }
 });
 
 test("createWebAnalysis returns a strategic planner section when strategy options are supplied", () => {

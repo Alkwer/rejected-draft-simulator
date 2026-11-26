@@ -6,8 +6,10 @@ import { enemyFromSketch } from "./combat/steam-encounter.js";
 import { generatorRates } from "./currency-generators.js";
 import { createEconomyPlan, resolveSoftcapSeconds } from "./economy.js";
 import { RewardProjectionError, steamCurrencyPerkWinsRemaining, steamSketchRewards } from "./rewards.js";
+import { createRng } from "./rng.js";
 import { currencyRewardAmount, projectVictories, simulateRoute } from "./route.js";
 import { isFullSteamSave, normalizeStats, toNumber } from "./save.js";
+import { applySteamVictoryAvailability } from "./steam-route-availability.js";
 import { applySteamVictoryStatChanges, createSteamStatProjection } from "./steam-stat-projection.js";
 import { boosterRestriction, getSketchFightEligibility, isSketchToolUnlocked } from "./tool-rules.js";
 import { remainingSketchVictories } from "./victory-limit.js";
@@ -19,6 +21,7 @@ const DEFAULT_COMPARE_PROFILE_IDS = ["farm-q", "3-masterpiece", "transcendent-pa
 const MAX_FARM_STEPS = 8;
 const MAX_FARM_TRIALS = 200;
 const MAX_FARM_CHECK_TRIALS = 20;
+const CULL_ROUTE_SAMPLES = 256;
 const MIN_OPUS_FARM_VALUE_PER_MINUTE = 10;
 
 const DEFAULT_REWARD_WEIGHTS = {
@@ -605,7 +608,7 @@ function estimateProfileProgress({ profileGoal, approach, runEV, currentRows, sk
       return { decision: "first_clear_history_unknown", unit: "masterpiece", missing,
         expectedPerRun: null, averageRuns: null, averageRedraws: null };
     }
-    expectedPerRun = estimateMasterpieceKillsPerRun({ currentRows, sketches, defeatedMasterpieces });
+    expectedPerRun = estimateMasterpieceKillsPerRun({ currentRows, sketches, defeatedMasterpieces, runEV });
     unit = "masterpiece";
   } else if (type === "target_win_rate") {
     expectedPerRun = estimateWinRateGainPerRun({ currentRows, runEV });
@@ -987,6 +990,7 @@ function estimateRunEV({ sketches, state, baseStats, currentRows, targetStatWeig
   const sketchesEV = [];
   const windowSeconds = Math.max(1, toNumber(farmSeconds, DEFAULT_FARM_SECONDS));
   const perkWinsRemaining = steamCurrencyPerkWinsRemaining(state);
+  const schedule = sampleCullRoute({ state, sketches, currentRows, perkWinsRemaining, windowSeconds });
   // Track the probability of each prior win count while the perk is still active.
   const priorWinProbabilities = new Float64Array(perkWinsRemaining);
   if (perkWinsRemaining > 0) priorWinProbabilities[0] = 1;
@@ -1006,14 +1010,13 @@ function estimateRunEV({ sketches, state, baseStats, currentRows, targetStatWeig
     // The route follows input order. Beyond an uncertain duration, only full-route rewards are estimated.
     const completesInWindow = routeTimed && earliestSeconds <= windowSeconds;
     if (!routeTimed && earliestSeconds <= windowSeconds) windowTimingIncomplete = true;
-    const steamRewards = estimateSteamPayout({
-      sketch,
-      state,
-      baseStats,
-      perkWinsRemaining,
-      perkProbability: priorWinProbabilities.reduce((sum, chance) => sum + chance, 0),
-    });
-    if (steamRewards && perkWinsRemaining > 0) {
+    const planned = schedule?.steps.get(row.id);
+    const routeWinRate = planned?.win ?? winRate;
+    const timelyWinRate = planned?.timelyWin ?? (completesInWindow ? winRate : 0);
+    const perkWinRate = planned?.perkWin ?? winRate * priorWinProbabilities.reduce((sum, chance) => sum + chance, 0);
+    const timelyPerkWinRate = planned?.timelyPerkWin ?? (completesInWindow ? perkWinRate : 0);
+    const steamRewards = estimateSteamPayout({ sketch, state, baseStats, perkWinsRemaining });
+    if (!schedule && steamRewards && perkWinsRemaining > 0) {
       for (let wins = priorWinProbabilities.length - 1; wins > 0; wins -= 1) {
         priorWinProbabilities[wins] = priorWinProbabilities[wins] * (1 - winRate) + priorWinProbabilities[wins - 1] * winRate;
       }
@@ -1027,32 +1030,35 @@ function estimateRunEV({ sketches, state, baseStats, currentRows, targetStatWeig
         amount: toNumber(reward.amount) * multiplier,
         fundamentals: state.fundamentals ?? {},
       });
-      const expected = rewardAmount * winRate;
+      const afterPerk = reward.amountWithoutPerk ?? rewardAmount;
+      const expected = afterPerk * (routeWinRate - perkWinRate) + rewardAmount * perkWinRate;
+      const expectedInWindow = afterPerk * (timelyWinRate - timelyPerkWinRate) + rewardAmount * timelyPerkWinRate;
       expectedCurrencies[reward.name] = toNumber(expectedCurrencies[reward.name]) + expected;
       const item = currencies[reward.name] ??= { battleExpectedPerRun: 0, battleWindowExpected: 0 };
       item.battleExpectedPerRun += expected;
-      if (completesInWindow) item.battleWindowExpected += expected;
+      item.battleWindowExpected += expectedInWindow;
     }
     const expectedStatScore = estimateStatRewardValue({
       rewards: steamRewards?.statRewards ?? sketch.rewards,
       targetStatWeights,
       steam: Boolean(steamRewards),
-    }) * winRate;
-    statValuePerRun += expectedStatScore;
-    if (completesInWindow) statValue += expectedStatScore;
+    });
+    statValuePerRun += expectedStatScore * routeWinRate;
+    statValue += expectedStatScore * timelyWinRate;
     sketchesEV.push({
       id: row.id,
       name: row.name ?? sketch.name ?? row.id,
       rarity: row.rarity ?? sketch.rarity ?? "unknown",
       winRate: roundNumber(winRate),
+      ...(schedule && { routeWinRate: roundNumber(routeWinRate) }),
       seconds,
       secondsCensored: row.p90Censored,
       expectedCurrencies: Object.fromEntries(Object.entries(expectedCurrencies).map(([name, amount]) => [name, roundNumber(amount)])),
-      expectedStatScore: roundNumber(expectedStatScore),
+      expectedStatScore: roundNumber(expectedStatScore * routeWinRate),
     });
   }
 
-  const routeSeconds = routeTimed ? earliestSeconds : null;
+  const routeSeconds = schedule ? schedule.routeSeconds : routeTimed ? earliestSeconds : null;
   const currencyEV = estimateCurrencyEV({ currencies, rates: generatorRates(state), routeSeconds, windowSeconds });
   const quintessenceRate = quintessencePerSecond(state);
   const quintessence = {
@@ -1063,8 +1069,9 @@ function estimateRunEV({ sketches, state, baseStats, currentRows, targetStatWeig
 
   return {
     windowSeconds,
-    windowTimingIncomplete,
+    windowTimingIncomplete: schedule?.windowTimingIncomplete ?? windowTimingIncomplete,
     routeSeconds,
+    ...(schedule && { availabilitySamples: schedule.samples }),
     quintessence,
     currencies: currencyEV,
     statValue: roundNumber(statValue),
@@ -1073,6 +1080,63 @@ function estimateRunEV({ sketches, state, baseStats, currentRows, targetStatWeig
     totalValuePerRun: roundNumber(totalEVValue({ currencies: currencyEV, quintessence, statValue: statValuePerRun, amountKey: "expectedPerRun" })),
     sketches: sketchesEV.sort((a, b) => b.expectedStatScore - a.expectedStatScore),
   };
+}
+
+function sampleCullRoute({ state, sketches, currentRows, perkWinsRemaining, windowSeconds }) {
+  if (!isFullSteamSave(state) || state.availableSketches == null || currentRows.length < 2) return null;
+  const rows = currentRows.map((row) => ({ ...row, winRate: clamp01(toNumber(row.winRate)) }));
+  const medium = state.multiverse?.currentUniverseId === "mv-medium-2";
+  const madman = state.gameMode === "madman";
+  if (!rows.slice(0, -1).some(({ id, winRate }) => winRate > 0 && (
+    medium && toNumber(state.sketchRunVictories?.[id]) === 0
+    || madman && remainingSketchVictories(state, id) <= 1
+  ))) return null;
+
+  const steps = new Map(rows.map(({ id }) => [id, { win: 0, timelyWin: 0, perkWin: 0, timelyPerkWin: 0 }]));
+  const available = normalizeList(state.availableSketches);
+  const random = createRng("run-availability");
+  const samples = rows.slice(0, -1).some(({ winRate }) => winRate > 0 && winRate < 1) ? CULL_ROUTE_SAMPLES : 1;
+  let totalSeconds = 0;
+  let routeTimed = true;
+  let windowTimingIncomplete = false;
+  for (let sample = 0; sample < samples; sample += 1) {
+    const snapshot = {
+      saveProfile: state.saveProfile, gameMode: state.gameMode, multiverse: state.multiverse,
+      fundamentals: state.fundamentals, availableSketches: available,
+      redrawCount: state.redrawCount, lastRedrawTime: state.lastRedrawTime, sketchRemovalSeed: state.sketchRemovalSeed,
+      sketchVictories: { ...state.sketchVictories }, sketchRunVictories: { ...state.sketchRunVictories },
+    };
+    let seconds = 0;
+    let timed = true;
+    let wins = 0;
+    for (const row of rows) {
+      if (!snapshot.availableSketches.includes(row.id)) continue;
+      timed &&= row.p90Seconds != null && !row.p90Censored;
+      seconds += row.p90Seconds ?? 0;
+      if (!timed && seconds <= windowSeconds) windowTimingIncomplete = true;
+      const step = steps.get(row.id);
+      const timely = timed && seconds <= windowSeconds;
+      const perk = wins < perkWinsRemaining;
+      // Integrate this fight's own odds and sample its outcome for the remaining route.
+      const chance = row.winRate / samples;
+      step.win += chance;
+      if (timely) step.timelyWin += chance;
+      if (perk) step.perkWin += chance;
+      if (timely && perk) step.timelyPerkWin += chance;
+      if (row.winRate < 1 && random() >= row.winRate) continue;
+      wins += 1;
+      const victoriesBefore = toNumber(snapshot.sketchVictories[row.id]);
+      const runVictoriesBefore = toNumber(snapshot.sketchRunVictories[row.id]);
+      snapshot.sketchVictories[row.id] = victoriesBefore + 1;
+      snapshot.sketchRunVictories[row.id] = runVictoriesBefore + 1;
+      applySteamVictoryAvailability({
+        state: snapshot, sketches, id: row.id, victoriesBefore, runVictoriesBefore, listIds: normalizeList,
+      });
+    }
+    routeTimed &&= timed;
+    totalSeconds += seconds;
+  }
+  return { steps, samples, routeSeconds: routeTimed ? roundNumber(totalSeconds / samples) : null, windowTimingIncomplete };
 }
 
 function decideSoftcapOrRedraw({ state, seconds, maxSoftcapWaitSeconds, currentRows, runEV }) {
@@ -1234,6 +1298,7 @@ function compareBoosterChoices({
       maxSeconds,
       seed: `${seed}:booster`,
       includeStepCombat: true,
+      requireAvailability: true,
     };
     const route = simulateRoute({ ...options, boostedIds: candidate.ids });
     const baseline = simulateRoute(options);
@@ -1257,9 +1322,11 @@ function compareBoosterChoices({
       winRate: roundNumber(toNumber(simulation.winRate)),
       conditional: true,
       targetAvailable: Boolean(targetAvailable),
+      targetRemovedDuringRoute: route.target?.availableNow === true
+        && route.steps.some((step) => step.availabilityChanges?.some(({ id }) => id === targetId)),
       routeWinRate: roundNumber(boosted.routeWinRate),
       jointWinRate: targetAvailable ? roundNumber(boosted.jointWinRate) : null,
-      steps: route.steps.map(({ id, fightSimulation }) => ({ id,
+      steps: route.steps.map(({ id, status, availabilityReason, fightSimulation }) => ({ id, status, availabilityReason,
         fightSimulation: fightSimulation && { winRate: fightSimulation.winRate, winRateCi95: fightSimulation.winRateCi95,
           trials: fightSimulation.trials, p90Seconds: fightSimulation.p90Seconds, p90Censored: fightSimulation.p90Censored } })),
       ci95HalfWidth: simulation.winRateCi95?.halfWidth ?? null,
@@ -1271,7 +1338,7 @@ function compareBoosterChoices({
   }).sort((a, b) => b.score - a.score || b.routeWinRate - a.routeWinRate);
 
   return {
-    recommendation: choices.find((choice) => choice.score > 0 && choice.routeWinRate > 0) ?? null,
+    recommendation: choices.find((choice) => !choice.targetRemovedDuringRoute && choice.score > 0 && choice.routeWinRate > 0) ?? null,
     choices,
   };
 }
@@ -1425,11 +1492,12 @@ function defeatedMasterpieceIds({ state, sketches, currentRows }) {
     .map(([id]) => id));
 }
 
-function estimateMasterpieceKillsPerRun({ currentRows, sketches, defeatedMasterpieces }) {
+function estimateMasterpieceKillsPerRun({ currentRows, sketches, defeatedMasterpieces, runEV }) {
   const firstWinRates = new Map();
+  const routeRates = new Map(runEV.sketches.map(({ id, routeWinRate }) => [id, routeWinRate]));
   for (const row of currentRows) {
     if ((sketches[row.id]?.rarity ?? row.rarity) !== "masterpiece" || defeatedMasterpieces.has(row.id)) continue;
-    firstWinRates.set(row.id, Math.max(firstWinRates.get(row.id) ?? 0, clamp01(row.winRate)));
+    firstWinRates.set(row.id, Math.max(firstWinRates.get(row.id) ?? 0, routeRates.get(row.id) ?? clamp01(row.winRate)));
   }
   return roundNumber([...firstWinRates.values()].reduce((sum, winRate) => sum + winRate, 0));
 }
@@ -1498,12 +1566,14 @@ function createWinRateCurve({
   let improvesTarget = false;
   let unverifiedFight = false;
   let nextIndex = 0;
+  const targetInitiallyAvailable = getSketchFightEligibility(sketches[targetId], state).eligible;
 
   // At the original stats the current-run results already cover the fight.
   // With projected stats, share the per-step trial budget between both fights.
   for (; nextIndex < queue.length && nextIndex < MAX_FARM_STEPS; nextIndex += 1) {
     const item = queue[nextIndex];
     const farmer = sketches[item.id];
+    if (!getSketchFightEligibility(farmer, projectedState).eligible) continue;
     if (player !== stats && (!farmer.stats || runMonteCarlo({
       player,
       enemy: enemyFromSketch(farmer, item.id),
@@ -1517,7 +1587,13 @@ function createWinRateCurve({
     }
     const previousPlayer = player;
     try {
-      const result = projectVictories({ state: projectedState, baseStats: player, sketches, ids: [item.id] });
+      const result = projectVictories({ state: projectedState, baseStats: player, sketches, ids: [item.id], requireAvailability: true });
+      if (!result.appliedIds.length) continue;
+      if (targetInitiallyAvailable && !getSketchFightEligibility(sketches[targetId], result.state).eligible) {
+        // Another fight first can change which zero-victory sketch gets culled.
+        unverifiedFight ||= queue.some(({ id }) => id !== item.id);
+        continue;
+      }
       projectedState = result.state;
       if (result.lastReward?.statRewards?.some(({ statName }) =>
         toNumber(result.stats[statName]) !== toNumber(player[statName]))) {
@@ -1652,7 +1728,7 @@ function rewardMultiplier({ state, id }) {
   return 1 / (1 + totalVictories * decay) * booster;
 }
 
-function estimateSteamPayout({ sketch, state, baseStats, perkWinsRemaining = 0, perkProbability = 1 }) {
+function estimateSteamPayout({ sketch, state, baseStats, perkWinsRemaining = 0 }) {
   const id = sketch.id;
   const victoriesBefore = toNumber(state.sketchVictories?.[id]);
   const rewardContext = {
@@ -1664,7 +1740,7 @@ function estimateSteamPayout({ sketch, state, baseStats, perkWinsRemaining = 0, 
   };
   const rewards = steamSketchRewards(rewardContext);
   if (!rewards) return null;
-  const afterPerk = perkWinsRemaining > 0 && perkProbability < 1
+  const afterPerk = perkWinsRemaining > 0
     ? steamSketchRewards({ ...rewardContext, newWins: perkWinsRemaining })
     : null;
   let statRewards = (sketch.rewards ?? []).map((reward) => ({ ...reward, amount: rewards.statGain(reward) }));
@@ -1682,9 +1758,8 @@ function estimateSteamPayout({ sketch, state, baseStats, perkWinsRemaining = 0, 
     statRewards,
     currencyRewards: (sketch.currencyRewards ?? []).map((reward) => ({
       ...reward,
-      amount: afterPerk
-        ? rewards.currencyGain(reward) * perkProbability + afterPerk.currencyGain(reward) * (1 - perkProbability)
-        : rewards.currencyGain(reward),
+      amount: rewards.currencyGain(reward),
+      ...(afterPerk && { amountWithoutPerk: afterPerk.currencyGain(reward) }),
     })),
   };
 }

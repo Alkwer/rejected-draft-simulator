@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { compareRoutes, simulateRoute } from "../src/route.js";
+import { compareRoutes, projectVictories, simulateRoute } from "../src/route.js";
 
 const sketches = {
   warmup: {
@@ -112,6 +112,88 @@ test("a declared route credits future rewards and labels the fight forecasts as 
   assert.equal(route.target.conditional, true);
   assert.equal(route.target.availableNow, false);
   assert.equal(route.target.simulation.winRate, 1);
+});
+
+test("Medium 2 uses the Steam removal seed, redraw victories and rarity cap across projections", () => {
+  const catalog = {
+    ...sketches,
+    hidden: { ...sketches.drain, id: "hidden" },
+    won: { ...sketches.drain, id: "won" },
+  };
+  const availableSketches = ["warmup", "drain", "hidden", "won", "replacement"];
+  const saveState = state({
+    saveProfile: "steam", sketchRemovalSeed: 1, availableSketches, hiddenSketches: ["hidden"],
+    sketchVictories: { hidden: 1 }, sketchRunVictories: { won: 1 },
+    guaranteedSketchIds: ["hidden", "won"], bonusSketchIds: ["hidden"],
+    availableSketchCountsByRarity: { rough: 4, opus: 1 }, runTotalSketchCountsByRarity: { rough: 4, opus: 1 },
+    fundamentals: { maxVictories: 4 }, multiverse: { currentUniverseId: "mv-medium-2", totalReincarnations: 3 },
+    redrawCount: 2, lastRedrawTime: 42,
+  });
+  const options = { sketches: catalog, state: saveState, baseStats: saveState.playerStats };
+  const assumed = projectVictories({ ...options, ids: ["warmup", "warmup", "hidden"] });
+  assert.deepEqual(assumed.appliedIds, ["warmup", "warmup"]);
+  assert.deepEqual(assumed.skippedUnavailableIds, ["hidden"]);
+  assert.deepEqual(assumed.state.availableSketches, ["warmup", "drain", "won", "replacement"]);
+  assert.deepEqual(assumed.state.hiddenSketches, []);
+  assert.deepEqual(assumed.state.guaranteedSketchIds, ["won"]);
+  assert.deepEqual(assumed.state.bonusSketchIds, []);
+  assert.equal(assumed.state.availableSketchCountsByRarity.rough, 3);
+  assert.equal(assumed.state.runTotalSketchCountsByRarity.rough, 3);
+  assert.deepEqual(saveState.availableSketches, ["warmup", "drain", "hidden", "won", "replacement"]);
+  assert.deepEqual(saveState.hiddenSketches, ["hidden"]);
+  const next = projectVictories({ ...options, state: assumed.state, baseStats: assumed.stats, ids: ["hidden"] });
+  assert.deepEqual(next.skippedUnavailableIds, ["hidden"]);
+  assert.equal(next.state.sketchVictories.hidden, 1);
+  const nextRedraw = projectVictories({ ...options, state: assumed.state, baseStats: assumed.stats, ids: ["hidden"], afterRedraw: true });
+  assert.deepEqual(nextRedraw.appliedIds, ["hidden"]);
+
+  // In saves without a seed, the same redraw identity produces the same native fallback.
+  for (const sketchRemovalSeed of [undefined, 1127736186]) {
+    const result = projectVictories({ ...options, state: { ...saveState, sketchRemovalSeed }, ids: ["warmup"] });
+    assert.deepEqual(result.lastReward.availabilityChanges, [{ id: "drain", retired: false }]);
+  }
+});
+
+test("Madman and Brutal 1 apply both max-victory rules and prevent later fights with removed sketches", () => {
+  const saveState = state({
+    saveProfile: "steam", gameMode: "madman", availableSketches: ["warmup", "replacement", "target"],
+    sketchRemovalSeed: 1, sketchRunVictories: { target: 1 }, autoHideMaxedUnlocked: true,
+    guaranteedSketchIds: ["warmup", "replacement"], bonusSketchIds: ["warmup"],
+    availableSketchCountsByRarity: { rough: 1, opus: 1, masterpiece: 1 },
+    runTotalSketchCountsByRarity: { rough: 1, opus: 1, masterpiece: 1 },
+    multiverse: { currentUniverseId: "mv-brutal-1", retiredSketchIds: ["already"] },
+  });
+  const options = { sketches, state: saveState, baseStats: saveState.playerStats };
+  const result = projectVictories({ ...options, ids: ["warmup", "replacement"] });
+  assert.deepEqual(result.appliedIds, ["warmup"]);
+  assert.deepEqual(result.state.availableSketches, ["target"]);
+  assert.deepEqual(result.state.multiverse.retiredSketchIds, ["already", "warmup"]);
+  assert.deepEqual(result.state.hiddenSketches, ["warmup"]);
+  assert.deepEqual(result.state.guaranteedSketchIds, []);
+  assert.deepEqual(result.state.bonusSketchIds, []);
+  assert.deepEqual(result.state.availableSketchCountsByRarity, { rough: 0, opus: 0, masterpiece: 1 });
+  assert.deepEqual(result.state.runTotalSketchCountsByRarity, { rough: 1, opus: 0, masterpiece: 1 });
+  const route = simulateRoute({ ...options, routeIds: ["warmup", "replacement"], targetId: "replacement",
+    includeStepCombat: true, trials: 1, maxSeconds: 10 });
+  assert.deepEqual(route.steps[0].availabilityChanges, [{ id: "warmup", retired: true }, { id: "replacement", retired: false }]);
+  assert.equal(route.steps[1].status, "skipped_unavailable");
+  assert.equal(route.steps[1].availableNow, true);
+  assert.equal(route.steps[1].availableAtStep, false);
+  assert.equal(route.steps[1].fightSimulation, undefined);
+  assert.equal(route.target.availableAfterRoute, false);
+  assert.equal(route.target.availabilityReasonAfterRoute, "sketch_not_available");
+});
+
+test("Medium 2 takes precedence when a first win also maxes a sketch in Madman", () => {
+  const saveState = state({
+    saveProfile: "steam", gameMode: "madman", availableSketches: ["warmup", "replacement"],
+    multiverse: { currentUniverseId: "mv-medium-2" },
+  });
+  const options = { sketches, baseStats: saveState.playerStats };
+  const first = projectVictories({ ...options, state: saveState, ids: ["warmup"] });
+  assert.deepEqual(first.state.availableSketches, ["warmup", "replacement"]);
+  const repeat = projectVictories({ ...options, state: { ...saveState, sketchRunVictories: { warmup: 1 } }, ids: ["warmup"] });
+  assert.deepEqual(repeat.state.availableSketches, ["warmup"]);
 });
 
 test("an unknown eraser target does not consume a forecast eraser use", () => {
@@ -368,6 +450,17 @@ test("compareRoutes uses identical fight samples for identical routes with diffe
   });
 
   for (const entry of comparison.routes) assert.deepEqual(entry.target.simulation, direct.target.simulation);
+});
+
+test("compareRoutes ranks a reachable target ahead of a stronger build that removed it", () => {
+  const saveState = state({ saveProfile: "steam", availableSketches: ["warmup", "drain"],
+    multiverse: { currentUniverseId: "mv-medium-2" } });
+  const comparison = compareRoutes({
+    sketches, state: saveState, baseStats: saveState.playerStats, targetId: "drain",
+    routes: [{ name: "Farm", ids: ["warmup"] }, { name: "Fight now", ids: [] }], trials: 2, maxSeconds: 5,
+  });
+  assert.deepEqual(comparison.routes.map(({ name, target }) => [name, target.availableAfterRoute]),
+    [["Fight now", true], ["Farm", false]]);
 });
 
 test("simulateRoute uses the legacy save's time acceleration and Flow State", () => {

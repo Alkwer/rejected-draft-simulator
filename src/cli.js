@@ -926,7 +926,10 @@ function printRouteResult({
   console.log(`Route: ${routeResult.routeIds.length > 0 ? routeResult.routeIds.join(", ") : "empty"}`);
   if (routeResult.routeIds.length) console.log("Projected rewards assume the listed victories.");
   if (routeResult.target?.availableNow === false) console.log("The target is unavailable in the current run.");
-  else if (routeResult.target?.availableAfterRoute === false) console.log("The route reaches the target's victory limit.");
+  else if (routeResult.target?.availableAfterRoute === false) {
+    console.log(routeResult.target.availabilityReasonAfterRoute === "max_victories"
+      ? "The route reaches the target's victory limit." : "The route removes the target from this run.");
+  }
   console.log(`Seed: ${seed}`);
   console.log(`Max fight time: ${maxSeconds}s`);
   console.log("");
@@ -942,6 +945,9 @@ function printRouteResult({
     const rewards = step.statRewards.map((reward) => `${reward.statName} ${formatSigned(reward.amount)}`);
     const currencies = step.currencyRewards.map((reward) => `${reward.name} ${formatSigned(reward.amount)}`);
     console.log(`  ${label} x${step.rewardMultiplier.total} ${[...rewards, ...currencies].join(", ") || "no rewards"}`);
+    for (const change of step.availabilityChanges ?? []) {
+      console.log(`    ${change.retired ? "Retired" : "Removed from this run"}: ${change.id}`);
+    }
   }
   if (routeResult.steps.length === 0) console.log("  none");
   console.log("");
@@ -989,6 +995,8 @@ function printRouteComparison({ target, statSource, comparison }) {
   console.log("");
   console.log("Route".padEnd(22) + "Win rate (95% CI)".padEnd(32) + "Timeout".padEnd(10) + "p90".padEnd(10) + "Attack".padEnd(14) + "Max HP");
   for (const route of comparison.routes) {
+    const status = route.target?.availableAfterRoute === false ? "target unavailable after route"
+      : route.conditional ? "conditional forecast" : null;
     console.log(
       route.name.padEnd(22)
       + `${(route.winRate * 100).toFixed(2)}% (${formatConfidenceInterval(route.winRateCi95)})`.padEnd(32)
@@ -996,7 +1004,7 @@ function printRouteComparison({ target, statSource, comparison }) {
       + formatSeconds(route.p90Seconds, route.p90Censored).padEnd(10)
       + formatNumber(route.finalStats.attack).padEnd(14)
       + formatNumber(route.finalStats.maxHp)
-      + (route.conditional ? "  (conditional forecast)" : ""),
+      + (status ? `  (${status})` : ""),
     );
   }
 }

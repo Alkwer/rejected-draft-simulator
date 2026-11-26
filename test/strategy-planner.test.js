@@ -809,6 +809,60 @@ test("a favorable projected fight still requires an available target", () => {
   }
 });
 
+test("Steam strategy avoids booster routes with a culled fight and farm paths that cull the target", () => {
+  const farmer = { ...sketches.opus_attack, rarity: "rough" };
+  const victim = { ...sketches.opus_currency, rarity: "rough" };
+  const baseStats = { maxHp: 1000, attack: 1000, attackSpeed: 1000, accuracy: 90, minDamage: 100, maxDamage: 100 };
+  const saveState = state({ saveProfile: "steam", availableSketches: [farmer.id, victim.id],
+    playerStats: baseStats, battleStats: {}, multiverse: { currentUniverseId: "mv-medium-2" } });
+  const params = { sketches: { ...sketches, [farmer.id]: farmer, [victim.id]: victim }, state: saveState,
+    baseStats, targetId: victim.id, targetSimulation: { winRate: 0.1 }, trials: 5, maxSeconds: 10,
+    currentRun: { targets: [{ id: farmer.id, winRate: 1 }, { id: victim.id, winRate: 0.1 }] },
+    boosterCandidates: [{ name: "Target removed", ids: [farmer.id] }, { name: "Fight removed", ids: [farmer.id, victim.id] }] };
+  const plan = createStrategyPlan(params);
+  assert.equal(plan.boosters.recommendation, null);
+  const [targetRemoved, fightRemoved] = plan.boosters.choices;
+  assert.equal(targetRemoved.targetRemovedDuringRoute, true);
+  assert.equal(fightRemoved.steps[1].status, "skipped_unavailable");
+  assert.equal(fightRemoved.routeWinRate, 0);
+  assert.deepEqual(plan.stopFarming.curve, []);
+  assert.equal(plan.stopFarming.decision, "redraw");
+});
+
+test("Steam run EV follows available fights after wins and losses, including payout windows and first clears", () => {
+  const farmer = { ...sketches.target, id: "farmer", currencyRewards: [{ name: "Graphite", amount: 100 }] };
+  const target = { ...sketches.target, currencyRewards: [{ name: "Graphite", amount: 300 }] };
+  const saveState = state({
+    saveProfile: "steam", availableSketches: [farmer.id, target.id],
+    multiverse: { currentUniverseId: "mv-medium-2", firstClearPerkIds: ["first-ten-wins-currency"] },
+    currentUniverseBoostedCurrencyWins: 9,
+  });
+  const project = (farmerWinRate, overrides = {}) => createStrategyPlan({
+    sketches: { farmer, target }, state: { ...saveState, ...overrides }, targetId: target.id,
+    profile: "3-masterpiece", farmSeconds: 20, trials: 1,
+    currentRun: { targets: [{ id: farmer.id, winRate: farmerWinRate, p90Seconds: 15 },
+      { id: target.id, winRate: 1, p90Seconds: 10 }] },
+  });
+  const sure = project(1);
+  assert.equal(sure.runEV.availabilitySamples, 1);
+  assert.equal(sure.runEV.routeSeconds, 15);
+  assert.equal(sure.runEV.currencies.Graphite.battleExpectedPerRun, 1000);
+  assert.equal(sure.runEV.currencies.Graphite.battleWindowExpected, 1000);
+  assert.equal(sure.profileProgress.expectedPerRun, 1);
+  assert.equal(sure.runEV.sketches.find(({ id }) => id === target.id).routeWinRate, 0);
+
+  const partial = project(0.5);
+  const nextWinRate = partial.runEV.sketches.find(({ id }) => id === target.id).routeWinRate;
+  // Only a loss leaves the second fight available, and its first victory still receives the perk.
+  assert.ok(nextWinRate > 0.4 && nextWinRate < 0.6);
+  assert.ok(Math.abs(partial.runEV.currencies.Graphite.battleExpectedPerRun - (500 + 3000 * nextWinRate)) < 0.002);
+  assert.equal(partial.runEV.currencies.Graphite.battleWindowExpected, 500);
+
+  const protectedTarget = project(1, { sketchRunVictories: { [target.id]: 1 } });
+  assert.equal(protectedTarget.runEV.routeSeconds, 25);
+  assert.equal(protectedTarget.runEV.currencies.Graphite.battleExpectedPerRun, 1300);
+});
+
 test("the masterpiece roll prefers another wanted target with supported odds", () => {
   const wanted = { ...sketches.target, id: "wanted" };
   const plan = createStrategyPlan({ sketches: { ...sketches, wanted }, targetId: "target", masterpieceTargetIds: ["wanted"],
