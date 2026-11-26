@@ -23,12 +23,14 @@ export function buildCombatParityMap({
   const mitigationSource = extractFunctionWindow(combatSource, "applyDefensiveMitigation") ?? "";
   const damageToSideSource = extractFunctionWindow(combatSource, "applyDamageToSide") ?? "";
   const skipTurnSource = extractFunctionWindow(statusSource, "shouldSkipTurn") ?? "";
+  const statusTicks = /\bconst STATUS_TICKS\s*=\s*\[([^\]]+)\]/.exec(combatSource)?.[1] ?? "";
   const referenceSections = parseReferenceSections(referenceMarkdown);
 
   const context = {
     combatSource,
     statusSource,
     timingSource,
+    statusTicks,
     performAttackSource,
     mitigationSource,
     damageToSideSource,
@@ -268,12 +270,11 @@ function hypnotizeSelfAttackCheck({ skipTurnSource, performAttackSource }) {
   });
 }
 
-function energyWaveTurnEffectCheck({ performAttackSource, combatSource }) {
+function energyWaveTurnEffectCheck({ performAttackSource, combatSource, statusTicks }) {
   const immediateHitDamage = performAttackSource.includes("energyWaveDamage");
-  const webTicks = /\bconst WEB_STATUS_TICKS\s*=\s*\[([^\]]+)\]/.exec(combatSource)?.[1] ?? "";
   const tick = extractFunctionWindow(combatSource, "applyStatusTick") ?? "";
   const wave = extractFunctionWindow(combatSource, "applyEnergyWaveTick") ?? "";
-  const hasTickModel = tick.includes("for (const tick of WEB_STATUS_TICKS)") && webTicks.includes("applyEnergyWaveTick,")
+  const hasTickModel = tick.includes("for (const tick of STATUS_TICKS)") && statusTicks.includes("applyEnergyWaveTick,")
     && tokensAppearInOrder(
       wave, ["statuses.EnergyWave", "Math.floor(stacks * 0.1)", "applyDamageToSide(", "statuses.EnergyWave -= consumed"],
     );
@@ -337,7 +338,6 @@ function varnishSurvivalCheck({ damageToSideSource }) {
 function counterDelayedEffectCheck({ combatSource, performAttackSource }) {
   const counterEffectSource = extractFunctionWindow(combatSource, "performCounterEffect") ?? "";
   const scheduler = extractFunctionWindow(combatSource, "scheduleCounter") ?? "";
-  const webCounter = extractFunctionWindow(combatSource, "performWebCounter") ?? "";
   const pendingEffectSource = extractFunctionWindow(combatSource, "processPendingEffect") ?? "";
   const schedulesCounter = /\bconst COUNTER_DELAY_SECONDS\s*=\s*0\.2\s*;/.test(combatSource)
     && tokensAppearInOrder(scheduler, [
@@ -346,11 +346,10 @@ function counterDelayedEffectCheck({ combatSource, performAttackSource }) {
       "counter_scheduled",
     ]);
   const processesCounter = pendingEffectSource.includes("performCounterEffect(");
-  const usesAttackTurn = counterEffectSource.includes("if (!combat.assumptions.steam) return performWebCounter(")
-    && tokensAppearInOrder(webCounter, ["performAttack(", "counterEffect: effect"])
+  const usesAttackTurn = tokensAppearInOrder(counterEffectSource, ["performAttack(", "counterEffect: effect"])
     && tokensAppearInOrder(performAttackSource, [
       "applyRemedy(", "shouldSkipTurn(", "rollMultistrikeHitCount(", "applyDamageToSide(", "applyStatuses(",
-      "applyThorns(", "applySelfBuffs(", "if (webCounterChance > 0 && !counterEffect)", "scheduleCounter(",
+      "applyThorns(", "applySelfBuffs(", "if (turnCounterChance > 0 && !counterEffect)", "scheduleCounter(",
     ]);
   const matched = schedulesCounter && processesCounter && usesAttackTurn;
 
@@ -362,7 +361,7 @@ function counterDelayedEffectCheck({ combatSource, performAttackSource }) {
     confidence: "high",
     gameReference: "The bundle queues Counter 200ms divided by combat speed after the triggering attack and runs the attack resolver with its Counter flag.",
     simulatorEvidence: matched
-      ? "The speed-scaled queue dispatches a flagged web attack turn. That turn resolves effects and cannot queue another Counter."
+      ? "The speed-scaled queue dispatches a flagged attack turn. That turn resolves effects and cannot queue another Counter."
       : "The speed-scaled queue or flagged attack-turn dispatch was not established.",
     nextAction: matched
       ? "Keep the traced Counter, Multistrike and skip checks. Compare dispatch timing with observed web fights."
@@ -394,19 +393,18 @@ function tickCadenceCheck({ combatSource }) {
   });
 }
 
-function inspirationTickCheck({ combatSource }) {
+function inspirationTickCheck({ combatSource, statusTicks }) {
   const tick = extractFunctionWindow(combatSource, "applyStatusTick") ?? "";
   const inspiration = extractFunctionWindow(combatSource, "applyInspirationTick") ?? "";
   const buff = extractFunctionWindow(combatSource, "applyCombatBuff") ?? "";
-  const webTicks = /\bconst WEB_STATUS_TICKS\s*=\s*\[([^\]]+)\]/.exec(combatSource)?.[1] ?? "";
   const matched = tokensAppearInOrder(tick, [
     "!combat.assumptions.steam",
     "Object.keys(combat.playerStatuses).length === 0",
     "Object.keys(combat.enemyStatuses).length === 0",
     "return;",
-    "for (const tick of WEB_STATUS_TICKS)",
-  ]) && webTicks.includes("applyInspirationTick,")
-    && tokensAppearInOrder(inspiration, ["rollStacks(", "applyCombatBuff(", "capBonus: combat.assumptions.inspirationCapBonus"])
+    "for (const tick of STATUS_TICKS)",
+  ]) && statusTicks.includes("applyInspirationTick,")
+    && tokensAppearInOrder(inspiration, ["roll(rng, rawChance,", "applyCombatBuff(", "capBonus: combat.assumptions.inspirationCapBonus"])
     && tokensAppearInOrder(buff, ['intendedSide === "player" ?', "STATUS_CAPS[status]", "+ capBonus", ": Infinity"]);
   return createCheck({
     id: "inspiration-tick-caps",
@@ -424,17 +422,16 @@ function inspirationTickCheck({ combatSource }) {
   });
 }
 
-function periodicStatusOrderCheck({ combatSource }) {
+function periodicStatusOrderCheck({ combatSource, statusTicks }) {
   const damageTicks = /\bconst PERIODIC_DAMAGE_TICKS\s*=\s*\[([^\]]+)\]/.exec(combatSource)?.[1] ?? "";
-  const webTicks = /\bconst WEB_STATUS_TICKS\s*=\s*\[([^\]]+)\]/.exec(combatSource)?.[1] ?? "";
   const tick = extractFunctionWindow(combatSource, "applyStatusTick") ?? "";
   const matched = combatSource.includes('const COMBAT_SIDES = ["player", "enemy"]')
     && tokensAppearInOrder(damageTicks, ["applyBurnTick", "applyPlagueTick", "applyPoisonTick", "applyBlackFlameTick"])
-    && tokensAppearInOrder(webTicks, [
+    && tokensAppearInOrder(statusTicks, [
       "...PERIODIC_DAMAGE_TICKS", "applyEnergyWaveTick", "applyInspirationTick", "applyBalloonTick", "applyIrradiateTick",
     ])
     && tokensAppearInOrder(tick, [
-      "!combat.assumptions.steam", "for (const tick of WEB_STATUS_TICKS)", "for (const side of COMBAT_SIDES)", "tick(combat, side, rng)",
+      "for (const tick of STATUS_TICKS)", "for (const side of COMBAT_SIDES)", "tick(combat, side, rng)",
     ]);
   return createCheck({
     id: "periodic-status-order",

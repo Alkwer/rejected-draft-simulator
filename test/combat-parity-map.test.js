@@ -166,7 +166,7 @@ test("buildCombatParityMap checks the web Counter dispatch and status order in t
   const map = inspect(source);
   const counter = map.checks.find((check) => check.id === "counter-delayed-effect");
   assert.equal(counter.status, "matched");
-  assert.match(counter.simulatorEvidence, /flagged web attack turn/);
+  assert.match(counter.simulatorEvidence, /flagged attack turn/);
   assert.equal(map.checks.find(({ id }) => id === "periodic-status-order").status, "matched");
 
   const changed = inspect(source.replace(
@@ -181,9 +181,9 @@ test("buildCombatParityMap requires a reachable Energy Wave tick with stack cons
     ? {
       ...source,
       source: `${source.source.replace("const waveDamage = energyWaveDamage();", "")}
-        const WEB_STATUS_TICKS = [applyEnergyWaveTick,];
+        const STATUS_TICKS = [applyEnergyWaveTick,];
         function applyStatusTick() {
-          for (const tick of WEB_STATUS_TICKS) tick();
+          for (const tick of STATUS_TICKS) tick();
         }
         function applyEnergyWaveTick() {
           const stacks = statuses.EnergyWave;

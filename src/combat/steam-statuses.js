@@ -52,6 +52,12 @@ export function rollSteamBuffConversion(rng, stacks, probability, label) {
   return converted;
 }
 
+export function rollSteamStacks(rng, chance, label) {
+  const limitedChance = Math.min(chance, Number.MAX_SAFE_INTEGER);
+  if (limitedChance <= 0) return 0;
+  return limitedChance % 100 === 0 ? limitedChance / 100 : rollStacks(rng, limitedChance, label);
+}
+
 export function applySteamOnHitStatusSkills({ rng, attacker, defender, statuses, applyStatus, onMechanic }) {
   const grapple = stat(attacker, "grappleChance");
   if (grapple > 0 && !defender.immunities.has("grappleChance") && rollPercent(rng, grapple, "status.Grapple")) {
@@ -80,25 +86,20 @@ export function applySteamOnHitStatusSkills({ rng, attacker, defender, statuses,
   }
 }
 
-export function spreadSteamDiseases({ combat, rng, blockLeap, onMechanic }) {
-  if (!["player", "enemy"].some((side) => stat(combat[side], "diseaseSpreadChance") > 0
-    && DISEASE_STATUSES.some((status) => combat[`${side}Statuses`][status] > 0))) return;
-  const before = { player: { ...combat.playerStatuses }, enemy: { ...combat.enemyStatuses } };
-  for (const sourceSide of ["player", "enemy"]) {
-    const chance = stat(combat[sourceSide], "diseaseSpreadChance");
-    const defenderSide = sourceSide === "player" ? "enemy" : "player";
-    const immunities = combat[defenderSide].immunities;
-    if (chance <= 0 || immunities.has("diseaseSpreadChance")
-      || !DISEASE_STATUSES.some((status) => before[sourceSide][status] > 0)) continue;
-    const budget = rollStacks(rng, chance, `tick.${sourceSide}.DiseaseSpread`);
-    for (const status of DISEASE_STATUSES) {
-      const stacks = Math.min(budget, before[sourceSide][status] ?? 0);
-      if (stacks <= 0 || immunities.has(STATUS_TO_STAT[status])) continue;
-      const applied = blockLeap({ defenderSide, status, stacks });
-      if (applied <= 0) continue;
-      addStatus(combat[`${defenderSide}Statuses`], status, applied);
-      onMechanic({ type: "disease_spread", sourceSide, defenderSide, status, stacks: applied });
-    }
+export function spreadSteamDiseases({ combat, sourceSide, originalStatuses, rng, blockLeap, onMechanic }) {
+  const chance = stat(combat[sourceSide], "diseaseSpreadChance");
+  const defenderSide = sourceSide === "player" ? "enemy" : "player";
+  const immunities = combat[defenderSide].immunities;
+  if (chance <= 0 || immunities.has("diseaseSpreadChance")
+    || !DISEASE_STATUSES.some((status) => originalStatuses[status] > 0)) return;
+  const budget = rollSteamStacks(rng, chance, `tick.${sourceSide}.DiseaseSpread`);
+  for (const status of DISEASE_STATUSES) {
+    const stacks = Math.min(budget, originalStatuses[status] ?? 0);
+    if (stacks <= 0 || immunities.has(STATUS_TO_STAT[status])) continue;
+    const applied = blockLeap({ defenderSide, status, stacks });
+    if (applied <= 0) continue;
+    addStatus(combat[`${defenderSide}Statuses`], status, applied);
+    onMechanic({ type: "disease_spread", sourceSide, defenderSide, status, stacks: applied });
   }
 }
 
@@ -124,7 +125,8 @@ export function applySteamBuff({ combat, rng, status, stacks, intendedSide, allo
   if (!combat[side].immunities.has(SELF_BUFF_TO_STAT[status])) {
     const bonus = Math.max(0, combat.assumptions.steam.buffStackCapBonuses?.[status] ?? 0);
     const cap = side === "player" ? (STATUS_CAPS[status] ?? Infinity) + bonus : Infinity;
-    statuses[status] = Math.max(before, Math.min(cap, before + stacks));
+    const appliedStacks = intercepted && side === "player" ? Math.min(stacks, status === "Thorns" ? 1000 : 10) : stacks;
+    statuses[status] = Math.max(before, Math.min(cap, before + appliedStacks));
   }
   return { intercepted, side, before, after: statuses[status] ?? 0 };
 }

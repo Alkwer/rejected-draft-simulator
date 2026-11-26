@@ -9,7 +9,7 @@ Static checks against the reference assets listed below. Each match covers its n
 - Main asset: main-B8xwsW5G.js
 - Store asset: game-store-fxPIKm8H.js
 - Captured: 2026-05-23
-- Generated: 2026-11-26T07:18:21.330Z
+- Generated: 2026-11-26T07:36:03.800Z
 
 ## Summary
 
@@ -30,7 +30,7 @@ Static checks against the reference assets listed below. Each match covers its n
 | Energy Wave turn effect | matched | low | Periodic tick damage consumes Energy Wave stacks. The attack path grants self buffs. | Confirm the exact periodic tick cadence against a real fight fixture. |
 | Bleed, Curse and Lifesteal order | matched | medium | Simulator applies Bleed recoil, then Curse reflection, then Lifesteal. | Keep end-of-turn ordering covered by regression tests. |
 | Varnish survival | matched | low | `applyDamageToSide` uses `VarnishTriggers` for both chance penalty and restore percent. | Keep Varnish fixtures around lethal direct and status damage. |
-| Delayed Counter scheduling and attack turn | matched | low | The speed-scaled queue dispatches a flagged web attack turn. That turn resolves effects and cannot queue another Counter. | Keep the traced Counter, Multistrike and skip checks. Compare dispatch timing with observed web fights. |
+| Delayed Counter scheduling and attack turn | matched | low | The speed-scaled queue dispatches a flagged attack turn. That turn resolves effects and cannot queue another Counter. | Keep the traced Counter, Multistrike and skip checks. Compare dispatch timing with observed web fights. |
 | Periodic tick intervals | matched | medium | The simulator starts and advances the web regen and status deadlines at the extracted intervals. | Compare wall-clock catch-up and simultaneous events with observed web fights. |
 | Inspiration tick eligibility and caps | matched | medium | The simulator checks for active status maps and applies separate player and enemy cap rules. | Keep the traced empty-status and cap regression test. |
 | Periodic status effect order | matched | medium | Each web tick effect runs for the player and then the enemy before the next effect. | Keep the two-sided trace regression and compare lethal interactions with observed web fights. |
@@ -135,7 +135,7 @@ Static checks against the reference assets listed below. Each match covers its n
 - Severity: low
 - Confidence: high
 - Game reference: The bundle queues Counter 200ms divided by combat speed after the triggering attack and runs the attack resolver with its Counter flag.
-- Simulator evidence: The speed-scaled queue dispatches a flagged web attack turn. That turn resolves effects and cannot queue another Counter.
+- Simulator evidence: The speed-scaled queue dispatches a flagged attack turn. That turn resolves effects and cannot queue another Counter.
 - Next action: Keep the traced Counter, Multistrike and skip checks. Compare dispatch timing with observed web fights.
 
 ### Periodic tick intervals

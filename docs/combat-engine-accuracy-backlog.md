@@ -6,6 +6,8 @@ Priority 26 is a parity backlog for moving the simulator closer to the current g
 
 The catalog shipped here covers build 26933131, game v0.9773 and save schema 87. The 236 sketch records, 53 shop upgrades and modeled universe parameters match the previous reference build 26885190. The next verification task is to capture observed Hyena Hulk fights using the [Steam fight log](../README.md#compare-a-steam-fight). Each completed entry pairs a pre-fight save with its target, catalog metadata, universe, seed, trial count, horizon and observed result. The archive groups repeated attempts with matching setups and shows the expected and observed counts. Keep exports and local observations private unless deliberately prepared for sharing.
 
+The build's combat store resolves a pending Counter as a full attack, permits one queued counter per turn and prevents a counter from triggering another. Targeted traces cover these rules, the per-effect tick order across both fighters, Disease Spread, Energy Wave with Varnish and intercepted Inspiration. These comparisons use synthetic fights and the installed build's code.
+
 ## Archived web reference
 
 - Source: https://kuzzigames.com/rejected_draft/
