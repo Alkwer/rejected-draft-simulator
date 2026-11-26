@@ -129,6 +129,8 @@ npm.cmd run simulate -- --save "C:\path\to\save.txt" --target duct_taped_banana 
 npm.cmd run simulate -- --save latest --target duct --trials auto
 ```
 
+`--target` accepts a sketch ID, a short alias or a unique catalog name such as `"Hyena Hulk"`. When a projected victory removes another opponent, `--apply` lists the credited victories and reports which rewards it skipped.
+
 JSON output:
 
 ```powershell

@@ -17,6 +17,8 @@ The numbered sections record previous work and ideas. The active backlog starts 
 - [x] Apply Steam's seeded sketch removals and retirement rules to projected victories. Show which sketch a route removes.
 - [x] Match the archived web status tick order and full Counter attack. Prevent chains of counterattacks and multiple counters on one multistrike.
 - [x] Recover from an initial target catalog failure, show which history entries can be replayed, and preserve large finite values in JSON reports.
+- [x] Match full Steam Counter turns and periodic effect order against build 26933131, including Remedy, Paralysis, Disease Spread, Energy Wave and Inspiration.
+- [x] Report only credited victories in CLI projections. Resolve targets by their catalog names and require evidence for the selected fight when comparing browser save history.
 - [ ] Compare seeded forecasts against repeated, observed Hyena Hulk fights on the same Steam build and setup. See the [combat accuracy backlog](docs/combat-engine-accuracy-backlog.md).
 
 ## Priority 1: More Accurate Combat Engine

@@ -18,11 +18,22 @@ export const TARGET_ALIASES = {
   paragon: "transcendent_paragon",
 };
 
-export function resolveTargetId(value) {
+export function resolveTargetId(value, sketches) {
   if (value == null || value === true) return null;
   const raw = String(value).trim();
-  const normalized = raw.toLowerCase().replace(/\s+/g, "_").replace(/-/g, "_");
-  return TARGET_ALIASES[normalized] ?? raw;
+  if (sketches && Object.hasOwn(sketches, raw)) return raw;
+  const normalized = normalizeTargetName(raw);
+  if (Object.hasOwn(TARGET_ALIASES, normalized)) return TARGET_ALIASES[normalized];
+  if (sketches) {
+    const matches = Object.entries(sketches).filter(([id, sketch]) =>
+      normalizeTargetName(id) === normalized || (sketch.name && normalizeTargetName(sketch.name) === normalized));
+    if (matches.length === 1) return matches[0][0];
+  }
+  return raw;
+}
+
+function normalizeTargetName(value) {
+  return value.normalize("NFKD").replace(/\p{M}/gu, "").toLowerCase().replace(/[\s_-]+/g, "_");
 }
 
 export function resolveSavePath(value, { downloadsDir = defaultDownloadsDir(), steamSaveDir } = {}) {

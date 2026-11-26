@@ -20,7 +20,7 @@ export function createCompanionFightFixture({
   const save = decodeSaveText(saveText);
   const resolvedTargetId = inferTargetId({ save, sketches, targetId, observed, browserSnapshot });
   const target = sketches[resolvedTargetId];
-  if (!target) throw new Error(`Unknown target sketch: ${resolvedTargetId}`);
+  if (!Object.hasOwn(sketches, resolvedTargetId)) throw Object.assign(new Error(`Unknown target sketch: ${resolvedTargetId}`), { status: 400 });
 
   const analysis = analyzeSave({ save, sketches, targetId: resolvedTargetId, dataMetadata });
   const statSource = analysis.stats.recommendedSource;
@@ -32,7 +32,7 @@ export function createCompanionFightFixture({
     immunities: target.immunities,
     vulnerability: target.vulnerability,
   };
-  const observedSource = selectObservedFight({ save, targetId: resolvedTargetId, observed, browserSnapshot });
+  const observedSource = selectObservedFight({ save, sketches, targetId: resolvedTargetId, observed, browserSnapshot });
   const combatAssumptions = combatAssumptionsFromSave(save);
   const captureDiagnostics = buildCaptureDiagnostics({ save, browserSnapshot, observedSource, combatAssumptions });
   const fixture = {
@@ -107,7 +107,7 @@ function buildCaptureDiagnostics({ save, browserSnapshot, observedSource, combat
   };
 }
 
-function selectObservedFight({ save, targetId, observed, browserSnapshot }) {
+function selectObservedFight({ save, sketches, targetId, observed, browserSnapshot }) {
   const provided = normalizeObservedCandidate(observed);
   if (provided) return { source: "provided_observation", observed: provided, warnings: [] };
 
@@ -116,7 +116,7 @@ function selectObservedFight({ save, targetId, observed, browserSnapshot }) {
     ?? normalizeObservedCandidate(browserSnapshot);
   if (browser) return { source: "browser_snapshot", observed: browser, warnings: [] };
 
-  const visibleCombatLog = normalizeVisibleCombatLog(browserSnapshot?.visibleCombatLog, targetId);
+  const visibleCombatLog = normalizeVisibleCombatLog(browserSnapshot?.visibleCombatLog, sketches, targetId);
   if (visibleCombatLog) return { source: "browser_visible_combat_log", observed: visibleCombatLog, warnings: [] };
 
   const localStorageLog = latestLocalStorageCandidate(browserSnapshot, targetId);
@@ -214,57 +214,17 @@ function decodeHistorySave(entry) {
 function compareSaveHistoryPair(beforeEntry, afterEntry, targetId) {
   const beforeState = beforeEntry?.save?.state ?? beforeEntry?.save ?? {};
   const afterState = afterEntry?.save?.state ?? afterEntry?.save ?? {};
-  const candidateIds = saveHistoryCandidateIds(beforeState, afterState, targetId);
-  for (const id of candidateIds) {
-    const beforeRun = toNumber(beforeState.sketchRunVictories?.[id], 0);
-    const afterRun = toNumber(afterState.sketchRunVictories?.[id], 0);
-    const beforeTotal = toNumber(beforeState.sketchVictories?.[id], 0);
-    const afterTotal = toNumber(afterState.sketchVictories?.[id], 0);
-    if (afterRun > beforeRun || afterTotal > beforeTotal) {
-      return {
-        targetId: id,
-        outcome: "win",
-        reason: "Victory count increased in browser save history.",
-        approximateSeconds: approximateSecondsBetween(beforeEntry, afterEntry),
-        raw: {
-          source: "browser_save_history",
-          runVictoriesBefore: beforeRun,
-          runVictoriesAfter: afterRun,
-          totalVictoriesBefore: beforeTotal,
-          totalVictoriesAfter: afterTotal,
-        },
-      };
-    }
-  }
-
-  const beforeCombat = beforeState.combatState ?? {};
-  const afterCombat = afterState.combatState ?? {};
-  const enemyId = firstString(beforeCombat.enemyId, beforeState.lastEnemyId, targetId);
-  if (beforeCombat.isFighting === true && afterCombat.isFighting === false && (!targetId || enemyId === targetId)) {
-    return {
-      targetId: enemyId,
-      outcome: "loss",
-      reason: "Combat ended without a victory delta in browser save history.",
-      approximateSeconds: approximateSecondsBetween(beforeEntry, afterEntry),
-      raw: { source: "browser_save_history" },
-    };
-  }
-  return null;
-}
-
-function saveHistoryCandidateIds(beforeState, afterState, targetId) {
-  const ids = [
-    targetId,
-    beforeState.combatState?.enemyId,
-    afterState.combatState?.enemyId,
-    beforeState.lastEnemyId,
-    afterState.lastEnemyId,
-    ...Object.keys(beforeState.sketchRunVictories ?? {}),
-    ...Object.keys(afterState.sketchRunVictories ?? {}),
-    ...Object.keys(beforeState.sketchVictories ?? {}),
-    ...Object.keys(afterState.sketchVictories ?? {}),
-  ].filter((id) => typeof id === "string" && id.trim());
-  return [...new Set(ids)];
+  const beforeRun = toNumber(beforeState.sketchRunVictories?.[targetId]);
+  const afterRun = toNumber(afterState.sketchRunVictories?.[targetId]);
+  const beforeTotal = toNumber(beforeState.sketchVictories?.[targetId]);
+  const afterTotal = toNumber(afterState.sketchVictories?.[targetId]);
+  if (afterRun <= beforeRun && afterTotal <= beforeTotal) return null;
+  return {
+    targetId, outcome: "win", reason: "Victory count increased in browser save history.",
+    approximateSeconds: approximateSecondsBetween(beforeEntry, afterEntry),
+    raw: { source: "browser_save_history", runVictoriesBefore: beforeRun, runVictoriesAfter: afterRun,
+      totalVictoriesBefore: beforeTotal, totalVictoriesAfter: afterTotal },
+  };
 }
 
 function normalizeObservedCandidate(raw) {
@@ -310,9 +270,10 @@ function normalizeObservedCandidate(raw) {
 }
 
 function inferTargetId({ save, sketches, targetId, observed, browserSnapshot }) {
-  const visibleCombatLog = normalizeVisibleCombatLog(browserSnapshot?.visibleCombatLog);
+  const requested = resolveTargetId(targetId, sketches);
+  if (requested) return requested;
+  const visibleCombatLog = normalizeVisibleCombatLog(browserSnapshot?.visibleCombatLog, sketches);
   const candidates = [
-    targetId,
     normalizeObservedCandidate(observed)?.targetId,
     normalizeObservedCandidate(browserSnapshot?.observed)?.targetId,
     visibleCombatLog?.targetId,
@@ -325,20 +286,22 @@ function inferTargetId({ save, sketches, targetId, observed, browserSnapshot }) 
     "transcendent_paragon",
   ];
   for (const candidate of candidates) {
-    const resolved = resolveTargetId(candidate) ?? candidate;
-    if (resolved && sketches[resolved]) return resolved;
+    const resolved = resolveTargetId(candidate, sketches);
+    if (resolved && Object.hasOwn(sketches, resolved)) return resolved;
   }
   throw new Error("No available target found for fight fixture capture.");
 }
 
-function normalizeVisibleCombatLog(raw, expectedTargetId = null) {
+function normalizeVisibleCombatLog(raw, sketches, expectedTargetId = null) {
   const source = parseJsonLike(raw) ?? raw;
   const text = extractVisibleCombatLogText(source);
   if (!text) return null;
 
   const targetName = firstMatch(text, /Enemy:\s*([^\r\n]+)/i)
     ?? firstMatch(text, /^(.+?)\s*\((?:VICTORY|DEFEAT|LOSS|WIN)\)/im);
-  const targetId = firstString(source?.targetId, source?.enemyId, targetNameToId(targetName));
+  const explicitId = firstString(source?.targetId, source?.enemyId);
+  const identified = resolveTargetId(explicitId ?? targetName, sketches);
+  const targetId = identified && Object.hasOwn(sketches, identified) ? identified : explicitId ?? targetNameToId(targetName);
   if (expectedTargetId && targetId && targetId !== expectedTargetId) return null;
 
   const detailIndex = text.search(/Enemy:|Events:|Time:/i);

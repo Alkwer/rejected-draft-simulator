@@ -365,6 +365,21 @@ test("web server companion endpoint infers observed wins from browser save histo
     assert.equal(payload.fixtureCapture.fixture.captureDiagnostics.saveHistoryCount, 2);
     assert.equal(payload.fixtureCapture.fixture.captureDiagnostics.combatLoggingEnabled, null);
     assert.equal(payload.fixtureCapture.parity.ok, true);
+    afterSave.state.sketchVictories = { other: 1 };
+    afterSave.state.sketchRunVictories = { other: 1 };
+    for (const [targetId, expectedStatus] of [["Duct-Taped Banana", 200], ["missing", 400]]) {
+      const retry = await fetch(`http://127.0.0.1:${port}/api/companion/fight-fixture`, {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ targetId, saveText: JSON.stringify(afterSave),
+          browserSnapshot: { saveHistory: [{ save: beforeSave }, { save: afterSave }] } }),
+      });
+      assert.equal(retry.status, expectedStatus);
+      const result = await retry.json();
+      if (expectedStatus === 200) {
+        assert.equal(result.fixtureCapture.source, "no_observed_fight");
+        assert.equal(result.fixtureCapture.parity, null);
+      } else assert.match(result.error, /Unknown target sketch/);
+    }
   } finally {
     await new Promise((resolve) => server.close(resolve));
   }
