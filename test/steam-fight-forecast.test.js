@@ -136,10 +136,11 @@ test("Steam forecast treats simulated and observed timeouts as right-censored du
 test("Steam forecast uses the engine's nearest-rank bounds for two sampled durations", () => {
   const input = forecastInput();
   input.save.state = { playerStats: {
-    maxHp: 100, attack: 10, attackSpeed: 500, critChance: 50, critDamage: 200, minDamage: 100, maxDamage: 100,
+    maxHp: 100, attack: 10, attackSpeed: 500, critChance: 50, critDmg: 200, minDamage: 100, maxDamage: 100,
   } };
   input.sketches.hyena_hulk.stats = { maxHp: 15, attack: 0, attackSpeed: 8000 };
-  const { duration } = createSteamFightForecast({ ...input, trials: 2, seed: "0" });
+  // One opening crit kills at 0.5 s. The other trial needs its second attack at 1 s.
+  const { duration } = createSteamFightForecast({ ...input, trials: 2, seed: "2" });
   assert.equal(duration.p10Seconds, 0.5);
   assert.equal(duration.medianSeconds, 0.5);
   assert.equal(duration.p90Seconds, 1);

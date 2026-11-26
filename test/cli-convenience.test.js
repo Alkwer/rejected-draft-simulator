@@ -23,6 +23,16 @@ test("resolveTargetId accepts short target aliases", () => {
   assert.equal(resolveTargetId("duct_taped_banana"), "duct_taped_banana");
 });
 
+test("target resolution accepts unique catalog labels and preserves ambiguous names", () => {
+  const sketches = { "stick man": { name: "Stick Man" }, mobius_strip: { name: "Möbius Strip" },
+    early: { name: "Boss" }, late: { name: "Boss" } };
+  assert.equal(resolveTargetId("Stick-Man", sketches), "stick man");
+  assert.equal(resolveTargetId("Mobius Strip", sketches), "mobius_strip");
+  assert.equal(resolveTargetId("Boss", sketches), "Boss");
+  assert.equal(resolveTargetId("Rose", { flower: { name: "Rose" } }), "flower");
+  assert.equal(resolveTargetId("constructor", sketches), "constructor");
+});
+
 test("resolveSavePath latest uses the newest Rejected Draft save export", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rd-saves-"));
   const older = path.join(dir, "rejected-draft-save-Q1-G1-2026-05-19.txt");

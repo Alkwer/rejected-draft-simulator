@@ -236,6 +236,24 @@ test("Steam Disease Spread copies existing infections with per-status limits and
   assert.equal(tick.statuses.player.Poison, 5);
   assert.deepEqual(tick.statuses.enemy, { Poison: 1, Curse: 1 });
 });
+
+test("Steam finishes each side's status transitions and spreads only tick-start infections", () => {
+  const { trace } = simulateFight({
+    player: { ...player, attackSpeed: 800, woundChance: 100, diseaseSpreadChance: 150 },
+    enemy: { ...enemy, maxHp: 1000, attackSpeed: 800, woundChance: 100, poisonChance: 100, diseaseSpreadChance: 150 },
+    assumptions: combatAssumptionsFromSave({ saveProfile: "steam" }),
+    rng: () => 0.5,
+    maxSeconds: 1.1,
+    trace: { seconds: 1.1, includeRng: true },
+  });
+  const tick = trace.find(({ event }) => event === "tick");
+  assert.deepEqual(tick.rng.map(({ label }) => label),
+    ["tick.Wound.convert", "tick.player.DiseaseSpread.fractional", "tick.Wound.convert"]);
+  assert.equal(tick.statuses.player.Poison, 1);
+  assert.equal(tick.statuses.enemy.Poison, 1);
+  assert.deepEqual(tick.mechanics.map(({ type, sourceSide, status }) => [type, sourceSide, status]),
+    [["disease_spread", "player", "Poison"]]);
+});
 test("Steam combat rejects a zero or negative attack delay from raw battle rewards", () => {
   for (const attackSpeed of [0, -200]) {
     assert.throws(() => simulateFight({
@@ -331,6 +349,114 @@ test("Steam counters apply Berserk and both Accuracy damage multipliers", () => 
   const counter = trace.find(({ event }) => event === "pending_effect");
   assert.equal(counter.action.damage, 45);
   assert.equal(counter.playerHp, 955);
+});
+
+test("Steam Multistrike queues one Counter that runs a full turn without chaining", () => {
+  const stats = { ...fixedDamage, maxHp: 1000, attack: 10, counter: 100, multiStrikeChance: 100 };
+  const { trace } = simulateFight({
+    player: { ...stats, attackSpeed: 700, poisonChance: 100, thornsChance: 100 },
+    enemy: { ...stats, attackSpeed: 5000, remedy: 100, burnChance: 100, burnDamage: 1, hasteChance: 100 },
+    assumptions: steamAssumptions,
+    rng: () => 0.5,
+    maxSeconds: 1,
+    trace: { seconds: 1, includeRng: true },
+  });
+
+  const attack = trace.find(({ event }) => event === "attack");
+  assert.equal(attack.action.landedHits, 2);
+  assert.equal(attack.mechanics.filter(({ type }) => type === "counter_scheduled").length, 1);
+  assert.equal(attack.statuses.enemy.Poison, 2);
+  const counters = trace.filter(({ event }) => event === "pending_effect");
+  assert.equal(counters.length, 1);
+  const [counter] = counters;
+  assert.equal(counter.time, 0.9);
+  assert.equal(counter.action.landedHits, 2);
+  assert.equal(counter.action.damage, 20);
+  assert.equal(counter.statuses.enemy.Poison, 1);
+  assert.equal(counter.statuses.enemy.Haste, 2);
+  assert.equal(counter.statuses.player.Burn, 2);
+  assert.equal(counter.mechanics.filter(({ type }) => type === "thorns").length, 2);
+  assert.equal(counter.rng.filter(({ label, success }) => label === "reactive.counter" && success).length, 2);
+  assert.equal(counter.mechanics.some(({ type }) => type === "counter_scheduled"), false);
+  assert.equal(counter.damageEvents.filter(({ tags }) => tags.includes("counter")).length, 2);
+});
+
+test("Steam Remedy can clear Hinder or Paralysis before a queued Counter", () => {
+  for (const [statName, status] of [["hinderChance", "Hinder"], ["paralysisChance", "Paralysis"]]) {
+    const run = (remedy) => simulateFight({
+      player: { ...fixedDamage, maxHp: 1000, attack: 10, attackSpeed: 700, [statName]: 100000 },
+      enemy: { ...fixedDamage, maxHp: 1000, attack: 10, attackSpeed: 5000, counter: 100, remedy },
+      assumptions: steamAssumptions,
+      rng: () => 0.5,
+      maxSeconds: 1,
+      trace: { seconds: 1 },
+    }).trace.find(({ event }) => event === "pending_effect");
+
+    const hindered = run(0);
+    assert.equal(hindered.action.skipped, true, status);
+    assert.equal(hindered.action.damage, 0, status);
+    const recovered = run(100000);
+    assert.equal(recovered.action.skipped, false, status);
+    assert.ok(recovered.action.damage > 0, status);
+    assert.deepEqual(recovered.mechanics.find(({ type }) => type === "remedy").removed, { [status]: 1000 });
+  }
+});
+
+test("Steam ticks the player EnergyWave before the enemy's and processes Inspiration before growth", () => {
+  const combatant = {
+    ...fixedDamage, attack: 80, attackSpeed: 800, energyWaveChance: 100, inspirationChance: 100,
+    balloonChance: 100, irradiateChance: 1000,
+  };
+  const { trace } = simulateFight({
+    player: { ...combatant, maxHp: 1000 },
+    enemy: { ...combatant, maxHp: 100 },
+    assumptions: steamAssumptions,
+    rng: () => 0.5,
+    maxSeconds: 1.1,
+    trace: { seconds: 1.1 },
+  });
+
+  const tick = trace.find(({ event }) => event === "tick");
+  assert.deepEqual(tick.damageEvents.map(({ side, source }) => [side, source]),
+    [["enemy", "energyWave"], ["player", "status"]]);
+  assert.deepEqual(tick.mechanics.map(({ status }) => status ?? "EnergyWave"),
+    ["EnergyWave", "Inspiration", "Inspiration", "Balloon", "Balloon", "Irradiate"]);
+  assert.equal(tick.damage.player.energyWave, 0);
+  assert.equal(tick.statuses.enemy.EnergyWave, 1);
+});
+
+test("Steam EnergyWave can trigger Varnish after an earlier status was lethal during the same tick", () => {
+  let varnishRolls = 0;
+  const { trace } = simulateFight({
+    player: { ...fixedDamage, maxHp: 1000, attack: 1, attackSpeed: 700, burnChance: 100, burnDamage: 200, energyWaveChance: 100 },
+    enemy: { ...fixedDamage, maxHp: 100, attack: 10, attackSpeed: 5000, varnish: 50 },
+    assumptions: steamAssumptions,
+    rng: (label) => label === "defense.varnish" ? varnishRolls++ === 0 ? 0.9 : 0.1 : 0.5,
+    maxSeconds: 1.1,
+    trace: { seconds: 1.1 },
+  });
+
+  const tick = trace.find(({ event }) => event === "tick");
+  assert.equal(varnishRolls, 2);
+  assert.equal(tick.enemyHp, 50);
+  assert.equal(tick.mechanics.find(({ type }) => type === "varnish").source, "energyWave");
+  assert.equal(tick.statuses.player.EnergyWave, undefined);
+});
+
+test("Steam can Intercept an Inspiration-only tick and caps the player's stolen stack award", () => {
+  const { trace } = simulateFight({
+    player: { ...fixedDamage, maxHp: 1000, attack: 10, attackSpeed: 2000, interceptChance: 100 },
+    enemy: { ...fixedDamage, maxHp: 1000, attack: 10, attackSpeed: 5000, inspirationChance: 20000 },
+    assumptions: steamAssumptions,
+    rng: () => 0.5,
+    maxSeconds: 1.1,
+    trace: { seconds: 1.1, includeRng: true },
+  });
+
+  const tick = trace.find(({ event }) => event === "tick");
+  assert.equal(tick.statuses.player.Inspiration, 10);
+  assert.equal(tick.statuses.enemy.Inspiration, undefined);
+  assert.equal(tick.rng.some(({ label }) => label === "tick.enemy.Inspiration.apply.fractional"), false);
 });
 
 test("Steam lifesteal immunity prevents healing when striking an immune target on either side", () => {

@@ -201,18 +201,23 @@ export function projectVictories({ state, baseStats, sketches, ids, boostedIds =
   const tools = { boostedApplied: [], boostedSkipped: [] };
   const appliedIds = [];
   const skippedUnavailableIds = [];
-  if (!ids.length) return { state, stats: baseStats, tools, appliedIds, skippedUnavailableIds };
+  const skippedVictories = [];
+  if (!ids.length) return { state, stats: baseStats, tools, appliedIds, skippedUnavailableIds, skippedVictories };
   const ledger = createRewardLedger(state, baseStats);
   const boosters = applyRequestedBoosters({ requestedIds: boostedIds, sketches, state, ledger, tools });
   let lastReward;
   for (const id of ids) {
+    if (!Object.hasOwn(sketches, id)) {
+      skippedVictories.push({ id, reason: "unknown_sketch" });
+      continue;
+    }
     const sketch = sketches[id];
-    if (!sketch) continue;
     const availability = routeFightEligibility(ledger, sketch, id);
     const hypothetical = allowsHypotheticalVictory({ ledger, id, initialAvailability: getSketchFightEligibility(sketch, state),
       requireAvailability, afterRedraw });
     lastReward = creditVictory({ ledger, state, sketches, id, boosted: boosters.has(id), availability, hypothetical });
     if (lastReward.status === "defeated") appliedIds.push(id);
+    else skippedVictories.push({ id, reason: availability.reason });
     if (lastReward.status === "skipped_unavailable") skippedUnavailableIds.push(id);
   }
   const perkWins = Math.min(ledger.newWins, steamCurrencyPerkWinsRemaining(state));
@@ -222,6 +227,7 @@ export function projectVictories({ state, baseStats, sketches, ids, boostedIds =
     lastReward,
     appliedIds,
     skippedUnavailableIds,
+    skippedVictories,
     state: { ...ledger.fightState, ...ledger.projection?.statePatch(), ...(tools.boostedApplied.length && { boostedSketchIds: [...boosters] }),
       currencies: ledger.currencies, totalEarnedCurrencies: ledger.totalEarnedCurrencies,
       totalBattleEarnedCurrencies: ledger.totalBattleEarnedCurrencies,

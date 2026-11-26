@@ -26,8 +26,8 @@ export const STATUS_TO_STAT = {
 export const SELF_BUFF_TO_STAT = {
   Haste: "hasteChance",
   Inspiration: "inspirationChance",
-  EnergyWave: "energyWaveChance",
   Leap: "leapChance",
+  EnergyWave: "energyWaveChance",
   Thorns: "thornsChance",
 };
 
@@ -149,7 +149,7 @@ function harmfulStatusSnapshot(statuses) {
 }
 
 export function shouldSkipTurn(rng, attacker, statuses, steam = false, initialStatuses = statuses) {
-  const hinder = initialStatuses.Hinder ?? 0;
+  const hinder = (steam ? statuses : initialStatuses).Hinder ?? 0;
   if (hinder > 0 && rng("skip.Hinder") < Math.min(1, hinder / 1000)) {
     statuses.Hinder = Math.floor(hinder / 2);
     if (statuses.Hinder <= 0) delete statuses.Hinder;

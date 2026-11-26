@@ -138,6 +138,17 @@ test("CLI applies the same Steam opening and booster rules across single fights 
   const plan = (...args) => run("--plan-redraw", "--redraw-minimums", "0/0/1/0", ...args).redrawPlan.currentRun;
   assert.equal(plan().decision, "keep_farm");
   assert.equal(plan("--farm-keep-threshold", "3").decision, "redraw");
+
+  state.availableSketches = ["farm", "boss"];
+  state.fundamentals.maxVictories = 1;
+  state.multiverse = { currentUniverseId: "mv-medium-2" };
+  fs.writeFileSync(file, JSON.stringify(save));
+  const projected = run("--apply", "farm,boss,farm,missing");
+  assert.deepEqual(projected.appliedIds, ["farm"]);
+  for (const code of ["sketch_not_available", "max_victories", "unknown_sketch", "projected_target_unavailable"]) {
+    assert.ok(projected.saveWarnings.some((warning) => warning.code === code), code);
+  }
+  assert.match(run("--route", "farm").report.label, /target unavailable after route/);
 });
 
 test("CLI rejects invalid stat sources, time limits, and trial counts", () => {

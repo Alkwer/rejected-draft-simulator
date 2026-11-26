@@ -365,6 +365,21 @@ test("web server companion endpoint infers observed wins from browser save histo
     assert.equal(payload.fixtureCapture.fixture.captureDiagnostics.saveHistoryCount, 2);
     assert.equal(payload.fixtureCapture.fixture.captureDiagnostics.combatLoggingEnabled, null);
     assert.equal(payload.fixtureCapture.parity.ok, true);
+    afterSave.state.sketchVictories = { other: 1 };
+    afterSave.state.sketchRunVictories = { other: 1 };
+    for (const [targetId, expectedStatus] of [["Duct-Taped Banana", 200], ["missing", 400]]) {
+      const retry = await fetch(`http://127.0.0.1:${port}/api/companion/fight-fixture`, {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ targetId, saveText: JSON.stringify(afterSave),
+          browserSnapshot: { saveHistory: [{ save: beforeSave }, { save: afterSave }] } }),
+      });
+      assert.equal(retry.status, expectedStatus);
+      const result = await retry.json();
+      if (expectedStatus === 200) {
+        assert.equal(result.fixtureCapture.source, "no_observed_fight");
+        assert.equal(result.fixtureCapture.parity, null);
+      } else assert.match(result.error, /Unknown target sketch/);
+    }
   } finally {
     await new Promise((resolve) => server.close(resolve));
   }
@@ -411,7 +426,7 @@ test("web server companion fixture includes diagnostics when no observed fight i
           companionVersion: "test-version",
           saveHistory: [{ capturedAt: "2026-05-23T19:05:00.000Z", saveText }],
           localStorageCandidates: [
-            { key: "some-combat-key", value: "{\"empty\":true}" },
+            { key: "some-combat-key", value: JSON.stringify({ outcome: "loss", seconds: 4 }) },
           ],
         },
       }),
@@ -426,6 +441,15 @@ test("web server companion fixture includes diagnostics when no observed fight i
     assert.equal(payload.fixtureCapture.fixture.captureDiagnostics.saveCombatLogCount, 0);
     assert.equal(payload.fixtureCapture.fixture.captureDiagnostics.saveHistoryCount, 1);
     assert.deepEqual(payload.fixtureCapture.fixture.captureDiagnostics.localStorageCandidateKeys, ["some-combat-key"]);
+    const identified = await fetch(`http://127.0.0.1:${port}/api/companion/fight-fixture`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ saveText, targetId: "duct", browserSnapshot: {
+        localStorageCandidates: [{ value: JSON.stringify({ enemyName: "Duct-Taped Banana", result: { outcome: "loss" } }) }],
+      } }),
+    });
+    const captured = (await identified.json()).fixtureCapture;
+    assert.equal(captured.source, "browser_local_storage");
+    assert.equal(captured.fixture.observed.targetId, "duct_taped_banana");
   } finally {
     await new Promise((resolve) => server.close(resolve));
   }

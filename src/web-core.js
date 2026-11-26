@@ -80,10 +80,10 @@ export function createWebAnalysis({
     save = JSON.parse(canonicalSave);
     replayIdentity = { saveHash, catalogHash, modelVersion: ANALYSIS_MODEL_VERSION };
   }
-  const resolvedTargetId = resolveTargetId(targetId) ?? "duct_taped_banana";
+  const resolvedTargetId = resolveTargetId(targetId, sketches) ?? "duct_taped_banana";
   const combatAssumptions = combatAssumptionsFromSave(save);
+  if (!Object.hasOwn(sketches, resolvedTargetId)) throw Object.assign(new Error(`Unknown target sketch: ${resolvedTargetId}`), { status: 400 });
   const target = sketchForEncounter(sketches[resolvedTargetId], combatAssumptions);
-  if (!target) throw new Error(`Unknown target sketch: ${resolvedTargetId}`);
 
   const hidden = new Set([...normalizeIds(save.state.hiddenSketches), ...normalizeIds(hiddenSketchIds)]);
   const state = { ...save.state, hiddenSketches: [...hidden] };
@@ -738,8 +738,8 @@ function summarizeCurrencies(currencies = {}) {
 }
 
 function inferCompanionTargetId({ save, sketches, targetId }) {
-  const requested = resolveTargetId(targetId);
-  if (requested && sketches[requested]) return requested;
+  const requested = resolveTargetId(targetId, sketches);
+  if (requested) return requested;
 
   const state = save?.state ?? {};
   const hidden = new Set(state.hiddenSketches ?? []);

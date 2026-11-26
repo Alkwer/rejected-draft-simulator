@@ -52,6 +52,7 @@ import { readGameBundle } from "./sketch-data.js";
 import { STEAM_SHOP_CATALOG } from "./steam-shop-catalog.js";
 import { enemyFromSketch, sketchForEncounter, sketchWithEnemyStats } from "./combat/steam-encounter.js";
 import { createStrategyPlan, parseStrategyCurrencyGoals } from "./strategy-planner.js";
+import { getSketchFightEligibility } from "./tool-rules.js";
 
 const args = parseArgs(process.argv.slice(2));
 
@@ -93,7 +94,7 @@ if (args["patch-sanity"]) {
   process.exit(patchSanity.ok ? 0 : 2);
 }
 
-const targetId = resolveTargetId(args.target);
+const targetId = resolveTargetId(args.target, sketches);
 const analysis = analyzeSave({ save, sketches, targetId, dataMetadata });
 
 if (args["inspect-save"]) {
@@ -182,7 +183,7 @@ if (args["current-run"] || args.remaining || args.recommend && !args["build-advi
   process.exit(0);
 }
 
-const target = sketchForEncounter(sketches[targetId], combatAssumptions);
+const target = Object.hasOwn(sketches, targetId) && sketchForEncounter(sketches[targetId], combatAssumptions);
 if (!target) {
   console.error(`Unknown target sketch: ${targetId}`);
   console.error("Use --list-targets --rarity masterpiece to see ids.");
@@ -331,7 +332,7 @@ if (args.route) {
       player: routeResult.finalStats,
       simulation: routeResult.target.simulation,
       maxSeconds,
-      label: `Route: ${routeResult.routeIds.join(", ") || "empty"}${routeResult.conditional ? " (conditional forecast)" : ""}`,
+      label: `Route: ${routeResult.routeIds.join(", ") || "empty"}${routeForecastLabel(routeResult)}`,
     })
     : null;
 
@@ -363,21 +364,29 @@ if (args.route) {
   process.exit(0);
 }
 
-const appliedIds = parseIdList(args.apply);
-if (appliedIds.length > 0) {
+const requestedIds = parseIdList(args.apply);
+let appliedIds = [];
+if (requestedIds.length > 0) {
   const projection = projectSketchRewards({
     state: save.state,
     baseStats: player,
     sketches,
-    defeatedIds: appliedIds,
+    defeatedIds: requestedIds,
     boostedIds: new Set(parseIdList(args.boosted)),
     rewardDecay: Number(args["reward-decay"] ?? save.state?.fundamentals?.rewardDecay ?? 1),
     rewardBoosterEffect: Number(args["booster-effect"] ?? save.state?.fundamentals?.rewardBoosterEffect ?? 50),
     existingVictories: save.state?.sketchVictories ?? {},
   });
   player = projection.stats;
-  for (const { id, reason } of projection.tools.boostedSkipped) {
-    const warning = { code: reason, message: `Skipped Reward Booster for ${id}: ${reason}.` };
+  appliedIds = projection.appliedIds;
+  const warnings = [
+    ...projection.skippedVictories.map(({ id, reason }) => ({ code: reason, message: `Skipped pre-target reward for ${id}: ${reason}.` })),
+    ...projection.tools.boostedSkipped.map(({ id, reason }) => ({ code: reason, message: `Skipped Reward Booster for ${id}: ${reason}.` })),
+  ];
+  if (getSketchFightEligibility(target, save.state).eligible && !getSketchFightEligibility(target, projection.state).eligible) {
+    warnings.push({ code: "projected_target_unavailable", message: "The projected victories leave the target unavailable in this run." });
+  }
+  for (const warning of warnings) {
     analysis.warnings.push(warning);
     if (wantsMarkdownOutput(args) || !wantsJsonOutput(args) && (args["trace-fight"] || args["fight-fixture"])) {
       console.error(warning.message);
@@ -988,6 +997,11 @@ function printRouteResult({
   console.log("Note: route mode applies approximate reward/progress mechanics before the combat model.");
 }
 
+function routeForecastLabel(route) {
+  if (route.target?.availableAfterRoute === false) return " (target unavailable after route)";
+  return route.conditional ? " (conditional forecast)" : "";
+}
+
 function printRouteComparison({ target, statSource, comparison }) {
   console.log(`Target: ${target.name} [${target.id}]`);
   console.log(`Stats source: ${statSource}`);
@@ -995,8 +1009,6 @@ function printRouteComparison({ target, statSource, comparison }) {
   console.log("");
   console.log("Route".padEnd(22) + "Win rate (95% CI)".padEnd(32) + "Timeout".padEnd(10) + "p90".padEnd(10) + "Attack".padEnd(14) + "Max HP");
   for (const route of comparison.routes) {
-    const status = route.target?.availableAfterRoute === false ? "target unavailable after route"
-      : route.conditional ? "conditional forecast" : null;
     console.log(
       route.name.padEnd(22)
       + `${(route.winRate * 100).toFixed(2)}% (${formatConfidenceInterval(route.winRateCi95)})`.padEnd(32)
@@ -1004,7 +1016,7 @@ function printRouteComparison({ target, statSource, comparison }) {
       + formatSeconds(route.p90Seconds, route.p90Censored).padEnd(10)
       + formatNumber(route.finalStats.attack).padEnd(14)
       + formatNumber(route.finalStats.maxHp)
-      + (status ? `  (${status})` : ""),
+      + routeForecastLabel(route),
     );
   }
 }
