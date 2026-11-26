@@ -1,5 +1,8 @@
 {
-  "gameVersion": "v0.9772",
+  "platform": "steam",
+  "gameVersion": "v0.9773",
+  "buildId": "26933131",
+  "capturedAt": "2026-11-26",
   "saveVersion": 87,
   "targets": {
     "duct_taped_banana": {

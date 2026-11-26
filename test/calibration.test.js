@@ -480,6 +480,16 @@ test("Steam calibration requires historical encounter settings and applies recor
   assert.deepEqual(report.comparisons[3].simulated, historicalOnly.comparisons[0].simulated);
   assert.deepEqual(report.tuning, historicalOnly.tuning);
   assert.equal(report.tuning.durationMultiplier.value, 3);
+  const previousVersion = "v0.9772";
+  const previous = createCalibrationReport({
+    ...options, dataMetadata: { gameVersion: previousVersion },
+    externalLogs: [
+      { ...fight, gameVersion: previousVersion, combatAssumptions: legacyCombatAssumptions },
+      { ...fight, gameVersion: previousVersion, combatAssumptions: assumptions },
+    ],
+  });
+  assert.deepEqual(previous.comparisons.map(({ tuningExclusion }) => tuningExclusion),
+    ["calibration_combat_assumptions_invalid", null]);
 });
 
 test("calibration needs catalog patch metadata even when a log matches the reference snapshot", () => {
@@ -570,6 +580,16 @@ test("checkPatchSanity validates versioned Duct, Rose and Mobius snapshots", () 
 
   assert.equal(fail.ok, false);
   assert.ok(fail.failures.some((item) => item.code === "stat_mismatch" && item.targetId === "mobius_strip"));
+});
+
+test("checkPatchSanity identifies Steam builds with identical sentinel records", () => {
+  for (const [gameVersion, buildId] of [["v0.9772", "26885190"], ["v0.9773", "26933131"]]) {
+    const sketches = GAME_DATA_VERSIONS[gameVersion].targets;
+    assert.equal(checkPatchSanity({ sketches, dataMetadata: { gameVersion, buildId } }).ok, true);
+    assert.equal(checkPatchSanity({ sketches, dataMetadata: { gameVersion, buildId: "unknown" } }).failures[0].code,
+      "build_id_mismatch");
+  }
+  assert.equal(checkPatchSanity({ version: "constructor" }).failures[0].code, "unknown_game_version");
 });
 
 test("checkPatchSanity detects a conflicting save version when metadata supplies one", () => {

@@ -517,6 +517,6 @@ function formatNumber(value) {
 
 function round(value) {
   const number = Number(value);
-  if (!Number.isFinite(number)) return number;
+  if (!Number.isFinite(number) || Number.isInteger(number)) return number;
   return Math.round(number * 1e6) / 1e6;
 }

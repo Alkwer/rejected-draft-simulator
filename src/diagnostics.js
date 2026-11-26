@@ -2,7 +2,7 @@ import { DEFAULT_COMBAT_ASSUMPTIONS, runMonteCarlo } from "./combat.js";
 import { SELF_BUFF_TO_STAT, STATUS_TO_STAT } from "./combat/statuses.js";
 import { enemyFromSketch } from "./combat/steam-encounter.js";
 import { confidenceInterval95 } from "./combat/math.js";
-import { VERIFIED_STEAM_BUILD } from "./combat/steam-universes.js";
+import { VERIFIED_STEAM_BUILD, VERIFIED_STEAM_BUILDS } from "./combat/steam-universes.js";
 
 const STATUS_CHANCE_STATS = new Set([...Object.values(STATUS_TO_STAT), "exacerbateChance"]);
 const SELF_BUFF_CHANCE_STATS = new Set(Object.values(SELF_BUFF_TO_STAT));
@@ -47,8 +47,8 @@ function describeModelBuild(metadata, warnings) {
   if (mismatch) return { status: "mismatch", label: mismatch.message };
   if (metadata?.platform === "web") return { status: "legacy", label: "Archived web edition" };
   if (metadata?.platform !== "steam" || !metadata.buildId) return { status: "unknown", label: "Build unknown" };
-  if (metadata.buildId === VERIFIED_STEAM_BUILD) {
-    return { status: "verified", label: `Steam build ${metadata.buildId} matches the model reference` };
+  if (VERIFIED_STEAM_BUILDS.has(metadata.buildId)) {
+    return { status: "verified", label: `Encounter parameters checked for Steam build ${metadata.buildId}` };
   }
   return { status: "unverified", label: `Steam build ${metadata.buildId} is unverified (reference ${VERIFIED_STEAM_BUILD})` };
 }

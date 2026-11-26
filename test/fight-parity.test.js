@@ -144,6 +144,14 @@ test("empty observations cannot pass parity, while an observed zero or event can
   assert.equal(compare({ events: [{ event: "attack" }] }).status, "match");
 });
 
+test("a large finite HP mismatch survives JSON export", () => {
+  const fixture = { ...deterministicWinFixture, player: { ...deterministicWinFixture.player, maxHp: 1e305 },
+    observed: { playerHp: 7e304 } };
+  const { deviations } = JSON.parse(JSON.stringify(compareFightParityFixture({ fixture })));
+  assert.equal(deviations[0].actual, 7e304);
+  assert.equal(deviations[0].expected, 1e305);
+});
+
 test("indexed events must match type, action and observation order", () => {
   const compare = (events) => compareFightParityFixture({
     fixture: { ...deterministicWinFixture, observed: { events } },

@@ -4,7 +4,7 @@ Priority 26 is a parity backlog for moving the simulator closer to the current g
 
 ## Full Steam edition
 
-The catalog shipped here covers build 26885190, game v0.9772 and save schema 87. The next verification task is to capture observed Hyena Hulk fights using the [Steam fight log](../README.md#compare-a-steam-fight). Each completed entry pairs a pre-fight save with its target, catalog metadata, universe, seed, trial count, horizon and observed result. The archive groups repeated attempts with matching setups and shows the expected and observed counts. Keep exports and local observations private unless deliberately prepared for sharing.
+The catalog shipped here covers build 26933131, game v0.9773 and save schema 87. The 236 sketch records, 53 shop upgrades and modeled universe parameters match the previous reference build 26885190. The next verification task is to capture observed Hyena Hulk fights using the [Steam fight log](../README.md#compare-a-steam-fight). Each completed entry pairs a pre-fight save with its target, catalog metadata, universe, seed, trial count, horizon and observed result. The archive groups repeated attempts with matching setups and shows the expected and observed counts. Keep exports and local observations private unless deliberately prepared for sharing.
 
 ## Archived web reference
 
@@ -51,6 +51,8 @@ npm.cmd run combat-parity
 - Fixed Haste and Slow timing scale to 0.1% per stack, matching the bundle attack delay formula.
 - Moved Inspiration stack rolls from post-hit self-buffs to the status tick, matching the current `qn` status tick block.
 - Replaced immediate Counter damage with a delayed pending effect scheduled 0.2s after the triggering hit, then resolved through the direct damage pipeline.
+- Matched the archived web periodic effect sequence, including EnergyWave before Inspiration and both sides before advancing to the next effect.
+- Routed archived web Counter through the flagged attack turn, with one queue entry per triggering turn and no follow-up Counter from the queued turn.
 - Added `--trace-rng` to the CLI so a trace can show random decisions without changing normal simulation output.
 - Added a `--fight-fixture` single-fight parity comparator that runs one deterministic simulator trace against an observed fight fixture and compares outcome, duration, final HP, damage breakdown and optional intermediate events.
 - Added a read-only companion endpoint and Tampermonkey button for `Capture fight fixture`, which builds a downloadable fixture and runs the same parity comparison from the live game page.
@@ -120,8 +122,7 @@ Markdown traces include `Damage Events`, `Mechanics` and `RNG` columns, limited 
 - RNG labels are simulator-side labels. The random order is now visible, but still needs to be compared against the current minified bundle.
 - Each static map result covers a named check. A check is unverified when its required extracted code is missing.
 - The simulator advances one tick deadline at a time. The archived web loop processes all due attacks before regen and status catch-up batches, so delayed frame handling can produce different event order.
-- The simulator runs periodic statuses by affected side and then rolls Inspiration. The archived web status tick handles each status for both sides, then EnergyWave, Inspiration, Balloon and Irradiate in that order. Compare simultaneous status damage and growth, healing and RNG order with observed fights.
-- The simulator resolves delayed Counter through its direct damage pipeline. The archived web game dispatches Counter through the full attack-turn resolver with a flag, so Remedy, skip checks and other turn effects can differ.
+- The static and regression checks cover the archived web periodic sequence and flagged Counter dispatch. Exact RNG consumption and lethal interactions still require comparison with observed fights.
 - Mechanic traces do not yet cover every system. Remaining trace gaps should be found from current bundle extraction and real fight comparisons.
 - Damage events expose source tags and overkill, but they do not yet allocate exact numeric contribution per modifier when several multipliers stack in one direct hit.
 
@@ -130,5 +131,5 @@ Markdown traces include `Damage Events`, `Mechanics` and `RNG` columns, limited 
 1. Capture real observed fight fixtures through the companion with `Combat Logging` enabled for Duct, Rose, Mobius, Abe Linkin, Vinchy, Joan of Art, Kahlo and Transcendent Paragon.
 2. Compare fixed tick timestamps, simultaneous attacks and delayed Counter actions against those real fixtures.
 3. Compare detailed damage event tags and overkill numbers against real combat logs, then add exact per-modifier contribution accounting if the game exposes it.
-4. Compare periodic status order and the full Counter/Thorns turn against traced fights. Extend the map as individual paths get verified.
+4. Compare lethal periodic interactions and Counter/Thorns turn details against traced fights.
 5. Verify side-specific caps during real fights, including the player Inspiration fundamentals bonus and uncapped enemy Inspiration.

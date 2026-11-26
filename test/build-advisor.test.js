@@ -3,6 +3,11 @@ import assert from "node:assert/strict";
 
 import { analyzeBuildAdvice } from "../src/build-advisor.js";
 
+test("build advice keeps late-game HP in the exported priorities", () => {
+  const { targetPlan } = analyzeBuildAdvice({ targetId: "duct_taped_banana", baseStats: { maxHp: 1e305 } });
+  assert.equal(JSON.parse(JSON.stringify(targetPlan)).priorityStats.find(row => row.stat === "maxHp").current, 1e305);
+});
+
 test("Steam build advice uses the encounter's universe and Precise Eraser modifiers", () => {
   const target = { id: "hyena_hulk", name: "Hyena Hulk", rarity: "rough", stats: { maxHp: 1e9, attack: 4e5 } };
   const state = { saveProfile: "steam", playerStats: { attack: 3e6, maxHp: 3e6 }, erasedSketchIds: [target.id] };

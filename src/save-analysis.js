@@ -1,5 +1,5 @@
 import { extractStats, isSteamSave, toNumber } from "./save.js";
-import { STEAM_UNIVERSES, VERIFIED_STEAM_BUILD } from "./combat/steam-universes.js";
+import { STEAM_UNIVERSES, VERIFIED_STEAM_BUILD, VERIFIED_STEAM_BUILDS } from "./combat/steam-universes.js";
 import { maxSketchVictories, remainingSketchVictories } from "./victory-limit.js";
 import { invalidCombatStats, validateCombatStatSources } from "../web/save-format.js";
 
@@ -181,7 +181,7 @@ export function validateDataCompatibility({ save, steamSave = isSteamSave(save),
     if (universe && !Object.hasOwn(STEAM_UNIVERSES, universe)) {
       warnings.push({ code: "unknown_universe", message: `Unknown Steam universe ${universe}. Estimates use original-universe modifiers.` });
     }
-    if (dataMetadata?.buildId && dataMetadata.buildId !== VERIFIED_STEAM_BUILD) {
+    if (dataMetadata?.buildId && !VERIFIED_STEAM_BUILDS.has(dataMetadata.buildId)) {
       warnings.push({ code: "unverified_build", message: `Catalog build ${dataMetadata.buildId} differs from the combat model's verified Steam build ${VERIFIED_STEAM_BUILD}.` });
     }
     const amounts = [save.state?.quintessence, ...Object.values(save.state?.currencies ?? {})];
