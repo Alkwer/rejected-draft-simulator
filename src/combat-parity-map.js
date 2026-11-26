@@ -45,9 +45,10 @@ export function buildCombatParityMap({
     [energyWaveTurnEffectCheck(context), ["Attack Resolution", "Status Tick Resolution"]],
     [lifestealOrderCheck(context), ["Attack Resolution"]],
     [varnishSurvivalCheck(context), ["Varnish Survival"]],
-    [counterDelayedEffectCheck(context), ["Combat Loop Timing"]],
+    [counterDelayedEffectCheck(context), ["Attack Resolution", "Combat Loop Timing"]],
     [tickCadenceCheck(context), ["Combat Loop Timing"]],
     [inspirationTickCheck(context), ["Status Tick Resolution"]],
+    [periodicStatusOrderCheck(context), ["Status Tick Resolution"]],
     [bananaSlipCheck(context), ["Attack Resolution", "Combat Loop Timing"]],
   ].map(([check, sections]) => checkAgainstReference(check, sections, referenceSections));
 
@@ -204,7 +205,7 @@ function electrocuteOrderCheck({ performAttackSource, mitigationSource }) {
 
 function curseReflectionCheck({ mitigationSource, performAttackSource }) {
   const directCurse = mitigationSource.includes("defenderStatuses.Curse") || mitigationSource.includes("trace.curse");
-  const hasReflection = tokensAppearInOrder(performAttackSource, [".Bleed", ".Curse", "curse_reflection", "const lifesteal"]);
+  const hasReflection = tokensAppearInOrder(performAttackSource, ["const bleedStacks", "const curseStacks", "curse_reflection", "const lifesteal"]);
   const matched = !directCurse && Boolean(mitigationSource) && hasReflection;
   return createCheck({
     id: "curse-reflection",
@@ -269,11 +270,13 @@ function hypnotizeSelfAttackCheck({ skipTurnSource, performAttackSource }) {
 
 function energyWaveTurnEffectCheck({ performAttackSource, combatSource }) {
   const immediateHitDamage = performAttackSource.includes("energyWaveDamage");
-  const tick = extractFunctionWindow(combatSource, "applyPeriodicStatusTick") ?? "";
+  const webTicks = /\bconst WEB_STATUS_TICKS\s*=\s*\[([^\]]+)\]/.exec(combatSource)?.[1] ?? "";
+  const tick = extractFunctionWindow(combatSource, "applyStatusTick") ?? "";
   const wave = extractFunctionWindow(combatSource, "applyEnergyWaveTick") ?? "";
-  const hasTickModel = tick.includes("applyEnergyWaveTick(") && tokensAppearInOrder(
-    wave, ["statuses.EnergyWave", "Math.floor(stacks * 0.1)", "applyDamageToSide(", "statuses.EnergyWave -= consumed"],
-  );
+  const hasTickModel = tick.includes("for (const tick of WEB_STATUS_TICKS)") && webTicks.includes("applyEnergyWaveTick,")
+    && tokensAppearInOrder(
+      wave, ["statuses.EnergyWave", "Math.floor(stacks * 0.1)", "applyDamageToSide(", "statuses.EnergyWave -= consumed"],
+    );
   const matched = !immediateHitDamage && hasTickModel && performAttackSource.includes("applySelfBuffs(");
   return createCheck({
     id: "energy-wave-turn-effect",
@@ -331,42 +334,39 @@ function varnishSurvivalCheck({ damageToSideSource }) {
   });
 }
 
-function counterDelayedEffectCheck({ combatSource }) {
+function counterDelayedEffectCheck({ combatSource, performAttackSource }) {
   const counterEffectSource = extractFunctionWindow(combatSource, "performCounterEffect") ?? "";
-  const reactiveSource = extractFunctionWindow(combatSource, "applyReactiveDamage") ?? "";
+  const scheduler = extractFunctionWindow(combatSource, "scheduleCounter") ?? "";
+  const webCounter = extractFunctionWindow(combatSource, "performWebCounter") ?? "";
   const pendingEffectSource = extractFunctionWindow(combatSource, "processPendingEffect") ?? "";
   const schedulesCounter = /\bconst COUNTER_DELAY_SECONDS\s*=\s*0\.2\s*;/.test(combatSource)
-    && tokensAppearInOrder(reactiveSource, [
+    && tokensAppearInOrder(scheduler, [
       "COUNTER_DELAY_SECONDS / combatSpeedAtTime(",
       "combat.pendingEffects.push(",
       "counter_scheduled",
     ]);
   const processesCounter = pendingEffectSource.includes("performCounterEffect(");
-  const usesDirectPipeline = tokensAppearInOrder(counterEffectSource, [
-    "baseAttackDamage",
-    "applyOffensiveMultipliers",
-    "resolveEvasion",
-    "applyDefensiveMitigation",
-    "applyDamageToSide",
-  ]);
-  const matched = schedulesCounter && processesCounter && usesDirectPipeline;
+  const usesAttackTurn = counterEffectSource.includes("if (!combat.assumptions.steam) return performWebCounter(")
+    && tokensAppearInOrder(webCounter, ["performAttack(", "counterEffect: effect"])
+    && tokensAppearInOrder(performAttackSource, [
+      "applyRemedy(", "shouldSkipTurn(", "rollMultistrikeHitCount(", "applyDamageToSide(", "applyStatuses(",
+      "applyThorns(", "applySelfBuffs(", "if (webCounterChance > 0 && !counterEffect)", "scheduleCounter(",
+    ]);
+  const matched = schedulesCounter && processesCounter && usesAttackTurn;
 
   return createCheck({
     id: "counter-delayed-effect",
-    title: "Delayed Counter scheduling and direct hit",
+    title: "Delayed Counter scheduling and attack turn",
     status: matched ? "matched" : "gap",
     severity: matched ? "low" : "high",
     confidence: "high",
     gameReference: "The bundle queues Counter 200ms divided by combat speed after the triggering attack and runs the attack resolver with its Counter flag.",
     simulatorEvidence: matched
-      ? "The pending Counter uses the speed-scaled delay and the direct damage pipeline."
-      : "The speed-scaled queue delay or direct-pipeline Counter resolution was not established.",
+      ? "The speed-scaled queue dispatches a flagged web attack turn. That turn resolves effects and cannot queue another Counter."
+      : "The speed-scaled queue or flagged attack-turn dispatch was not established.",
     nextAction: matched
-      ? "Verify the full Counter turn and timing against observed web fights."
-      : "Check speed-scaled Counter scheduling and direct damage resolution.",
-    details: matched
-      ? "This row covers scheduling and the direct hit. The archived resolver also runs turn effects through `pt`, including Remedy and skip checks."
-      : "",
+      ? "Keep the traced Counter, Multistrike and skip checks. Compare dispatch timing with observed web fights."
+      : "Check speed-scaled scheduling and the flagged web attack turn.",
   });
 }
 
@@ -398,14 +398,15 @@ function inspirationTickCheck({ combatSource }) {
   const tick = extractFunctionWindow(combatSource, "applyStatusTick") ?? "";
   const inspiration = extractFunctionWindow(combatSource, "applyInspirationTick") ?? "";
   const buff = extractFunctionWindow(combatSource, "applyCombatBuff") ?? "";
+  const webTicks = /\bconst WEB_STATUS_TICKS\s*=\s*\[([^\]]+)\]/.exec(combatSource)?.[1] ?? "";
   const matched = tokensAppearInOrder(tick, [
     "!combat.assumptions.steam",
     "Object.keys(combat.playerStatuses).length === 0",
     "Object.keys(combat.enemyStatuses).length === 0",
     "return;",
-    "applyInspirationTick(combat, \"player\"",
-    "applyInspirationTick(combat, \"enemy\"",
-  ]) && tokensAppearInOrder(inspiration, ["rollStacks(", "applyCombatBuff(", "capBonus: combat.assumptions.inspirationCapBonus"])
+    "for (const tick of WEB_STATUS_TICKS)",
+  ]) && webTicks.includes("applyInspirationTick,")
+    && tokensAppearInOrder(inspiration, ["rollStacks(", "applyCombatBuff(", "capBonus: combat.assumptions.inspirationCapBonus"])
     && tokensAppearInOrder(buff, ['intendedSide === "player" ?', "STATUS_CAPS[status]", "+ capBonus", ": Infinity"]);
   return createCheck({
     id: "inspiration-tick-caps",
@@ -420,6 +421,34 @@ function inspirationTickCheck({ combatSource }) {
     nextAction: matched
       ? "Keep the traced empty-status and cap regression test."
       : "Check tick eligibility and cap handling for both sides.",
+  });
+}
+
+function periodicStatusOrderCheck({ combatSource }) {
+  const damageTicks = /\bconst PERIODIC_DAMAGE_TICKS\s*=\s*\[([^\]]+)\]/.exec(combatSource)?.[1] ?? "";
+  const webTicks = /\bconst WEB_STATUS_TICKS\s*=\s*\[([^\]]+)\]/.exec(combatSource)?.[1] ?? "";
+  const tick = extractFunctionWindow(combatSource, "applyStatusTick") ?? "";
+  const matched = combatSource.includes('const COMBAT_SIDES = ["player", "enemy"]')
+    && tokensAppearInOrder(damageTicks, ["applyBurnTick", "applyPlagueTick", "applyPoisonTick", "applyBlackFlameTick"])
+    && tokensAppearInOrder(webTicks, [
+      "...PERIODIC_DAMAGE_TICKS", "applyEnergyWaveTick", "applyInspirationTick", "applyBalloonTick", "applyIrradiateTick",
+    ])
+    && tokensAppearInOrder(tick, [
+      "!combat.assumptions.steam", "for (const tick of WEB_STATUS_TICKS)", "for (const side of COMBAT_SIDES)", "tick(combat, side, rng)",
+    ]);
+  return createCheck({
+    id: "periodic-status-order",
+    title: "Periodic status effect order",
+    status: matched ? "matched" : "gap",
+    severity: "medium",
+    confidence: "high",
+    gameReference: "The web status tick processes both sides per effect: Burn, Plague, Poison, BlackFlame, EnergyWave, Inspiration, Balloon and Irradiate.",
+    simulatorEvidence: matched
+      ? "Each web tick effect runs for the player and then the enemy before the next effect."
+      : "The archived status effect sequence or side iteration was not detected.",
+    nextAction: matched
+      ? "Keep the two-sided trace regression and compare lethal interactions with observed web fights."
+      : "Check the web status effect sequence and side iteration.",
   });
 }
 

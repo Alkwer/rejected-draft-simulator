@@ -137,6 +137,7 @@ test("buildCombatParityMap classifies current combat parity gaps", () => {
   assert.equal(byId["counter-delayed-effect"].status, "gap");
   assert.equal(byId["periodic-tick-cadence"].status, "gap");
   assert.equal(byId["inspiration-tick-caps"].status, "gap");
+  assert.equal(byId["periodic-status-order"].status, "gap");
   assert.equal(byId["banana-slip-delay"].status, "gap");
 });
 
@@ -151,44 +152,28 @@ test("renderCombatParityMapMarkdown includes summary and concrete next actions",
 
   assert.match(markdown, /# Combat Engine Parity Map/);
   assert.match(markdown, /Matched: 3/);
-  assert.match(markdown, /Gaps: 10/);
+  assert.match(markdown, /Gaps: 11/);
   assert.match(markdown, /Curse reflection/);
   assert.match(markdown, /Move Curse out of direct-hit mitigation/);
 });
 
-test("buildCombatParityMap marks delayed Counter effects as matched", () => {
-  const delayedCounterSources = simulatorSources.map((source) => source.path === "src/combat.js"
-    ? {
-      ...source,
-      source: `${source.source}
-        const COUNTER_DELAY_SECONDS = 0.2;
-        function applyReactiveDamage() {
-          const delay = COUNTER_DELAY_SECONDS / combatSpeedAtTime(combat.assumptions, combat.time);
-          combat.pendingEffects.push({ type: "counter", time: combat.time + delay });
-          recordMechanic(combat, { type: "counter_scheduled" });
-        }
-        function processPendingEffect() {
-          performCounterEffect();
-        }
-        function performCounterEffect() {
-          baseAttackDamage();
-          applyOffensiveMultipliers();
-          resolveEvasion();
-          applyDefensiveMitigation();
-          applyDamageToSide();
-        }`,
-    }
-    : source);
-
-  const map = buildCombatParityMap({
+test("buildCombatParityMap checks the web Counter dispatch and status order in the simulator", () => {
+  const source = fs.readFileSync(new URL("../src/combat.js", import.meta.url), "utf8");
+  const inspect = (code) => buildCombatParityMap({
     referenceMarkdown: syntheticReferenceMarkdown,
-    simulatorSources: delayedCounterSources,
-    generatedAt: "2026-05-23T12:00:00.000Z",
+    simulatorSources: [{ path: "src/combat.js", source: code }],
   });
+  const map = inspect(source);
   const counter = map.checks.find((check) => check.id === "counter-delayed-effect");
-
   assert.equal(counter.status, "matched");
-  assert.match(counter.simulatorEvidence, /speed-scaled delay/);
+  assert.match(counter.simulatorEvidence, /flagged web attack turn/);
+  assert.equal(map.checks.find(({ id }) => id === "periodic-status-order").status, "matched");
+
+  const changed = inspect(source.replace(
+    /applyInspirationTick,\r?\n  applyBalloonTick,/,
+    "applyBalloonTick,\n  applyInspirationTick,",
+  ));
+  assert.equal(changed.checks.find(({ id }) => id === "periodic-status-order").status, "gap");
 });
 
 test("buildCombatParityMap requires a reachable Energy Wave tick with stack consumption", () => {
@@ -196,8 +181,9 @@ test("buildCombatParityMap requires a reachable Energy Wave tick with stack cons
     ? {
       ...source,
       source: `${source.source.replace("const waveDamage = energyWaveDamage();", "")}
-        function applyPeriodicStatusTick() {
-          applyEnergyWaveTick();
+        const WEB_STATUS_TICKS = [applyEnergyWaveTick,];
+        function applyStatusTick() {
+          for (const tick of WEB_STATUS_TICKS) tick();
         }
         function applyEnergyWaveTick() {
           const stacks = statuses.EnergyWave;

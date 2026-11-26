@@ -148,9 +148,10 @@ function harmfulStatusSnapshot(statuses) {
   return result;
 }
 
-export function shouldSkipTurn(rng, attacker, statuses, steam = false) {
-  if ((statuses.Hinder ?? 0) > 0 && rng("skip.Hinder") < Math.min(1, statuses.Hinder / 1000)) {
-    statuses.Hinder = Math.floor(statuses.Hinder / 2);
+export function shouldSkipTurn(rng, attacker, statuses, steam = false, initialStatuses = statuses) {
+  const hinder = initialStatuses.Hinder ?? 0;
+  if (hinder > 0 && rng("skip.Hinder") < Math.min(1, hinder / 1000)) {
+    statuses.Hinder = Math.floor(hinder / 2);
     if (statuses.Hinder <= 0) delete statuses.Hinder;
     if (steam) {
       for (const status of ["Freeze", "Paralysis", "Irradiate"]) {
@@ -162,7 +163,8 @@ export function shouldSkipTurn(rng, attacker, statuses, steam = false) {
     return { skipped: true, damage: 0 };
   }
 
-  if ((statuses.BananaPeel ?? 0) > 0 && rng("skip.BananaPeel") < Math.min(1, statuses.BananaPeel / 1000)) {
+  const bananaPeel = initialStatuses.BananaPeel ?? 0;
+  if (bananaPeel > 0 && rng("skip.BananaPeel") < Math.min(1, bananaPeel / 1000)) {
     delete statuses.BananaPeel;
     statuses.BananaSlip = 1;
     return { skipped: true, damage: 0 };
@@ -171,8 +173,9 @@ export function shouldSkipTurn(rng, attacker, statuses, steam = false) {
   return { skipped: false, damage: 0 };
 }
 
-export function resolveHypnotize(rng, statuses) {
-  if ((statuses.Hypnotize ?? 0) > 0 && rng("skip.Hypnotize") < Math.min(1, statuses.Hypnotize / 1000)) {
+export function resolveHypnotize(rng, statuses, initialStatuses = statuses) {
+  const hypnotize = initialStatuses.Hypnotize ?? 0;
+  if (hypnotize > 0 && rng("skip.Hypnotize") < Math.min(1, hypnotize / 1000)) {
     delete statuses.Hypnotize;
     return { redirected: true };
   }
