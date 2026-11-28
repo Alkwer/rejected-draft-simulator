@@ -34,6 +34,16 @@ Loading a new export clears the previous save's assumed victories, route and hid
 
 A redraw within the same Steam slot also clears the previous run’s scenario, even when a sketch appears in both draws. Ordinary autosaves keep it. For older slots without a redraw counter or timestamp the dashboard detects a changed roster. Select a sketch name to inspect its rewards with the mouse or keyboard. **Restore** brings back the last hidden sketch, including its assumed victories and route positions.
 
+Under **Run**, choose a target and optionally set **Target win chance**. Open **Strategy → Redraw farm plans** (on mobile, **Planner**) to see which sketches to draw together, the order to fight them, and the number of wins at each step. The final percentage on the fight step assumes those wins. The percentage beside the sketch names estimates how often the entire set appears on one ordinary redraw. Extra sketches can also appear. When the save has rarity minimums, the expanded plan also reports the share of sampled boards meeting those minimums that contained the set.
+
+The planner uses separate samples for route discovery and board odds. It checks the proposed sets on 4,000 fresh draws and counts overlapping alternatives once. Steam forecasts use saved rarity chances, Scrap, glossary progression, guaranteed selections, banishments and universe restrictions. They restart victory counts and rebuild starting stats with the saved fundamentals, before buying upgrades or applying tools. For legacy exports the model uses exported player stats as the starting build. Forecasts cover up to six routes and up to 256 farm wins per route. Each confirmed step must reach a lower 95% win-rate bound of 50% for helpers or the selected goal for the final target. A bounded search can miss winning combinations.
+
+The same forecast is available from the command line. Add `--json` for per-set counts, confidence intervals and ordered steps.
+
+```powershell
+npm.cmd run simulate -- --save latest --target sharper --redraw-farm --target-win-rate 0.5
+```
+
 **Practice** and **Trace (s)** update the displayed diagnostics from the current sample. The dashboard shows up to 24 trace events within the chosen window. Automatic scenario changes keep the seed so you can compare them. Click **Simulate** to draw a fresh sample.
 
 On Windows, the game stores its six slots under `%APPDATA%\Rejected Draft\saves\steam`. The simulator follows `last-slot.txt` and uses the most recently modified slot if the selected file is missing. CLI users can run:

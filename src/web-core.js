@@ -5,6 +5,7 @@ import { compareObservedOutcome, createDiagnosticReport, createModelAssumptionCo
 import { createFightTrace } from "./fight-trace.js";
 import { createCombatReport } from "./report.js";
 import { estimateRedrawOdds, isRedrawRarityEnabled, parseMinimums } from "./redraw-planner.js";
+import { planRedrawFarm } from "./redraw-farm-plan.js";
 import { projectVictories, simulateRoute } from "./route.js";
 import { parseRouteSpecs } from "./route-options.js";
 import { analyzeActiveSketches, analyzeSave } from "./save-analysis.js";
@@ -56,6 +57,7 @@ export function createWebAnalysis({
   observedOutcome = null,
   traceSeconds = 60,
   interactiveDiagnostics = false,
+  includeRedrawFarmPlan = true,
   identifyInputs = false,
   expectedSaveHash,
   expectedCatalogHash,
@@ -255,6 +257,12 @@ export function createWebAnalysis({
     maxSeconds: targetMaxSeconds,
     seed,
   }));
+  const redrawFarmPlan = includeRedrawFarmPlan ? optionalProjection("Redraw farm plans", () => planRedrawFarm({
+    sketches, state, baseStats, targetId: resolvedTargetId,
+    targetWinRate: strategicPlan?.assumptions.targetWinRate ?? toNumber(strategyOptions.targetWinRate, 0.5),
+    trials: trialsSetting.mode === "fixed" ? trialsSetting.trials : trialsSetting.initialTrials,
+    maxSeconds: targetMaxSeconds, seed,
+  })) : null;
 
   return {
     ...(replayIdentity && { replayIdentity }),
@@ -279,6 +287,7 @@ export function createWebAnalysis({
     activeDeltas,
     routePreview,
     rollWishlist,
+    redrawFarmPlan,
     buildComparison: createBuildComparison({ targetComparisons, activeSketches: projectedActive }),
     bundle: summarizeGameBundle({ sketches, dataMetadata }),
     performance: {
@@ -309,6 +318,7 @@ export function createCompanionAnalysis({
     maxSeconds,
     seed,
     traceSeconds: 30,
+    includeRedrawFarmPlan: false,
     strategyOptions: {
       strategyProfile: "farm-q",
       strategyMode: "safe-farm",

@@ -26,6 +26,7 @@ import {
   parityStatusLabel,
 } from "./fight-parity.js";
 import { createFightTrace, exportTraceMarkdown } from "./fight-trace.js";
+import { planRedrawFarm } from "./redraw-farm-plan.js";
 import {
   estimateFindNewSketchOdds,
   estimateRedrawOdds,
@@ -263,6 +264,31 @@ if (args["strategy-plan"] || args.strategy) {
 
   if (wantsJsonOutput(args)) console.log(JSON.stringify({ target: targetSummary(target), statSource, strategicPlan }, null, 2));
   else printStrategyPlan({ target, statSource, strategicPlan });
+  process.exit(0);
+}
+
+if (args["redraw-farm"]) {
+  const goal = Number(args["target-win-rate"] ?? 0.5);
+  if (args["target-win-rate"] === true || !Number.isFinite(goal) || goal <= 0 || goal >= 1) {
+    console.error("--target-win-rate must be a probability greater than 0 and less than 1.");
+    process.exit(1);
+  }
+  const redrawFarmPlan = planRedrawFarm({ sketches, state: save.state, baseStats: player, targetId,
+    targetWinRate: goal, trials, maxSeconds, seed });
+  if (wantsJsonOutput(args)) console.log(JSON.stringify({ redrawFarmPlan }, null, 2));
+  else {
+    console.log(`${target.name} · redraw farm · ${(goal * 100).toFixed(1)}% win goal`);
+    for (const plan of redrawFarmPlan.plans) {
+      const { hits, draws, rate } = plan.boardOdds;
+      console.log(`  ${plan.required.map((s) => s.name).join(" + ")} | ${(100 * rate).toFixed(3)}% per redraw (${hits}/${draws})`);
+      const certain = plan.required.filter((s) => s.alwaysDrawn);
+      if (certain.length) console.log("    Always drawn with these settings: " + certain.map((s) => s.name).join(", "));
+      console.log("    " + [...plan.stages.map((s) => `${s.name} × ${s.wins}`), `Fight ${target.name}`].join(" → "));
+      console.log(`    Target win chance after these wins: ${(100 * plan.targetWinRate).toFixed(1)}%`);
+    }
+    if (!redrawFarmPlan.plans.length) console.log("  " + redrawFarmPlan.status.replaceAll("_", " "));
+    if (redrawFarmPlan.limited) console.log("  Search limited. Other routes may work.");
+  }
   process.exit(0);
 }
 
@@ -579,6 +605,8 @@ Options:
   --patch-sanity         Check versioned Duct/Rose/Mobius snapshots for the current data.
   --game-version <v>     Version to check with --patch-sanity. Default from data metadata.
   --plan-redraw          Estimate Targeted Redraw odds and keep/redraw decision.
+  --redraw-farm          Find boards and ordered farm wins for the selected target.
+  --target-win-rate <p>  Target win probability after farming (e.g. 0.5).
   --find-new-sketches    Estimate Find New Sketches mode instead of Targeted Redraw.
   --redraw-minimums <x>  Rarity minimums, for example 38/15/7/1 or rough=38,opus=7.
   --redraw-candidates <x> Candidate settings separated by ~, for example target:38/15/7/1~farm:39/18/10/0.

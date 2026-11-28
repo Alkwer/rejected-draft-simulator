@@ -657,7 +657,7 @@ export function isRedrawRarityEnabled(state, rarity) {
     || !steamUniverse(state.multiverse?.currentUniverseId).disabledRarities?.includes(rarity);
 }
 
-function getSteamScrapChance(state) {
+export function getSteamScrapChance(state) {
   const universe = steamUniverse(state.multiverse?.currentUniverseId);
   return Math.max(0, Math.min(100, universe.scrapRarityChance ?? toNumber(state.rarityChances?.scrap, 100)));
 }
@@ -672,7 +672,7 @@ function getExploratoryRarity(state) {
   return RARITIES.find(eligible) ?? (eligible("scrap") ? "scrap" : null);
 }
 
-function getSavedRarityChances(state) {
+export function getSavedRarityChances(state) {
   const steam = isFullSteamSave(state);
   const chances = {};
   for (const rarity of RARITIES) {
@@ -689,8 +689,7 @@ function getSavedRarityChances(state) {
   return chances;
 }
 
-function getSavedSketchChances({ sketches, state, pool }) {
-  const rarityChances = getSavedRarityChances(state);
+export function getSavedSketchChances({ sketches, state, pool, rarityChances = getSavedRarityChances(state) }) {
   if (Object.keys(rarityChances).length === 0) return null;
 
   const glossary = getGlossaryUnlocks(state);

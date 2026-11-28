@@ -950,6 +950,23 @@ h3 {
   font-size: 13px;
 }
 
+#redrawFarmPanel { align-self: start; padding-bottom: 16px; }
+#redrawFarmPanel .section-head { flex-wrap: wrap; margin-bottom: 12px; }
+#redrawFarmPanel .counter { overflow-wrap: anywhere; }
+.redraw-summary, .redraw-note, #redrawFarmPlans p { margin: 0; line-height: 1.5; }
+.redraw-summary, .redraw-note, #redrawFarmPlans { margin-inline: 16px; }
+.redraw-note, #redrawFarmPlans p { color: var(--muted); font-size: 0.8125rem; }
+#redrawFarmPlans { margin-top: 10px; }
+#redrawFarmPlans details { padding-block: 12px; border-top: 1px solid var(--line); }
+#redrawFarmPanel .redraw-note { margin-top: 8px; }
+#redrawFarmPlans summary { cursor: pointer; line-height: 1.5; overflow-wrap: anywhere; }
+#redrawFarmPlans summary:hover strong { text-decoration: underline; }
+#redrawFarmPlans summary:focus-visible { outline: 2px solid var(--mint); outline-offset: 3px; }
+#redrawFarmPlans summary span { display: block; margin-inline-start: 1.2em; color: var(--mint); font-variant-numeric: tabular-nums; }
+#redrawFarmPlans ol { margin-block: 8px; padding-inline-start: 1.7em; }
+#redrawFarmPlans li { padding-block: 2px; overflow-wrap: anywhere; }
+#redrawFarmPlans:empty { display: none; }
+
 .sketch-row {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;

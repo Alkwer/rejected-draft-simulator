@@ -6,6 +6,48 @@ import { chromium } from "playwright-core";
 import { createWebServer } from "../src/web-server.js";
 import { ANALYSIS_MODEL_VERSION } from "../src/model-version.js";
 import { completedAnalysis } from "./browser-analysis.js";
+import { redrawFarmFixture } from "../fixtures/redraw-farm.js";
+
+async function checkRedrawFarmPlans(browser, dir) {
+  const { sketches, state } = redrawFarmFixture();
+  const dataPath = path.join(dir, "redraw-catalog.json");
+  await writeFile(dataPath, JSON.stringify({ metadata: { platform: "web" }, sketches }));
+  const server = createWebServer({ dataPath, legacyDataPath: dataPath, updateDataOnImport: false });
+  const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+  try {
+    await new Promise((resolve, reject) => server.once("error", reject).listen(0, "127.0.0.1", resolve));
+    await page.goto(`http://127.0.0.1:${server.address().port}/`);
+    const response = () => page.waitForResponse((r) => r.url().endsWith("/api/analyze"));
+    const loaded = response();
+    await page.locator("#saveFile").setInputFiles({ name: "redraw.json", mimeType: "application/json",
+      buffer: Buffer.from(JSON.stringify({ state })) });
+    await completedAnalysis(loaded);
+    await page.getByRole("tab", { name: "Strategy", exact: true }).click();
+    const plan = page.locator("#redrawFarmPlans details").first();
+    await plan.getByText("Farm First Draft × 2").waitFor();
+    assert.deepEqual(await plan.locator("li").allTextContents(), [
+      "Farm First Draft × 2", "Farm Second Draft × 1", "Fight Final Draft · 100.0% win chance",
+    ]);
+    assert.match(await plan.locator("summary").textContent(), /Final Draft \+ First Draft \+ Second Draft.*per redraw/);
+    await plan.locator("summary").press("Enter");
+    assert.equal(await plan.locator("ol").isVisible(), false);
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.getByRole("button", { name: "Planner", exact: true }).click();
+    await plan.locator("summary").press("Enter");
+    assert.ok(await plan.locator("ol").isVisible());
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth), 390);
+    await page.getByRole("button", { name: "Run", exact: true }).click();
+    const changed = response();
+    await page.locator("#targetSelect").selectOption("first");
+    await completedAnalysis(changed);
+    await page.getByRole("button", { name: "Planner", exact: true }).click();
+    await plan.getByText(/No farming needed/).waitFor();
+    assert.equal(await plan.locator("li").count(), 1);
+  } finally {
+    await page.close();
+    if (server.listening) await new Promise((resolve) => server.close(resolve));
+  }
+}
 
 async function checkFirstRunAndStorage(browser, url) {
   for (const mode of ["blocked", "quota"]) {
@@ -486,6 +528,7 @@ try {
   await checkMobileImport(browser, server, `http://127.0.0.1:${server.address().port}/`);
   await checkMoreTrials(browser, `http://127.0.0.1:${server.address().port}/`);
   await checkSteamSlotSwitch(browser, `http://127.0.0.1:${server.address().port}/`, testDir);
+  await checkRedrawFarmPlans(browser, testDir);
   console.log("Passed save imports, responsive layout, queued changes, history replay, censored times, diagnostics, hidden targets and Steam archive checks.");
 } finally {
   await browser.close();
