@@ -59,6 +59,15 @@ function modeledStat(state, stat, raw, factors) {
   return capStat(state, stat, effective);
 }
 
+export function steamStartingPlayerStats(state) {
+  const stats = {};
+  for (const [stat, raw] of Object.entries(state.battleStats)) {
+    const factors = statFactors(state, stat, {}, state.glossaryMultiplier, state.activeMeditationBuffs);
+    stats[stat] = modeledStat(state, stat, raw, factors);
+  }
+  return stats;
+}
+
 export function createSteamStatProjection(state, stats, { raw = false, trackGlossary = true } = {}) {
   if (!isFullSteamSave(state)) return null;
   const battleStats = { ...state.battleStats };

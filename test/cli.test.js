@@ -4,9 +4,33 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import assert from "node:assert/strict";
+import { redrawFarmFixture } from "../fixtures/redraw-farm.js";
 
 const projectRoot = path.resolve(import.meta.dirname, "..");
 const fixtureSave = path.join(projectRoot, "fixtures", "synthetic-save.txt");
+
+test("CLI redraw farm returns ordered wins and joint board odds for the selected target", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rd-farm-cli-"));
+  try {
+    const { sketches, state } = redrawFarmFixture();
+    const catalog = path.join(dir, "sketches.json");
+    const save = path.join(dir, "save.json");
+    fs.writeFileSync(catalog, JSON.stringify({ sketches }));
+    fs.writeFileSync(save, JSON.stringify({ state }));
+    const args = ["src/cli.js", "--redraw-farm", "--target", "duct", "--save", save, "--data", catalog,
+      "--seed", "farm-cli", "--trials", "100", "--max-seconds", "5"];
+    const run = (...extra) => spawnSync(process.execPath, [...args, ...extra], { cwd: projectRoot, encoding: "utf8" });
+    const json = run("--json");
+    assert.equal(json.status, 0, json.stderr);
+    const [plan] = JSON.parse(json.stdout).redrawFarmPlan.plans;
+    assert.deepEqual(plan.stages.map(({ id, wins }) => [id, wins]), [["first", 2], ["second", 1]]);
+    assert.ok(Math.abs(plan.boardOdds.rate - 0.25) < 0.03);
+    assert.match(run().stdout, /First Draft × 2 → Second Draft × 1 → Fight Final Draft/);
+    assert.equal(run("--target-win-rate", "2").status, 1);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
 
 test("CLI runs a JSON simulation against a fixture save", () => {
   const result = spawnSync(process.execPath, [

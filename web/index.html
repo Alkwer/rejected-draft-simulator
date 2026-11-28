@@ -217,6 +217,18 @@
                 Farm window (s)
                 <input id="strategyFarmSecondsInput" type="number" min="60" step="60" value="3600">
               </label>
+              <label>
+                Target win chance
+                <select id="strategyWinGoal">
+                  <option value="">Profile default</option>
+                  <option value="0.1">10%</option>
+                  <option value="0.25">25%</option>
+                  <option value="0.5">50%</option>
+                  <option value="0.75">75%</option>
+                  <option value="0.9">90%</option>
+                  <option value="0.95">95%</option>
+                </select>
+              </label>
             </div>
             <label>
               Booster candidates
@@ -362,6 +374,16 @@
               <h3>Profile</h3>
               <div id="strategyProfileList" class="breakdown-list empty-state">No data</div>
             </div>
+          </section>
+
+          <section id="redrawFarmPanel" class="panel" data-function-panel="strategy" data-mobile-panel="planner" aria-labelledby="redrawFarmTitle">
+            <div class="section-head">
+              <h2 id="redrawFarmTitle">Redraw farm plans</h2>
+              <span id="redrawFarmTarget" class="counter"></span>
+            </div>
+            <p id="redrawFarmSummary" class="redraw-summary">Load a save and choose a target to see possible boards.</p>
+            <div id="redrawFarmPlans"></div>
+            <p id="redrawFarmNote" class="redraw-note" hidden></p>
           </section>
 
           <section class="panel" data-function-panel="strategy" data-mobile-panel="planner">

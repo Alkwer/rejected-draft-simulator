@@ -67,6 +67,7 @@ const els = {
   strategyModeSelect: document.querySelector("#strategyModeSelect"),
   strategyCompareProfilesInput: document.querySelector("#strategyCompareProfilesInput"),
   strategyGoalQInput: document.querySelector("#strategyGoalQInput"),
+  strategyWinGoal: document.querySelector("#strategyWinGoal"),
   strategyGoalCurrencyInput: document.querySelector("#strategyGoalCurrencyInput"),
   strategySoftcapSecondsInput: document.querySelector("#strategySoftcapSecondsInput"),
   strategyFarmSecondsInput: document.querySelector("#strategyFarmSecondsInput"),
@@ -116,6 +117,10 @@ const els = {
   sketchDeltaBody: document.querySelector("#sketchDeltaBody"),
   rollWishlistSummary: document.querySelector("#rollWishlistSummary"),
   rollWishlistList: document.querySelector("#rollWishlistList"),
+  redrawFarmTarget: document.querySelector("#redrawFarmTarget"),
+  redrawFarmSummary: document.querySelector("#redrawFarmSummary"),
+  redrawFarmPlans: document.querySelector("#redrawFarmPlans"),
+  redrawFarmNote: document.querySelector("#redrawFarmNote"),
   routePreviewSummary: document.querySelector("#routePreviewSummary"),
   routePreviewList: document.querySelector("#routePreviewList"),
   buildComparison: document.querySelector("#buildComparison"),
@@ -207,6 +212,7 @@ function bindEvents() {
     els.strategyModeSelect,
     els.strategyCompareProfilesInput,
     els.strategyGoalQInput,
+    els.strategyWinGoal,
     els.strategyGoalCurrencyInput,
     els.strategySoftcapSecondsInput,
     els.strategyFarmSecondsInput,
@@ -312,6 +318,7 @@ function resetSaveAnalysis() {
   renderStrategyPlan(null);
   renderSketchDelta(null);
   renderRollWishlist(null);
+  renderRedrawFarmPlans(null);
   renderTargetComparisons([]);
   renderBuildComparison([]);
   for (const { element, text, className } of emptyResultFields) {
@@ -549,6 +556,7 @@ function renderAnalysis(analysis) {
   renderStrategyPlan(analysis.strategicPlan);
   renderSketchDelta(analysis);
   renderRollWishlist(analysis.rollWishlist);
+  renderRedrawFarmPlans(analysis.redrawFarmPlan, analysis.target);
   renderRoutePlanner();
   renderRoutePreview(analysis.routePreview);
   renderTargetComparisons(analysis.targetComparisons);
@@ -909,6 +917,77 @@ function renderSketchDelta(analysis) {
       detail: (delta.currencyRewards ?? []).map((item) => `${item.name} ${formatNumber(item.amount)}`).join(", ") || "none",
     },
   ]);
+}
+
+function renderRedrawFarmPlans(result, target) {
+  els.redrawFarmTarget.textContent = result?.targetName ?? target?.name ?? "";
+  els.redrawFarmPlans.replaceChildren();
+  const messages = {
+    missing_draw_settings: "This export has no redraw rarity chances. Load a full save to estimate board odds.",
+    redraw_limit: "This universe has reached its redraw limit.",
+    target_unavailable: "The selected target is unavailable for a new fight.",
+    outside_draw_pool: "The target cannot appear with the saved redraw settings.",
+    target_not_sampled: "The target did not appear in the boards used to search for routes.",
+    unsupported_culling: "Another fight can remove a required draft. The search could not verify a safe farm order.",
+    not_found: "The search found no farm order that reached the selected win chance.",
+  };
+  const note = [];
+  let summary = target ? "The redraw forecast is unavailable for this simulation." : "Load a save and choose a target to see possible boards.";
+  if (result) {
+    summary = messages[result.status] ?? "";
+    if (result.anyPlanOdds) {
+      summary = `Target win goal: ${percent(result.goal)}.`;
+      if (result.plans.length > 1) summary += ` Chance of drawing at least one of these setups: ${boardChance(result.anyPlanOdds)}.`;
+    }
+    if (result.targetOdds) {
+      if (!result.plans.length) note.push(`Target win goal: ${percent(result.goal)}. Target appeared on ${result.targetOdds.hits.toLocaleString("en-US")} of ${result.targetOdds.draws.toLocaleString("en-US")} independent redraws.`);
+      note.push(result.basis === "steam_redraw" ? "Starts with reset Steam stats and saved fundamentals, before purchases or tools."
+        : "Uses exported player stats as the estimated starting build, before new purchases or tools.");
+      if (result.limited || result.status === "not_found") note.push("The search covers a limited set of routes. Other boards or longer routes may work.");
+      if (result.skippedCulling && result.plans.length) note.push("Routes requiring uncertain sketch removals were skipped.");
+      if (result.skippedProjection) note.push("Some rewards exceeded the simulation range.");
+    }
+  }
+  els.redrawFarmSummary.textContent = summary;
+  els.redrawFarmNote.textContent = note.join(" ");
+  els.redrawFarmNote.hidden = !note.length;
+  for (const [i, plan] of (result?.plans ?? []).entries()) {
+    const details = document.createElement("details");
+    details.open = i === 0;
+    const heading = document.createElement("summary");
+    const names = document.createElement("strong");
+    names.textContent = plan.required.map((sketch) => sketch.name).join(" + ");
+    const odds = document.createElement("span");
+    odds.textContent = plan.boardOdds.hits ? `${boardChance(plan.boardOdds)} per redraw` : boardChance(plan.boardOdds);
+    heading.append(names, odds);
+    const steps = document.createElement("ol");
+    for (const stage of plan.stages) {
+      const step = document.createElement("li");
+      step.textContent = `Farm ${stage.name} × ${stage.wins}`;
+      steps.append(step);
+    }
+    const fight = document.createElement("li");
+    fight.textContent = `Fight ${result.targetName} · ${percent(plan.targetWinRate)} win chance`;
+    steps.append(fight);
+    const evidence = document.createElement("p");
+    const interval = confidenceRange(plan.boardOdds.ci95);
+    const facts = [`Board found in ${plan.boardOdds.hits.toLocaleString("en-US")}/${plan.boardOdds.draws.toLocaleString("en-US")} redraws (95% CI ${interval}).`];
+    const certain = plan.required.filter((sketch) => sketch.alwaysDrawn);
+    if (certain.length) facts.unshift(`Always drawn with these settings: ${certain.map((sketch) => sketch.name).join(", ")}.`);
+    if (result.hasMinimums) facts.push(plan.minimumOdds
+      ? `Among draws meeting your saved rarity minimums: ${boardChance(plan.minimumOdds)} (${plan.minimumOdds.hits}/${plan.minimumOdds.draws}).`
+      : "No sampled draws met your saved rarity minimums.");
+    if (plan.wins) facts.push(`Target odds assume all ${plan.wins} farm ${plan.wins === 1 ? "win" : "wins"}. Lowest estimated farm fight chance: ${percent(plan.minHelperWinRate)}.`);
+    else facts.push("No farming needed for this goal.");
+    evidence.textContent = facts.join(" ");
+    details.append(heading, steps, evidence);
+    els.redrawFarmPlans.append(details);
+  }
+}
+
+function boardChance(odds) {
+  if (!odds.hits) return `unseen in ${odds.draws.toLocaleString("en-US")} draws`;
+  return odds.rate.toLocaleString("en-US", { style: "percent", maximumFractionDigits: odds.rate < 0.001 ? 3 : 1 });
 }
 
 function renderRollWishlist(wishlist) {
@@ -1585,6 +1664,7 @@ function assumedVictoriesPayload() {
 function strategyFields() {
   return {
     strategyProfile: els.strategyProfileSelect, strategyMode: els.strategyModeSelect,
+    targetWinRate: els.strategyWinGoal,
     compareProfiles: els.strategyCompareProfilesInput, goalQuintessence: els.strategyGoalQInput,
     goalCurrency: els.strategyGoalCurrencyInput, softcapSeconds: els.strategySoftcapSecondsInput,
     farmSeconds: els.strategyFarmSecondsInput, boosterCandidates: els.strategyBoosterCandidatesInput,
